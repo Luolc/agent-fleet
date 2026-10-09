@@ -43,9 +43,13 @@ const (
 		"ticket claimed again, a `Session <n> started` comment, and its earlier session " +
 		"summaries. If a Linear step fails, no agent is started, the message is dropped, one " +
 		"line saying Linear is unavailable is posted to the thread (`fednet client post`) and " +
-		"the exit is 0. The agent's first message is the built-in thread prompt, the channel " +
-		"context, the summaries and the message. A live row whose agent is gone from herdr is " +
-		"ended (the session ended abnormally) and a new agent started.\n\n" +
+		"the exit is 0; when that line cannot be posted (no socket configured, or the post " +
+		"fails), the exit is 5 and the message is kept for fednet's retry. The agent's first " +
+		"message is the built-in thread prompt, the channel context, the summaries and the " +
+		"message. A run killed after the agent started leaves its row `starting`: the retry " +
+		"finds the agent, gets it to its input box and delivers that first message in full. " +
+		"A live row whose agent is gone from herdr is ended (the session ended abnormally) " +
+		"and a new agent started.\n\n" +
 		"Exit: 0 when the message is delivered, ignored or dropped (fednet marks it delivered); " +
 		"1 when the event file cannot be read or is not an event, or the target is not a name; " +
 		"2/3/4 as `send` when the delivery to a live agent gives no clear signal, finds it " +
@@ -195,7 +199,7 @@ func Inbox(h *herdr.Herdr, args InboxArgs) (exit.Code, error) {
 // exit.Ok means the agent has the message, or (`dropped`) that no agent
 // was started because Linear is unavailable and the thread was told.
 func route(h *herdr.Herdr, conn *sql.DB, target string, cfg *config.Target, msg inboundMessage) (code exit.Code, dropped bool, err error) {
-	name, _, err := liveThreadAgent(conn, msg.Thread)
+	name, state, err := liveThreadAgent(conn, msg.Thread)
 	if err != nil {
 		return 0, false, err
 	}
@@ -203,6 +207,10 @@ func route(h *herdr.Herdr, conn *sql.DB, target string, cfg *config.Target, msg 
 		present, err := herdrHas(h, name)
 		if err != nil {
 			return 0, false, err
+		}
+		if present && state == "starting" {
+			code, err := resumeThreadStart(h, conn, target, cfg, msg, name)
+			return code, false, err
 		}
 		if present {
 			text, err := WithHeader(inboxSender, msg.body())

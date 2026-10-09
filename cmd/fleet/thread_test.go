@@ -43,7 +43,10 @@ case "$1 $2" in
     printf '%s\n' "$@" > "$dir/tab-argv"
     echo '{"result":{"root_pane":{"workspace_id":"w7","tab_id":"t8","pane_id":"p8"}}}' ;;
   "agent start") : > "$dir/has-$3"; echo '{"result":{}}' ;;
-  "tab rename"|"pane rename") echo '{"result":{}}' ;;
+  "pane rename")
+    if [ -e "$dir/kill-at-rename" ]; then rm "$dir/kill-at-rename"; kill -9 $PPID; sleep 1; fi
+    echo '{"result":{}}' ;;
+  "tab rename") echo '{"result":{}}' ;;
   "tab close") echo "$3" > "$dir/closed-tab"; echo '{"result":{}}' ;;
   "agent read") printf '%s\n' "────────────" "❯ " "────────────" ;;
   "agent prompt")
@@ -72,9 +75,12 @@ exit 0
 `
 }
 
+// threadFednet is a fake fednet: every call logged; the post fails while
+// <dir>/fednet-down exists.
 const threadFednet = `#!/bin/sh
 dir="$(dirname "$0")/.."
 echo "fednet $*" >> "$dir/calls"
+[ -e "$dir/fednet-down" ] && { echo "post: hub unreachable" >&2; exit 4; }
 echo m-posted
 `
 
@@ -604,5 +610,100 @@ func TestJobStartFromAThreadAgentRecordsTheHomeThreadAndRelatesTheTicket(t *test
 	out = w.startJob("threads", "--task-file", taskFile)
 	if out.code != 1 || !strings.Contains(out.stderr, "reserved") {
 		t.Errorf("job named threads: %+v", out)
+	}
+}
+
+func TestInboxFinishesAStartItsEarlierRunWasKilledIn(t *testing.T) {
+	w := threadWorld(t, "")
+	if out := w.inbox(w.event("m0", "first", "ctx")); out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	// The agent ended its session; the next message reopens the thread,
+	// and that run is killed by the fake herdr at `pane rename`: the agent
+	// was started, the prompt never delivered.
+	conn := w.defaultLedger()
+	if _, err := conn.Exec("UPDATE agents SET state = 'ended' WHERE role = 'thread'"); err != nil {
+		t.Fatal(err)
+	}
+	conn.Close()
+	for _, marker := range []string{"threads-workspace", "kill-at-rename"} {
+		if err := os.WriteFile(filepath.Join(w.dir, marker), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = os.Remove(filepath.Join(w.dir, "argv"))
+	out := w.inbox(w.event("m1", "are we done? 0xMSG1", ""))
+	if out.code == 0 || w.file("argv") != "" {
+		t.Fatalf("the killed run finished: %+v, argv %q", out, w.file("argv"))
+	}
+	if got := threadAgentRow(w); got != "TH-5 starting" {
+		t.Fatalf("row after the kill = %q", got)
+	}
+	if got := inboxRow(w, "m1"); got != "reserved" {
+		t.Fatalf("inbox row after the kill = %q", got)
+	}
+	_ = os.Remove(filepath.Join(w.dir, "calls"))
+	out = w.inbox(w.event("m1", "are we done? 0xMSG1", ""))
+	if out.code != 0 || !strings.Contains(out.stderr, "still starting from an earlier run") {
+		t.Fatalf("retry: %+v", out)
+	}
+	want := "herdr agent get\n" +
+		`atb linear query { issue(id: "TH-5") { comments { nodes { body createdAt } } } } key=set` + "\n" +
+		"herdr pane rename\nherdr agent read\nherdr agent get\nherdr agent prompt"
+	if got := strings.TrimSpace(w.calls()); got != want {
+		t.Errorf("retry calls = %q, want %q", got, want)
+	}
+	prompt := w.file("argv")
+	for _, want := range []string{"[FROM: inbox]\nYou are a thread agent", "FLEET_ISSUE=TH-5 (your thread ticket",
+		"## Channel context\n\nctx\n", "## Earlier sessions on this thread\n\nSession 1 ended", "0xMSG1"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("retry prompt = %q, want %q in it", prompt, want)
+		}
+	}
+	if got := threadAgentRow(w); got != "TH-5 active" {
+		t.Errorf("row after the retry = %q", got)
+	}
+	if got := inboxRow(w, "m1"); got != "delivered" {
+		t.Errorf("inbox row after the retry = %q", got)
+	}
+	if got := threadRow(w); got != "TH-5 ss ctx" {
+		t.Errorf("thread row = %q, want two sessions, not three", got)
+	}
+}
+
+func TestInboxKeepsTheMessageWhenTheOutageNoticeCannotBePosted(t *testing.T) {
+	w := threadWorld(t, "create")
+	if err := os.WriteFile(filepath.Join(w.dir, "fednet-down"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := w.inbox(w.event("m1", "hello", ""))
+	if out.code != 5 || !strings.Contains(out.stderr, "the thread was not told") {
+		t.Fatalf("%+v", out)
+	}
+	if got := inboxRow(w, "m1"); got != "reserved" {
+		t.Errorf("inbox row = %q, want reserved", got)
+	}
+	if got := threadAgentRow(w); got != " ended" {
+		t.Errorf("row = %q, want ended", got)
+	}
+	// Linear still down, the post works again: dropped now.
+	_ = os.Remove(filepath.Join(w.dir, "fednet-down"))
+	_ = os.Remove(filepath.Join(w.dir, "calls"))
+	out = w.inbox(w.event("m1", "hello", ""))
+	if out.code != 0 || !strings.Contains(w.calls(), "fednet client post") {
+		t.Errorf("retry: %+v, calls %q", out, w.calls())
+	}
+	if got := inboxRow(w, "m1"); got != "dropped" {
+		t.Errorf("inbox row = %q, want dropped", got)
+	}
+	// No socket configured: nothing to post with, kept as well.
+	w2 := threadWorld(t, "create")
+	w2.targetConfig(`{"linear": {"team": "TH"}}`)
+	out = w2.inbox(w2.event("m1", "hello", ""))
+	if out.code != 5 || !strings.Contains(out.stderr, "fednet.socket is not configured") {
+		t.Errorf("no socket: %+v", out)
+	}
+	if got := inboxRow(w2, "m1"); got != "reserved" {
+		t.Errorf("inbox row = %q, want reserved", got)
 	}
 }

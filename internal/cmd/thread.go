@@ -441,23 +441,74 @@ func (s *threadStart) start() (exit.Code, error) {
 }
 
 // linearUnavailable is what `fleet inbox` does when a Linear step failed:
-// no agent, the message dropped, one line posted to the thread.
+// no agent (the reservation taken back), then one line posted to the
+// thread; only when the post succeeded is the message dropped. A post
+// that fails, or no socket to post with, is exit 5: the message stays
+// reserved and fednet runs the hook again.
 func (s *threadStart) linearUnavailable(cause error) error {
 	fmt.Fprintf(os.Stderr, "fleet: Linear is unavailable, no thread agent started: %v\n", cause)
 	if err := s.unreserve(); err != nil {
 		return err
 	}
 	if s.cfg.FednetSocket == "" {
-		fmt.Fprintln(os.Stderr, "fleet: fednet.socket is not configured, so the thread was not told")
-		return nil
+		return exit.Environmentf("fednet.socket is not configured, so the thread cannot be told; the message is kept for a retry")
 	}
 	if err := fednet.Post(s.cfg.FednetSocket, s.msg.Thread,
 		"Linear is unavailable right now, so no agent was started for this thread; please try again later."); err != nil {
-		fmt.Fprintf(os.Stderr, "fleet: %v\n", err)
-		return nil
+		return exit.Environmentf("%v; the thread was not told, the message is kept for a retry", err)
 	}
 	fmt.Fprintln(os.Stdout, "posted to the thread that Linear is unavailable")
 	return nil
+}
+
+// resume finishes a start an earlier run was killed in, found as a live
+// row still `starting` with its agent in herdr: the agent is got to its
+// input box, the earlier summaries are read again, and the full first
+// message is delivered, after which the row is active. Nothing new is
+// created.
+func resumeThreadStart(h *herdr.Herdr, conn *sql.DB, target string, cfg *config.Target, msg inboundMessage, name string) (exit.Code, error) {
+	fmt.Fprintf(os.Stderr, "note: %s is still starting from an earlier run; finishing that start\n", name)
+	home, err := Home()
+	if err != nil {
+		return 0, err
+	}
+	known, err := threadByKey(conn, msg.Thread)
+	if err != nil {
+		return 0, err
+	}
+	if known == nil {
+		return 0, exit.Environmentf("the ledger has %s but no row for thread %s", name, msg.Thread)
+	}
+	var pane string
+	if err := conn.QueryRow("SELECT pane_id FROM agents WHERE name = ?1 AND state != 'ended'", name).Scan(&pane); err != nil {
+		return 0, exit.Database(err)
+	}
+	s := &threadStart{h: h, conn: conn, target: target, cfg: cfg, msg: msg, known: known, session: known.Sessions,
+		ticket: atb.Issue{Identifier: known.Ticket, URL: known.TicketURL},
+		id:     &identity.Identity{Agent: name, Role: identity.Thread, Target: target, Thread: msg.Thread, Issue: known.Ticket}}
+	if s.cwd, err = threadCwd(home, target); err != nil {
+		return 0, err
+	}
+	if known.Ticket != "" && known.Sessions > 1 {
+		if s.notes, err = summaries(known.Ticket); err != nil {
+			return 0, err
+		}
+	}
+	if err := SettleAgent(h, name, pane); err != nil {
+		return 0, err
+	}
+	text, err := WithHeader(inboxSender, s.prompt())
+	if err != nil {
+		return 0, err
+	}
+	code, err := Deliver(h, name, text)
+	if err != nil || code != exit.Ok {
+		return code, err
+	}
+	if _, err := conn.Exec("UPDATE agents SET state = 'active' WHERE name = ?1 AND state = 'starting'", name); err != nil {
+		return 0, exit.Database(err)
+	}
+	return exit.Ok, nil
 }
 
 // ThreadEndArgs are the arguments of `thread end`.

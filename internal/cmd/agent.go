@@ -144,11 +144,17 @@ func StartAgent(h *herdr.Herdr, name, paneID string, model, effort *string) erro
 		return exit.Environmentf("agent %s did not start: herdr: %s: %s\npane %s:\n%s",
 			name, reply.Error.Code, reply.Error.Message, paneID, pane)
 	}
+	return SettleAgent(h, name, paneID)
+}
+
+// SettleAgent renames the pane after the started agent `name` and gets it
+// to its input box, as StartAgent does after the start; also what a retry
+// of an interrupted start runs.
+func SettleAgent(h *herdr.Herdr, name, paneID string) error {
 	if _, err := h.CallOK("pane", "rename", paneID, name); err != nil {
 		return err
 	}
-
-	err = reachInputBox(
+	err := reachInputBox(
 		func() (string, error) { return h.Screen(name) },
 		func() (string, error) {
 			agent, err := h.CallOK("agent", "get", name)

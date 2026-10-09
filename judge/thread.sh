@@ -20,8 +20,20 @@ case "$2" in
   query) printf '%s\n' '{"issue":{"comments":{"nodes":[{"body":"Session 1 ended\n\nSummary 0xSUM1","createdAt":"2026-10-09T02:00:00Z"}]}}}' ;;
 esac
 ATB
-printf '#!/bin/sh\necho "$*" >> /home/agent/fednet.log\necho m-posted\n' > /home/agent/fake-thread/fednet
-chmod +x /home/agent/fake-thread/atb /home/agent/fake-thread/fednet
+# The fake fednet fails while /home/agent/fednet-down exists.
+printf '#!/bin/sh\necho "$*" >> /home/agent/fednet.log\n[ -e /home/agent/fednet-down ] && exit 4\necho m-posted\n' > /home/agent/fake-thread/fednet
+# A herdr shim that kills the hook (its parent) at `pane rename` while
+# /home/agent/kill-at-rename exists: an inbox run interrupted after the
+# agent started and before its first message.
+cat > /home/agent/fake-thread/herdr <<'SHIM'
+#!/bin/bash
+args="$*"
+if [ -e /home/agent/kill-at-rename ] && [ "${args#*pane rename}" != "$args" ]; then
+  rm /home/agent/kill-at-rename; kill -9 $PPID; sleep 1
+fi
+exec /usr/local/bin/herdr "$@"
+SHIM
+chmod +x /home/agent/fake-thread/atb /home/agent/fake-thread/fednet /home/agent/fake-thread/herdr
 event() { # <msg_id> <thread> <text> [context]: prints the event file
   printf '{"msg_id":"%s","payload":{"type":"message","thread":"%s","text":"%s","user":"U0ABC","ts":"1700000001.000","context":"%s"}}\n' \
     "$1" "$2" "$3" "${4:-}" > "/home/agent/events/$1.json"
@@ -139,19 +151,46 @@ has "inbox: earlier summary and the message on screen" "$(screen "$A")" "Earlier
 check "inbox: thread row counts two sessions" "2 " "$(tledger "SELECT sessions FROM threads WHERE thread = '$K'")"
 settled "$A"
 
-# Linear unavailable: no agent, the thread is told, exit 0.
+# A run killed after the agent started (a thread whose agent ended, now
+# reopened): the retry finishes it, delivering the full first message.
+thra "$K" TH-5 -- thread end --summary-file /home/agent/summary.md >/dev/null 2>&1; rc=$?
+check "thread end: second session ended, exit 0" 0 "$rc"
+touch /home/agent/kill-at-rename
+inbox "$(event m3b "$K" 'killed run 0xMSG3B')" >/dev/null 2>&1; rc=$?
+check "inbox: the run was killed" no "$([ "$rc" = 0 ] && echo yes || echo no)"
+check "inbox: killed run left the row starting and the message reserved" "starting reserved " \
+  "$(tledger "SELECT state FROM agents WHERE name = '$A' AND state != 'ended'")$(tledger "SELECT state FROM inbox WHERE msg_id = 'm3b'")"
+check "inbox: killed run's agent is in herdr" "$A" "$(agent_field "$A" name)"
+out=$(inbox /home/agent/events/m3b.json 2>&1); rc=$?
+check "inbox: retry of the killed run, exit 0" 0 "$rc"
+[ "$rc" = 0 ] || printf '%s\n' "$out"
+has "inbox: retry says it finished the earlier start" "$out" "still starting from an earlier run"
+has "inbox: retry delivered the full first message" "$(screen "$A")" "Write to people in their language" "Earlier sessions" "0xSUM1" "## The message" "0xMSG3B"
+check "inbox: retry left the row active, the message delivered, three sessions" "active delivered 3 " \
+  "$(tledger "SELECT state FROM agents WHERE name = '$A' AND state != 'ended'")$(tledger "SELECT state FROM inbox WHERE msg_id = 'm3b'")$(tledger "SELECT sessions FROM threads WHERE thread = '$K'")"
+check "inbox: retry started no second agent" "1 " \
+  "$("${S[@]}" agent list | jq -r '[.result.agents[] | select(.name == "'"$A"'")] | length') "
+settled "$A"
+
+# Linear unavailable and the notice cannot be posted: exit 5, the message
+# kept; then the notice goes through: no agent, the thread told, exit 0.
 : > /home/agent/atb.log
-touch /home/agent/linear-down
+touch /home/agent/linear-down /home/agent/fednet-down
 out=$(inbox "$(event m4 C0999/1.1 'hello 0xMSG4')" 2>&1); rc=$?
+rm /home/agent/fednet-down
+check "inbox: Linear unavailable and the notice fails, exit 5" 5 "$rc"
+has "inbox: says the thread was not told" "$out" "the thread was not told"
+check "inbox: the message is kept reserved" "reserved " "$(tledger "SELECT state FROM inbox WHERE msg_id = 'm4'")"
+out=$(inbox /home/agent/events/m4.json 2>&1); rc=$?
 rm /home/agent/linear-down
-check "inbox: Linear unavailable, exit 0" 0 "$rc"
+check "inbox: Linear unavailable, exit 0 once the thread is told" 0 "$rc"
 has "inbox: says Linear is unavailable" "$out" "Linear is unavailable"
-check "inbox: Linear unavailable posts one line to the thread" \
-  "client post -socket /home/agent/fednet.sock -thread C0999/1.1 -- Linear is unavailable right now, so no agent was started for this thread; please try again later." \
-  "$(cat /home/agent/fednet.log)"
+check "inbox: Linear unavailable posts the line to the thread, once per attempt" \
+  "client post -socket /home/agent/fednet.sock -thread C0999/1.1 -- Linear is unavailable right now, so no agent was started for this thread; please try again later.|client post -socket /home/agent/fednet.sock -thread C0999/1.1 -- Linear is unavailable right now, so no agent was started for this thread; please try again later.|" \
+  "$(tr '\n' '|' < /home/agent/fednet.log)"
 check "inbox: Linear unavailable starts no agent" agent_not_found "$(agent_field thread-c0999-1-1 agent_status)"
-check "inbox: Linear unavailable leaves no live row and no session" "ended 0 " \
-  "$(tledger "SELECT state FROM agents WHERE name = 'thread-c0999-1-1'")$(tledger "SELECT sessions FROM threads WHERE thread = 'C0999/1.1'")"
+check "inbox: Linear unavailable leaves no live row and no session" "0 0 " \
+  "$(tledger "SELECT count(*) FROM agents WHERE name = 'thread-c0999-1-1' AND state != 'ended'")$(tledger "SELECT sessions FROM threads WHERE thread = 'C0999/1.1'")"
 check "inbox: Linear unavailable drops the message" "dropped " "$(tledger "SELECT state FROM inbox WHERE msg_id = 'm4'")"
 
 # A job started from a thread agent has that thread as its home thread.
