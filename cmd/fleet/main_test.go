@@ -142,14 +142,30 @@ func (w *world) send(reply, body string) (result, string) {
 
 func TestEverySubcommandHasHelp(t *testing.T) {
 	w := newWorld(t)
-	for _, name := range []string{"send", "spawn", "done", "status", "watch", "close", "worktree"} {
-		out := w.run("", []string{name, "--help"})
+	for _, name := range [][]string{{"send"}, {"spawn"}, {"done"}, {"status"}, {"watch"}, {"close"}, {"worktree"},
+		{"job", "start"}, {"job", "list"}} {
+		out := w.run("", append(name, "--help"))
 		if out.code != 0 {
 			t.Errorf("%s --help failed: %+v", name, out)
 		}
 		if !strings.Contains(out.stdout, "Exit") {
 			t.Errorf("%s --help does not state its exit codes", name)
 		}
+	}
+	for _, args := range [][]string{{"job", "--help"}, {"help", "job"}} {
+		out := w.run("", args)
+		if out.code != 0 || !strings.Contains(out.stdout, "start") || !strings.Contains(out.stdout, "list") {
+			t.Errorf("%v: %+v", args, out)
+		}
+	}
+	if out := w.run("", []string{"help", "job", "start"}); out.code != 0 || !strings.Contains(out.stdout, "Usage: fleet job start") {
+		t.Errorf("help job start: %+v", out)
+	}
+	if out := w.run("", []string{"job"}); out.code != 1 || !strings.Contains(out.stderr, "requires a subcommand") {
+		t.Errorf("job without a subcommand: %+v", out)
+	}
+	if out := w.run("", []string{"job", "frobnicate"}); out.code != 1 {
+		t.Errorf("job frobnicate: %+v", out)
 	}
 }
 
@@ -318,7 +334,7 @@ func TestStatusSkipsListEntriesThatAreNotAgents(t *testing.T) {
 	w.herdr("unused", `{"result":{"agents":[`+
 		`{"name":"x-lead","agent_status":"idle","state_change_seq":9007199254740993},`+
 		`42,{"name":"x-w1","agent_status":"blocked","state_change_seq":3.5},{"name":7}]}}`, false)
-	out := w.run("", []string{"status", "--repo", repo, "--json", "--job", "x"})
+	out := w.run("", []string{"status", "--target", target, "--json", "--job", "x"})
 	if out.code != 0 {
 		t.Fatalf("%+v", out)
 	}

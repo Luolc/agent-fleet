@@ -12,14 +12,14 @@ import (
 	"github.com/Luolc/agent-fleet/internal/db"
 )
 
-const repo = "acme/example-dataset"
+const target = "example-dataset"
 
 // statusWorld is a ledger with five live rows and one ended, and a herdr
 // that knows four of them.
 func statusWorld(t *testing.T) *world {
 	t.Helper()
 	w := newWorld(t)
-	path, err := db.PathUnder(filepath.Join(w.dir, "home", ".local", "state"), repo)
+	path, err := db.PathUnder(filepath.Join(w.dir, "home", ".local", "state"), target)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,12 +30,12 @@ func statusWorld(t *testing.T) *world {
 	defer conn.Close()
 	started := db.Now() - 600
 	rows := []struct{ name, role, job, parent, state string }{
-		{"orchestra", "orchestra", "", "", "active"},
-		{"x-lead", "lead", "x", "orchestra", "active"},
+		{"thread-1", "thread", "", "", "active"},
+		{"x-lead", "lead", "x", "thread-1", "active"},
 		{"x-w1", "worker", "x", "x-lead", "active"},
 		{"x-w2", "worker", "x", "x-lead", "active"},
-		{"y-lead", "lead", "y", "orchestra", "active"},
-		{"z-lead", "lead", "z", "orchestra", "ended"},
+		{"y-lead", "lead", "y", "thread-1", "active"},
+		{"z-lead", "lead", "z", "thread-1", "ended"},
 	}
 	for _, r := range rows {
 		if _, err := conn.Exec(
@@ -48,7 +48,7 @@ func statusWorld(t *testing.T) *world {
 	for _, a := range []struct {
 		name, status string
 		seq          int
-	}{{"orchestra", "idle", 1}, {"x-lead", "idle", 2}, {"x-w1", "blocked", 3}, {"y-lead", "working", 4}} {
+	}{{"thread-1", "idle", 1}, {"x-lead", "idle", 2}, {"x-w1", "blocked", 3}, {"y-lead", "working", 4}} {
 		agents = append(agents, fmt.Sprintf(
 			`{"agent":"claude","name":"%s","agent_status":"%s","state_change_seq":%d}`, a.name, a.status, a.seq))
 	}
@@ -58,7 +58,7 @@ func statusWorld(t *testing.T) *world {
 
 func TestStatusFlagsIdleDebtorsBlockedAndMissingAgents(t *testing.T) {
 	w := statusWorld(t)
-	out := w.run("", []string{"status", "--repo", repo, "--json"})
+	out := w.run("", []string{"status", "--target", target, "--json"})
 	if out.code != 0 {
 		t.Fatalf("%+v", out)
 	}
@@ -82,9 +82,9 @@ func TestStatusFlagsIdleDebtorsBlockedAndMissingAgents(t *testing.T) {
 		raw, _ := json.Marshal(l["flags"])
 		return string(raw)
 	}
-	// The idle orchestra owes no work; the ended row is not shown.
+	// The idle thread agent owes no work; the ended row is not shown.
 	for name, want := range map[string]string{
-		"orchestra": "[]", "x-lead": `["owes-work"]`, "x-w1": `["blocked"]`,
+		"thread-1": "[]", "x-lead": `["owes-work"]`, "x-w1": `["blocked"]`,
 		"x-w2": `["missing"]`, "y-lead": "[]", "z-lead": "<absent>",
 	} {
 		if got := flags(name); got != want {
@@ -102,7 +102,7 @@ func TestStatusFlagsIdleDebtorsBlockedAndMissingAgents(t *testing.T) {
 
 func TestStatusFiltersByJobAndPrintsATable(t *testing.T) {
 	w := statusWorld(t)
-	out := w.run("", []string{"status", "--job", "x"}, "FLEET_REPO="+repo)
+	out := w.run("", []string{"status", "--job", "x"}, "FLEET_TARGET="+target)
 	if out.code != 0 {
 		t.Fatalf("%+v", out)
 	}
@@ -123,14 +123,26 @@ func TestStatusFiltersByJobAndPrintsATable(t *testing.T) {
 	}
 }
 
-func TestStatusNeedsARepoAndAnExistingLedger(t *testing.T) {
+func TestStatusReadsTheDefaultTargetAndNeedsAnExistingLedger(t *testing.T) {
 	w := statusWorld(t)
+	// No FLEET_TARGET and no --target: the default target, whose ledger
+	// does not exist here.
 	out := w.run("", []string{"status"})
-	if out.code != 1 {
+	if out.code != 5 || !strings.Contains(out.stderr, "/fleet/default/fleet.db") {
 		t.Errorf("%+v", out)
 	}
-	out = w.run("", []string{"status", "--repo", "acme/no-such-dataset"})
+	out = w.run("", []string{"status", "--target", "no-such-target"})
 	if out.code != 5 || !strings.Contains(out.stderr, "no ledger at") {
 		t.Errorf("%+v", out)
+	}
+	for _, bad := range []string{"a/b", "..", "."} {
+		out = w.run("", []string{"status", "--target", bad})
+		if out.code != 1 || !strings.Contains(out.stderr, "directory name") {
+			t.Errorf("--target %q: %+v", bad, out)
+		}
+	}
+	out = w.run("", []string{"status", "--json"}, "FLEET_TARGET=")
+	if out.code != 5 || !strings.Contains(out.stderr, "/fleet/default/fleet.db") {
+		t.Errorf("empty FLEET_TARGET: %+v", out)
 	}
 }

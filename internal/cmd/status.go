@@ -16,6 +16,7 @@ import (
 	"github.com/Luolc/agent-fleet/internal/db"
 	"github.com/Luolc/agent-fleet/internal/exit"
 	"github.com/Luolc/agent-fleet/internal/herdr"
+	"github.com/Luolc/agent-fleet/internal/identity"
 )
 
 // StatusAbout and StatusLongAbout are the help texts of `status`.
@@ -29,8 +30,8 @@ const (
 		"  blocked    herdr reports it blocked by an interactive prompt\n" +
 		"  missing    in the ledger but gone from herdr\n" +
 		"  suspect    `fleet watch` currently counts it as stuck\n\n" +
-		"Exit: 0; 1 when no repo is given; 5 when herdr or the database fails, or the ledger does " +
-		"not exist."
+		"Exit: 0; 1 when the target is not a directory name; 5 when herdr or the database fails, " +
+		"or the ledger does not exist."
 )
 
 // StatusArgs are the arguments of `status`.
@@ -39,10 +40,9 @@ type StatusArgs struct {
 	Job *string
 	// JSON asks for machine-readable output: a JSON array, one object per agent.
 	JSON bool
-	// Repo is the dataset repo whose ledger to read (`owner/name` or `name`);
-	// the ledger is ~/.local/state/fleet/<name>/fleet.db (db.Path). Defaults
-	// to FLEET_REPO, which every agent has.
-	Repo *string
+	// Target, when set, replaces FLEET_TARGET: the ledger is
+	// ~/.local/state/fleet/<target>/fleet.db (db.Path).
+	Target *string
 }
 
 // Live is a ledger row that has not ended, with the columns `status` and
@@ -81,15 +81,19 @@ type line struct {
 	Flags           []string `json:"flags"`
 }
 
-// OpenLedger opens the existing ledger of `repo` (or FLEET_REPO). A missing
-// ledger is an error, not an empty one: it usually means a wrong repo name.
-func OpenLedger(repo *string) (*sql.DB, error) {
-	name := os.Getenv("FLEET_REPO")
-	if repo != nil {
-		name = *repo
+// OpenLedger opens the existing ledger of `target` (or FLEET_TARGET, or
+// the default). A missing ledger is an error, not an empty one: it usually
+// means a wrong target name.
+func OpenLedger(target *string) (*sql.DB, error) {
+	var name string
+	var err error
+	if target != nil {
+		name, err = identity.CheckTarget(*target)
+	} else {
+		name, err = identity.Target()
 	}
-	if name == "" {
-		return nil, exit.Refusedf("no dataset repo: pass --repo <owner/name> (FLEET_REPO is not set)")
+	if err != nil {
+		return nil, err
 	}
 	path, err := db.Path(name)
 	if err != nil {
@@ -97,7 +101,7 @@ func OpenLedger(repo *string) (*sql.DB, error) {
 	}
 	if _, err := os.Stat(path); err != nil {
 		return nil, exit.Environmentf(
-			"no ledger at %s; is the repo name right, and has the ledger been created?", path)
+			"no ledger at %s; is the target name right, and has the ledger been created?", path)
 	}
 	return db.OpenAt(path)
 }
@@ -173,7 +177,7 @@ func HerdrAgents(h *herdr.Herdr) (map[string]InHerdr, error) {
 
 // Status runs `status`.
 func Status(h *herdr.Herdr, args StatusArgs) (exit.Code, error) {
-	conn, err := OpenLedger(args.Repo)
+	conn, err := OpenLedger(args.Target)
 	if err != nil {
 		return 0, err
 	}

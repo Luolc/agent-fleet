@@ -62,15 +62,18 @@ start_fake() {
 }
 # as <agent> <role> <parent> <job> -- <arguments...>: the binary with the
 # caller's identity variables set, as its pane would have them. The work
-# order comes from ISSUE, empty by default.
+# order comes from ISSUE, empty by default. The target is TARGET, which is
+# not the repo's name: the ledger is per target, a job's repo is a job
+# attribute.
 as() {
   local agent=$1 role=$2 parent=$3 job=$4
   shift 5
-  env "${P}AGENT=$agent" "${P}ROLE=$role" "${P}PARENT=$parent" "${P}REPO=acme/$R" "${P}JOB=$job" \
+  env "${P}AGENT=$agent" "${P}ROLE=$role" "${P}PARENT=$parent" "${P}TARGET=$TARGET" "${P}JOB=$job" \
     "${P}ISSUE=${ISSUE:-}" "$T" --session judge "$@"
 }
 R=example-dataset
-DB=/home/agent/.local/state/$T/$R/$LEDGER
+TARGET=example-target
+DB=/home/agent/.local/state/$T/$TARGET/$LEDGER
 ledger() { sqlite3 "$DB" "$1" | tr '\n' ' '; }
 
 herdr --session judge server >/home/agent/server.log 2>&1 &

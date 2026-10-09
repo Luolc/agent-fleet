@@ -1,6 +1,6 @@
 # Sourced by inside.sh: `send` against the real herdr and a fake Claude,
 # every outcome of `herdr agent prompt` mapped to its exit code.
-sender() { env "${P}AGENT=judge-sender" "${P}ROLE=orchestra" "$T" --session judge "$@"; }
+sender() { env "${P}AGENT=judge-sender" "${P}ROLE=thread" "$T" --session judge "$@"; }
 
 echo "the quick brown fox 0xC0FFEE" | sender send fake; rc=$?
 check "send: exit 0 on agent_prompted" 0 "$rc"

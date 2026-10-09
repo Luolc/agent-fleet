@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/Luolc/agent-fleet/internal/db"
 	"github.com/Luolc/agent-fleet/internal/exit"
@@ -22,8 +21,8 @@ const (
 		"The job is FLEET_JOB. The worktree is ~/wt/<repo>/<job>, or ~/wt/<repo>/<job>-<name> " +
 		"with --name, on a new branch of the same name (no prefix) unless --branch is given. " +
 		"~/dev/<repo> runs `git fetch origin` and the branch starts at origin/HEAD, never at " +
-		"the local HEAD. The ledger records the worktree for the job, so `fleet close <job>` " +
-		"removes it.\n\n" +
+		"the local HEAD. The ledger of your target records the worktree for the job, so " +
+		"`fleet close <job>` removes it.\n\n" +
 		"When the path already exists and the ledger records it for this job, the path is " +
 		"printed and nothing changes, so every agent of a job gets the same worktree. A path " +
 		"that exists otherwise is refused. stdout carries only the path.\n\n" +
@@ -54,8 +53,8 @@ func worktreeChecks(args WorktreeArgs) (me *identity.Identity, checkout, path, b
 	if err := CheckName(me.Job); err != nil {
 		return nil, "", "", "", err
 	}
-	if args.Repo == "" || args.Repo == "." || args.Repo == ".." || strings.Contains(args.Repo, "/") {
-		return nil, "", "", "", exit.Refusedf("<repo> %q must be a directory name under ~/dev", args.Repo)
+	if err := CheckRepo(args.Repo); err != nil {
+		return nil, "", "", "", err
 	}
 	leaf := me.Job
 	if args.Name != nil {
@@ -98,7 +97,7 @@ func Worktree(args WorktreeArgs) (exit.Code, error) {
 	if err != nil {
 		return 0, err
 	}
-	conn, err := db.Open(me.Repo)
+	conn, err := db.Open(me.Target)
 	if err != nil {
 		return 0, err
 	}
