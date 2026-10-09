@@ -52,3 +52,12 @@ against a fresh Go build. Third-party actions are pinned by commit SHA.
 Use only made-up values: `example.test` domains, documentation IP ranges
 (192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24, 2001:db8::/32). Tests use
 `t.TempDir()` and never read the real home directory or the network.
+
+## Fleet
+
+For leads and workers that `fleet` starts in this repo.
+
+- Open your own worktree with `fleet worktree agent-fleet --branch <type>/<short-desc>`, or work in the one your lead names.
+- Worker report (`fleet done --report-file`): what was done, the PR and its merge commit, the judge line (`judge: N ok, M failed`) and the checks run, why done or abandoned, and follow-ups left.
+- Done means the PR is merged with the required check green. Abandoned means you stop without a merge and say why. The lead reads the reports and decides what comes next.
+- This repo has no natural key for a job. Before starting one, look at `fleet job list` and the open issues, and ask in the thread when unsure.
