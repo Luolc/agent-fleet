@@ -378,6 +378,8 @@ func CheckResources(loadavg string, cpus int, meminfo string) error {
 	if err != nil {
 		return exit.Environmentf("cannot parse /proc/loadavg")
 	}
+	// The first `MemAvailable:` line decides, as the source's find_map: a
+	// first line that does not parse is the error, not a reason to read on.
 	var availableKiB uint64
 	found := false
 	for _, line := range lines(meminfo) {
@@ -385,15 +387,11 @@ func CheckResources(loadavg string, cpus int, meminfo string) error {
 		if !ok {
 			continue
 		}
-		values := strings.Fields(rest)
-		if len(values) == 0 {
-			continue
+		if values := strings.Fields(rest); len(values) > 0 {
+			if value, err := strconv.ParseUint(values[0], 10, 64); err == nil {
+				availableKiB, found = value, true
+			}
 		}
-		value, err := strconv.ParseUint(values[0], 10, 64)
-		if err != nil {
-			continue
-		}
-		availableKiB, found = value, true
 		break
 	}
 	if !found {
@@ -508,7 +506,7 @@ func WorkspacesLabelled(h *herdr.Herdr, label string) ([]string, error) {
 		if !ok {
 			continue
 		}
-		if got, _ := w["label"].(string); got != label {
+		if got, ok := w["label"].(string); !ok || got != label {
 			continue
 		}
 		if id, ok := w["workspace_id"].(string); ok {
@@ -736,6 +734,11 @@ func spawnCreate(h *herdr.Herdr, conn *sql.DB, c *checked, args SpawnArgs, creat
 			return 0, err
 		}
 		*created = append(*created, fmt.Sprintf("worktree %s on branch %s", c.worktree, *p.branch))
+		// BUG(port): CreateWorkspace renames the first tab after the
+		// workspace exists; when the rename fails (reproduce: `herdr tab
+		// rename` refused) the workspace is not in `created`, so the
+		// report below omits it although `fleet close <job> --force` must
+		// remove it.
 		if place, err = CreateWorkspace(h, p.job, p.tabLabel, c.worktree, id); err != nil {
 			return 0, err
 		}
@@ -758,6 +761,10 @@ func spawnCreate(h *herdr.Herdr, conn *sql.DB, c *checked, args SpawnArgs, creat
 	if err != nil {
 		return 0, err
 	}
+	// BUG(port): an unclear delivery (exit 2: herdr timed out or reported
+	// agent_prompt_stalled; reproduce with a fake agent that never enters
+	// working) still makes the row `active`, although the task may not
+	// have arrived; only agent_not_found leaves it `starting`.
 	if code != exit.NotFound {
 		if _, err := conn.Exec("UPDATE agents SET state = 'active' WHERE name = ?1 AND state = 'starting'",
 			p.agent); err != nil {
