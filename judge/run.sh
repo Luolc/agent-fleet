@@ -11,7 +11,8 @@
 #                     its messages are expected to use it (default: fleet)
 #   JUDGE_ENV_PREFIX  prefix of the identity variables (default: FLEET_,
 #                     that is, JUDGE_NAME upper-cased plus an underscore)
-#   JUDGE_LEDGER      file name of the ledger under ~/scratch/<repo>/
+#   JUDGE_LEDGER      file name of the ledger under
+#                     ~/.local/state/<JUDGE_NAME>/<repo>/
 #                     (default: <JUDGE_NAME>.db)
 #   JUDGE_IMAGE       use an image built elsewhere (CI) instead of building
 #

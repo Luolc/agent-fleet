@@ -19,7 +19,7 @@ const repo = "acme/example-dataset"
 func statusWorld(t *testing.T) *world {
 	t.Helper()
 	w := newWorld(t)
-	path, err := db.PathUnder(filepath.Join(w.dir, "home"), repo)
+	path, err := db.PathUnder(filepath.Join(w.dir, "home", ".local", "state"), repo)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,5 +1,5 @@
-// Package db is the dispatch ledger: `~/scratch/<repo>/fleet.db`
-// (docs/design.md). The binary is its only reader and writer.
+// Package db is the dispatch ledger:
+// `$XDG_STATE_HOME/fleet/<repo>/fleet.db` (docs/design.md). The binary is its only reader and writer.
 package db
 
 import (
@@ -55,28 +55,33 @@ CREATE TABLE dataset (
 );
 `
 
-// Path is where the database of a dataset repo lives:
-// `~/scratch/<name>/fleet.db`. `repo` may be `owner/name` or just `name`;
-// only the name part is used.
+// Path is where the ledger of a repo lives:
+// `$XDG_STATE_HOME/fleet/<name>/fleet.db`, with `~/.local/state` when
+// XDG_STATE_HOME is unset or empty. `repo` may be `owner/name` or just
+// `name`; only the name part is used.
 func Path(repo string) (string, error) {
-	home, ok := os.LookupEnv("HOME")
-	if !ok {
-		return "", exit.Environmentf("HOME is not set, cannot locate ~/scratch")
+	state := os.Getenv("XDG_STATE_HOME")
+	if state == "" {
+		home := os.Getenv("HOME")
+		if home == "" {
+			return "", exit.Environmentf("neither XDG_STATE_HOME nor HOME is set, cannot locate the ledger")
+		}
+		state = filepath.Join(home, ".local", "state")
 	}
-	return PathUnder(home, repo)
+	return PathUnder(state, repo)
 }
 
-// PathUnder is Path with the home directory given, so no environment is
+// PathUnder is Path with the state directory given, so no environment is
 // read.
-func PathUnder(home, repo string) (string, error) {
+func PathUnder(state, repo string) (string, error) {
 	name := repo
 	if i := strings.LastIndex(repo, "/"); i >= 0 {
 		name = repo[i+1:]
 	}
 	if name == "" {
-		return "", exit.Refusedf("the dataset repo name is empty")
+		return "", exit.Refusedf("the repo name is empty")
 	}
-	return filepath.Join(home, "scratch", name, "fleet.db"), nil
+	return filepath.Join(state, "fleet", name, "fleet.db"), nil
 }
 
 // Open opens (creating if needed) the database for `repo`: WAL mode, a 5 s

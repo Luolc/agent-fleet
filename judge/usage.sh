@@ -36,8 +36,11 @@ check "watch: exit 5 without a ledger" 5 "$rc"
 out=$(as orchestra orchestra "" "" -- done 2>&1); rc=$?
 check "done: exit 1 without a parent" 1 "$rc"
 has "done: names the empty variable" "$out" "${P}PARENT"
-as item-1-a worker item-1-lead item-1 -- done --result-file /home/agent/missing.md >/dev/null 2>&1; rc=$?
-check "done: exit 1 when the result file cannot be read" 1 "$rc"
+as item-1-a worker item-1-lead item-1 -- done --report-file /home/agent/missing.md >/dev/null 2>&1; rc=$?
+check "done: exit 1 when the report file cannot be read" 1 "$rc"
+out=$(ISSUE=EX-7 as item-1-a worker item-1-lead item-1 -- done 2>&1); rc=$?
+check "done: exit 1 with a work order and no report file" 1 "$rc"
+has "done: says the report file is required" "$out" "--report-file"
 
 out=$(as item-1-lead lead orchestra item-1 -- close item-1 2>&1); rc=$?
 check "close: exit 1 from a lead" 1 "$rc"
