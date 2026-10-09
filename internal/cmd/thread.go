@@ -495,22 +495,15 @@ func (s *threadStart) prompt() string {
 	return text + "\n## The message\n\n" + s.msg.body()
 }
 
-// place is the thread's tab in the `threads` workspace, made with the
-// workspace when it does not exist.
+// place is the thread's new tab in the `threads` workspace, after the
+// workspace and its `shell` tab are made or restored.
 func (s *threadStart) place() (Place, error) {
-	workspaces, err := WorkspacesLabelled(s.h, threadsWorkspace)
+	workspace, err := threadsWorkspaceID(s.h, s.id.Scope, s.home)
 	if err != nil {
 		return Place{}, err
 	}
 	slug := ThreadSlug(s.msg.Thread)
-	if len(workspaces) == 0 {
-		place, err := CreateWorkspace(s.h, threadsWorkspace, slug, s.cwd, s.id)
-		if place.WorkspaceID != "" {
-			s.created = append(s.created, fmt.Sprintf("workspace %s (%s)", threadsWorkspace, place.WorkspaceID))
-		}
-		return place, err
-	}
-	place, err := CreateTab(s.h, workspaces[0], slug, s.cwd, s.id)
+	place, err := CreateTab(s.h, workspace, slug, s.cwd, s.id)
 	if err == nil {
 		s.created = append(s.created, fmt.Sprintf("tab %s (%s)", slug, place.TabID))
 	}

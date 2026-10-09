@@ -201,6 +201,9 @@ func Inbox(args InboxArgs) (exit.Code, error) {
 		fmt.Fprintf(os.Stdout, "message %s was already %s\n", e.MsgID, state)
 		return exit.Ok, nil
 	}
+	if err := ensureSession(h, scope); err != nil {
+		return 0, err
+	}
 	msg := inboundMessage{Thread: e.Payload.Thread, Text: e.Payload.Text, User: e.Payload.User, TS: e.Payload.TS,
 		Context: e.Payload.Context, Mapping: mapping}
 	// A person's message in the thread answers what was pending there.

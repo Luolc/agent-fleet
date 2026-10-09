@@ -51,7 +51,7 @@ event() { # <msg_id> <thread> <text> [context] [channel fields]: prints the even
     "$1" "$2" "$3" "${4:-}" "${fields:+,$fields}" > "/home/agent/events/$1.json"
   echo "/home/agent/events/$1.json"
 }
-inbox() { PATH=/home/agent/fake-thread:$PATH "$T" inbox "$@"; }
+inbox() { PATH=/home/agent/fake-thread:$PATH XDG_RUNTIME_DIR=/home/agent/run "$T" inbox "$@"; }
 # A thread agent of the scope main, as its pane would have it.
 thra() { # <thread> <issue> -- <arguments...>
   local thread=$1 issue=$2
@@ -143,7 +143,7 @@ check "thread end: the comment is the session's summary" "Session 1 ended||Start
   "$(tr '\n' '|' < /home/agent/comment-TH-5.md)"
 check "thread end: row ended" "ended " "$(tledger "SELECT state FROM agents WHERE name = '$A'")"
 check "thread end: tab closed last, the agent is gone" agent_not_found "$(agent_field "$A" agent_status)"
-# herdr closes a workspace with its last tab; the next start makes it again.
+# The workspace stays: its `shell` tab runs no agent.
 
 # A reply after the session ended reopens the thread: ticket claimed
 # again, a `Session 2 started` comment, the earlier summary in the prompt,
@@ -377,3 +377,48 @@ check "job end --force: the job's directory removed, the checkout kept" "no yes"
   "$([ -e /home/agent/x-repo/example-init/wire-x ] && echo yes || echo no) $([ -d /home/agent/x-repo/example-init ] && echo yes || echo no)"
 thra "$K" TH-5 -- job end item-9 --force >/dev/null 2>&1; rc=$?
 check "job end --force of the repo job: exit 0" 0 "$rc"
+
+# Sessions on demand. The container has no systemd: a fake systemctl starts
+# the server the unit would (`herdr --session fleet-%i server`), detached
+# from the hook's process group as systemd would run it.
+cat > /home/agent/fake-thread/systemctl <<'SYSTEMCTL'
+#!/bin/sh
+echo "$*" >> /home/agent/systemctl.log
+unit=${3%.service}
+setsid herdr --session "fleet-${unit#fleet-scope@}" server >/dev/null 2>&1 </dev/null &
+SYSTEMCTL
+chmod +x /home/agent/fake-thread/systemctl
+L=(herdr --session fleet-lazy)
+lazy_tabs() { "${L[@]}" tab list | jq -r '[.result.tabs[].label] | join(" ")'; }
+check "the scope lazy has no session yet" false "$("${L[@]}" status server --json | jq .running)"
+out=$(PATH=/home/agent/fake-thread:$PATH "$T" inbox "$(event m19 C0LZ/0.0 'lazy' '' '"channel_name":"repo-'"$R"'","scope":"lazy"')" 2>&1); rc=$?
+check "inbox: a session to start without XDG_RUNTIME_DIR, exit 5" 5 "$rc"
+has "inbox: names both settings" "$out" "Environment=XDG_RUNTIME_DIR=/run/user/<uid>" "-hook-env XDG_RUNTIME_DIR"
+check "inbox: systemctl not called" no "$([ -e /home/agent/systemctl.log ] && echo yes || echo no)"
+out=$(inbox "$(event m20 C0LZ/1.1 'lazy 0xMSG20' '' '"channel_name":"repo-'"$R"'","scope":"lazy"')" 2>&1); rc=$?
+check "inbox: a scope without a session, exit 0" 0 "$rc"
+[ "$rc" = 0 ] || printf '%s\n' "$out"
+has "inbox: says it started the session" "$out" "started the herdr session of scope lazy (fleet-scope@lazy.service)"
+check "inbox: the session started through the user unit" "--user start fleet-scope@lazy.service|" "$(tr '\n' '|' < /home/agent/systemctl.log)"
+check "inbox: the session outlives the hook" true "$("${L[@]}" status server --json | jq .running)"
+check "inbox: the threads workspace has the shell tab, then the thread's" "shell c0lz-1-1" "$(lazy_tabs)"
+shell_pane=$("${L[@]}" pane list | jq -r '.result.panes[] | select(.label == "lazy-shell") | .pane_id')
+check "inbox: the shell pane is labelled <scope>-shell and runs no agent" "lazy-shell null" \
+  "$("${L[@]}" pane get "$shell_pane" | jq -r '.result.pane.label + " " + (.result.pane.agent | tostring)')"
+check "inbox: the thread agent runs in the new session" thread-c0lz-1-1 "$("${L[@]}" agent get thread-c0lz-1-1 | jq -r .result.agent.name)"
+"${L[@]}" agent wait thread-c0lz-1-1 --until idle --until done --timeout 20000 >/dev/null
+# The shell tab closed by hand comes back at the next start; so does the
+# whole workspace.
+"${L[@]}" tab close "$("${L[@]}" pane get "$shell_pane" | jq -r .result.pane.tab_id)" >/dev/null
+check "the shell tab is closed by hand" "c0lz-1-1" "$(lazy_tabs)"
+out=$(inbox "$(event m21 C0LZ/2.2 'lazy 0xMSG21' '' '"channel_name":"repo-'"$R"'","scope":"lazy"')" 2>&1); rc=$?
+check "inbox: next start with the shell tab gone, exit 0" 0 "$rc"
+check "inbox: the shell tab restored" "c0lz-1-1 shell c0lz-2-2" "$(lazy_tabs)"
+check "inbox: the session was not started again" 1 "$(wc -l < /home/agent/systemctl.log)"
+"${L[@]}" agent wait thread-c0lz-2-2 --until idle --until done --timeout 20000 >/dev/null
+"${L[@]}" workspace close "$("${L[@]}" workspace list | jq -r '.result.workspaces[] | select(.label == "threads") | .workspace_id')" >/dev/null
+check "the threads workspace is closed by hand" 0 "$("${L[@]}" workspace list | jq '.result.workspaces | length')"
+out=$(inbox "$(event m22 C0LZ/3.3 'lazy 0xMSG22' '' '"channel_name":"repo-'"$R"'","scope":"lazy"')" 2>&1); rc=$?
+check "inbox: next start with the workspace gone, exit 0" 0 "$rc"
+check "inbox: the workspace and its shell tab restored" "shell c0lz-3-3" "$(lazy_tabs)"
+"${L[@]}" server stop >/dev/null

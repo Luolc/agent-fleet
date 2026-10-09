@@ -9,12 +9,12 @@ Start the client with the hook and a timeout long enough for a thread agent to s
 ```
 fednet client -hub <URL> -db <PATH> -credential <PATH> -socket <SOCKET> \
     -hook-timeout 5m \
-    -hook-env XDG_STATE_HOME -hook-env XDG_CONFIG_HOME \
+    -hook-env XDG_STATE_HOME -hook-env XDG_CONFIG_HOME -hook-env XDG_RUNTIME_DIR \
     -hook-env LINEAR_API_KEY_CMD -hook-env ATB_HOME \
     fleet inbox
 ```
 
-The hook runs with only `PATH`, `HOME` and the variables named by `-hook-env`. `fleet` and `atb` must be on that `PATH`; the `LINEAR_API_KEY_CMD` (or `LINEAR_API_KEY`) that atb needs reaches it only through `-hook-env`. Leave out the `XDG_*` ones when the client user does not set them.
+The hook runs with only `PATH`, `HOME` and the variables named by `-hook-env`. `fleet` and `atb` must be on that `PATH`; the `LINEAR_API_KEY_CMD` (or `LINEAR_API_KEY`) that atb needs reaches it only through `-hook-env`. Leave out `XDG_STATE_HOME` and `XDG_CONFIG_HOME` when the client user does not set them; `XDG_RUNTIME_DIR` is required (see machine setup).
 
 ## Scopes and channels
 
@@ -41,7 +41,25 @@ What the machine needs before the hook can start agents; fleet itself creates no
 
 - The checkouts in the table above: each repo whose channel points at this machine cloned to `~/dev/<R>`, and the initiatives' repos (including `x-repo-general`) cloned to `~/x-repo/<I>/`. When a checkout is missing, the hook posts one line to the thread saying so, starts nothing and exits 0. A cross-repo job's lead runs in `~/x-repo/<I>/<job>/`, which fleet makes and removes; the repos' `.gitignore` should exclude these job directories.
 - The scope's settings file, as above.
-- The scope's herdr session running (`herdr --session fleet-main server` for `main`). The hook does not start it yet.
+- The systemd user unit template `~/.config/systemd/user/fleet-scope@.service`, which runs a scope's herdr session, and linger for the user the client runs as (`loginctl enable-linger <user>`), so the user's systemd runs without a login. When the session `fleet-<scope>` is not running, the hook runs `systemctl --user start fleet-scope@<scope>` and waits up to 20 s for it to answer. The server has to belong to systemd rather than to the hook, because the client kills the hook's whole process group when the hook exits:
+
+  ```ini
+  [Unit]
+  Description=fleet scope %i (herdr session fleet-%i)
+
+  [Service]
+  ExecStart=herdr --session fleet-%i server
+  Restart=on-failure
+
+  [Install]
+  WantedBy=default.target
+  ```
+
+- `XDG_RUNTIME_DIR` passed to the hook (`-hook-env XDG_RUNTIME_DIR`, above): without it `systemctl --user` cannot reach the user's systemd. A client run as a system service does not have it, because only a login session sets it, so its unit sets it: `Environment=XDG_RUNTIME_DIR=/run/user/<uid>`.
+
+Checked by hand on 2026-10-09 on a development machine where the client runs as a system service under the agent user, with linger on. In an environment like the hook's (only `PATH`, `HOME` and `XDG_RUNTIME_DIR`), `systemctl --user is-system-running` printed `running` (exit 0); without `XDG_RUNTIME_DIR` it failed with `Failed to connect to bus: No medium found` (exit 1). A transient unit started from such an environment (`systemd-run --user`) stayed active after its starter's process group was killed. Not covered: a run from inside the client's own service (it needs root), and the unit template itself, which was not installed at the time.
+
+The judge has no systemd. Its fake `systemctl` starts the same server detached, so it covers what fleet does around the start, not the unit.
 
 ## What to expect
 
