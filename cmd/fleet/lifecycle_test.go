@@ -8,6 +8,7 @@ package main
 import (
 	"database/sql"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -378,7 +379,26 @@ func TestJobEndForceEndsTheJobAndRemovesTheCrossRepoDirectory(t *testing.T) {
 	if !dirExists(crossRepo) {
 		t.Error("the directory was removed while in use")
 	}
+	// A git checkout inside it with uncommitted changes blocks the removal
+	// too, and the job stays open until it is clean.
 	w.closeHerdr("")
+	nested := dir(w, filepath.Join("home", "x-repo", "general", "item-7", "clone"))
+	if out, err := exec.Command("git", "init", "-q", nested).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v %s", err, out)
+	}
+	if err := os.WriteFile(filepath.Join(nested, "draft.md"), []byte("unsaved\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out = w.asThread("job", "end", "item-7", "--force")
+	if out.code != 5 || !strings.Contains(out.stderr, "uncommitted changes in "+nested) {
+		t.Errorf("dirty checkout: %+v", out)
+	}
+	if !fileExists(filepath.Join(nested, "draft.md")) || jobState(w, "item-7") != "open" {
+		t.Errorf("dirty checkout: draft kept %v, job %s", fileExists(filepath.Join(nested, "draft.md")), jobState(w, "item-7"))
+	}
+	if err := os.Remove(filepath.Join(nested, "draft.md")); err != nil {
+		t.Fatal(err)
+	}
 	out = w.asThread("job", "end", "item-7", "--force")
 	if out.code != 0 || !strings.Contains(out.stdout, "removed directory "+crossRepo) || !strings.Contains(out.stdout, "1 rows ended") {
 		t.Errorf("%+v", out)
