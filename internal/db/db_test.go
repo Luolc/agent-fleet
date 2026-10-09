@@ -183,6 +183,36 @@ func TestAVersion4LedgerGainsTheJobsTableAndRenamesWorktreeToCwd(t *testing.T) {
 	}
 }
 
+func TestAParentIssueHasAtMostOneLiveLead(t *testing.T) {
+	conn, err := OpenAt(filepath.Join(t.TempDir(), "fleet.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	insert := func(name, role, parent, state string) error {
+		_, err := conn.Exec("INSERT INTO agents (name, role, parent_issue, state, started_at) VALUES (?1, ?2, ?3, ?4, 1)",
+			name, role, parent, state)
+		return err
+	}
+	if err := insert("a-lead", "lead", "EX-1", "active"); err != nil {
+		t.Fatal(err)
+	}
+	if err := insert("b-lead", "lead", "EX-1", "starting"); err == nil {
+		t.Error("a second live lead on EX-1 was accepted")
+	}
+	for _, ok := range []func() error{
+		func() error { return insert("c-lead", "lead", "EX-2", "active") },
+		func() error { return insert("a-w1", "worker", "EX-1", "active") },
+		func() error { return insert("d-lead", "lead", "EX-1", "ended") },
+		func() error { return insert("e-lead", "lead", "", "active") },
+		func() error { return insert("f-lead", "lead", "", "active") },
+	} {
+		if err := ok(); err != nil {
+			t.Error(err)
+		}
+	}
+}
+
 func TestAnOpenJobsNameAndKeyAreUnique(t *testing.T) {
 	conn, err := OpenAt(filepath.Join(t.TempDir(), "fleet.db"))
 	if err != nil {

@@ -35,13 +35,15 @@ const (
 		"resource_check, the 1-minute load average is below the CPU count and available " +
 		"memory is above 2 GiB; last, for a cross-repo job, the parent's team and project are " +
 		"read from Linear.\n\n" +
-		"With Linear on, the work order is created next, before anything else: `atb linear " +
-		"create` under the job's parent issue, titled with the task's first non-empty line " +
-		"without leading `#` (at most 80 characters) and described by the task file, then " +
-		"`atb linear claim` in the worker's name. The worker gets FLEET_ISSUE and its task " +
-		"starts with a line naming the work order's URL. If an atb step fails, nothing else is " +
+		"Then the worker's row is reserved as `starting`, in one transaction with the name and " +
+		"cap checks, so two spawns cannot both pass them. With Linear on, the work order is " +
+		"created next, before anything else: `atb linear create` under the job's parent issue, " +
+		"titled with the task's first non-empty line without leading `#` (at most 80 " +
+		"characters) and described by the task file, then `atb linear claim` in the worker's " +
+		"name; the row gets the work order. The worker gets FLEET_ISSUE and its task starts " +
+		"with a line naming the work order's URL. If an atb step fails, nothing else is " +
 		"created; an issue created but not claimed is listed.\n\n" +
-		"Then the worker's row is written as `starting`, a tab is made in the job's workspace " +
+		"Then a tab is made in the job's workspace " +
 		"with the FLEET_* variables set, and Claude Code (the only supported agent) is started " +
 		"with `herdr agent start --kind claude` and fixed arguments (permission prompts " +
 		"skipped, AskUserQuestion disallowed, Remote Control off, plus --model and --effort " +
@@ -155,16 +157,8 @@ func (c *spawnChecked) ledgerAndHerdr(h *herdr.Herdr, conn *sql.DB) error {
 			return exit.Refusedf("the task file's first non-empty line gives no title for the work order")
 		}
 	}
-	if err := liveNameTaken(conn, c.id.Agent); err != nil {
+	if err := c.dedup(conn); err != nil {
 		return err
-	}
-	var live int64
-	if err := conn.QueryRow("SELECT count(*) FROM agents WHERE job = ?1 AND state != 'ended'", c.me.Job).Scan(&live); err != nil {
-		return exit.Database(err)
-	}
-	if limit := int64(c.cfg.MaxAgentsPerJob); live >= limit {
-		return exit.Refusedf("job %s already has %d live agents; the cap is %d including the lead",
-			c.me.Job, live, limit)
 	}
 	if err := herdrHasAgent(h, c.id.Agent); err != nil {
 		return err
@@ -183,6 +177,24 @@ func (c *spawnChecked) ledgerAndHerdr(h *herdr.Herdr, conn *sql.DB) error {
 	return c.linear.resolve()
 }
 
+// dedup is the ledger checks on the worker: its name is free and the job
+// is under its cap. Run once before herdr is asked, and again inside the
+// reservation.
+func (c *spawnChecked) dedup(conn querier) error {
+	if err := liveNameTaken(conn, c.id.Agent); err != nil {
+		return err
+	}
+	var live int64
+	if err := conn.QueryRow("SELECT count(*) FROM agents WHERE job = ?1 AND state != 'ended'", c.me.Job).Scan(&live); err != nil {
+		return exit.Database(err)
+	}
+	if limit := int64(c.cfg.MaxAgentsPerJob); live >= limit {
+		return exit.Refusedf("job %s already has %d live agents; the cap is %d including the lead",
+			c.me.Job, live, limit)
+	}
+	return nil
+}
+
 // Spawn runs `spawn`.
 func Spawn(h *herdr.Herdr, args SpawnArgs) (exit.Code, error) {
 	c, conn, err := spawnChecks(h, args)
@@ -190,18 +202,24 @@ func Spawn(h *herdr.Herdr, args SpawnArgs) (exit.Code, error) {
 		return 0, err
 	}
 	defer conn.Close()
-	var created []string
 	hint := fmt.Sprintf("the cleanup is the lead's call; `fleet close %s --force` ends every row of the job", c.me.Job)
+	// The worker's row is reserved in one transaction with the checks, so
+	// two spawns of one name, or past the cap, cannot both pass.
+	if err := reserve(conn, c.dedup, func(q querier) error {
+		return insertStarting(q, c.id, c.cwd, c.task, c.job.ParentIssue)
+	}); err != nil {
+		return 0, err
+	}
+	created := []string{fmt.Sprintf("ledger row %s (state starting)", c.id.Agent)}
 	issue, err := workOrder(c.linear, c.job.ParentIssue, c.title, c.task, c.id.Agent, c.me.Agent,
 		scopeOf(c.job.Repo, c.me.Job), &created)
 	if err != nil {
-		return startFailed(c.id.Agent, err, 0, created, "")
+		return startFailed(c.id.Agent, err, 0, created, hint)
 	}
 	c.id.Issue = issue.Identifier
-	if err := insertStarting(conn, c.id, c.cwd, c.task, c.job.ParentIssue); err != nil {
-		return startFailed(c.id.Agent, err, 0, created, "")
+	if err := setIssue(conn, c.id.Agent, issue.Identifier, c.job.ParentIssue); err != nil {
+		return startFailed(c.id.Agent, err, 0, created, hint)
 	}
-	created = append(created, fmt.Sprintf("ledger row %s (state starting)", c.id.Agent))
 	place, err := CreateTab(h, c.workspace, args.Name, c.cwd, c.id)
 	if err != nil {
 		return startFailed(c.id.Agent, err, 0, created, hint)

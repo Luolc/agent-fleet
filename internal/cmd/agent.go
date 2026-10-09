@@ -5,6 +5,7 @@
 package cmd
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -511,7 +512,7 @@ func herdrHasAgent(h *herdr.Herdr, name string) error {
 	return nil
 }
 
-func liveNameTaken(conn *sql.DB, name string) error {
+func liveNameTaken(conn querier, name string) error {
 	var one int
 	err := conn.QueryRow("SELECT 1 FROM agents WHERE name = ?1 AND state != 'ended'", name).Scan(&one)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -631,12 +632,50 @@ func workOrder(l *linear, parent, title, task, agent, source, scope string, crea
 	return issue, nil
 }
 
+// querier is what the checks and the reservation run on: the ledger, or
+// the immediate transaction that reserves the new rows.
+type querier interface {
+	QueryRow(query string, args ...any) *sql.Row
+	Exec(query string, args ...any) (sql.Result, error)
+}
+
+// reserve runs `checks` and then `inserts` in one immediate transaction,
+// so two starts cannot both pass the checks: the second waits for the
+// first to commit and then sees its rows. The unique indexes of the
+// ledger are the guarantee behind it.
+func reserve(conn *sql.DB, checks func(q querier) error, inserts func(q querier) error) error {
+	tx, err := conn.BeginTx(context.Background(), nil)
+	if err != nil {
+		return exit.Database(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := checks(tx); err != nil {
+		return err
+	}
+	if err := inserts(tx); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return exit.Database(err)
+	}
+	return nil
+}
+
 // insertStarting writes the new agent's row as `starting`.
-func insertStarting(conn *sql.DB, id *identity.Identity, cwd, task, parentIssue string) error {
+func insertStarting(conn querier, id *identity.Identity, cwd, task, parentIssue string) error {
 	if _, err := conn.Exec(
 		"INSERT INTO agents (name, role, job, cwd, parent, report_to, task, state, started_at, issue, parent_issue) "+
 			"VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?6, 'starting', ?7, ?8, ?9)",
 		id.Agent, id.Role.String(), id.Job, cwd, id.Parent, task, db.Now(), id.Issue, parentIssue); err != nil {
+		return exit.Database(err)
+	}
+	return nil
+}
+
+// setIssue records the agent's work order on its reserved row.
+func setIssue(conn querier, agent, issue, parentIssue string) error {
+	if _, err := conn.Exec("UPDATE agents SET issue = ?1, parent_issue = ?2 WHERE name = ?3 AND state != 'ended'",
+		issue, parentIssue, agent); err != nil {
 		return exit.Database(err)
 	}
 	return nil

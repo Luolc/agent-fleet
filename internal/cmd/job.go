@@ -49,19 +49,21 @@ const (
 		"for a cross-repo job, ~/cross-repo/<job>/ does not exist; with resource_check, the " +
 		"1-minute load average is below the CPU count and available memory is above 2 GiB; " +
 		"last, for a cross-repo job, the parent's team and project are read from Linear.\n\n" +
-		"With Linear on, in this order and before anything else: the parent is created " +
-		"(--new-parent); the parent is claimed in the lead's name (`atb linear claim`, so " +
-		"Linear holds the same lock as the ledger); the lead's work order is created under " +
-		"the parent, titled with the task's first non-empty line without leading `#` (at " +
-		"most 80 characters) and described by the task file, and claimed in the lead's name. " +
-		"If an atb step fails, nothing else is created; what was created is listed.\n\n" +
-		"Then the job's row (open) and the lead's row (`starting`) are written, the cross-repo " +
-		"directory is made, the workspace is created with the FLEET_* variables set " +
-		"(FLEET_TARGET, FLEET_JOB, FLEET_ISSUE), Claude Code is started as `fleet spawn` " +
-		"starts a worker, the task is delivered with the work order's URL, and the lead's row " +
-		"becomes active.\n\n" +
-		"There is no rollback and no retry. When a step fails after something was created, " +
-		"the output lists what exists and the cleanup command `fleet close <job> --force`.\n\n" +
+		"Then the job is reserved: the job's row (open) and the lead's row (`starting`) are " +
+		"written in one transaction with the dedup checks, so two starts on the same name, " +
+		"key or parent cannot both pass. With Linear on, next and before anything else: the " +
+		"parent is created (--new-parent); the parent is claimed in the lead's name (`atb " +
+		"linear claim`, so Linear holds the same lock as the ledger); the lead's work order is " +
+		"created under the parent, titled with the task's first non-empty line without leading " +
+		"`#` (at most 80 characters) and described by the task file, and claimed in the lead's " +
+		"name; the lead's row gets the work order. If an atb step fails, nothing else is " +
+		"created; what was created is listed, with the cleanup command.\n\n" +
+		"Then the cross-repo directory is made, the workspace is created with the FLEET_* " +
+		"variables set (FLEET_TARGET, FLEET_JOB, FLEET_ISSUE), Claude Code is started as `fleet " +
+		"spawn` starts a worker, the task is delivered with the work order's URL, and the " +
+		"lead's row becomes active.\n\n" +
+		"There is no rollback and no retry. When a step fails after the reservation, the " +
+		"output lists what exists and the cleanup command `fleet close <job> --force`.\n\n" +
 		"Exit: 0 when the task was delivered; 1 when a check refuses; 2/3/4 as `send` for the " +
 		"delivery; 3 when the lead stops at a screen other than its input box (the screen is " +
 		"printed); 5 when atb, herdr or the database fails, including a failed start."
@@ -277,12 +279,16 @@ func (c *jobChecked) repoAndLinear(args JobStartArgs) error {
 }
 
 // dedup is the dedup checks in the ledger: the job's name, its key and its
-// parent issue, then the lead's name.
-func (c *jobChecked) dedup(conn *sql.DB) error {
+// parent issue, then the lead's name. Run once before the Linear query,
+// so a refusal needs no Linear, and again inside the reservation.
+func (c *jobChecked) dedup(conn querier) error {
 	job := c.id.Job
-	if open, err := openJob(conn, job); err != nil {
-		return err
-	} else if open != nil {
+	var one int
+	err := conn.QueryRow("SELECT 1 FROM jobs WHERE job = ?1 AND state = 'open'", job).Scan(&one)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return exit.Database(err)
+	}
+	if err == nil {
 		return exit.Refusedf("job %s is already open in target %s; if it is left over, clean up with "+
 			"`fleet close %s --force`", job, c.me.Target, job)
 	}
@@ -335,6 +341,20 @@ func (c *jobChecked) ledgerAndHerdr(h *herdr.Herdr, conn *sql.DB) error {
 	return c.linear.resolve()
 }
 
+// reserve writes the job row (open) and the lead's row (`starting`) in one
+// immediate transaction with the dedup checks, so two starts on the same
+// parent, name or key cannot both pass.
+func (c *jobChecked) reserve(conn *sql.DB) error {
+	return reserve(conn, c.dedup, func(q querier) error {
+		if _, err := q.Exec(
+			"INSERT INTO jobs (job, parent_issue, key, repo, lead_cwd, state, started_at) VALUES (?1, ?2, ?3, ?4, ?5, 'open', ?6)",
+			c.id.Job, c.parent, c.key, c.repo, c.cwd, db.Now()); err != nil {
+			return exit.Database(err)
+		}
+		return insertStarting(q, c.id, c.cwd, c.task, c.parent)
+	})
+}
+
 // linearSteps creates the parent when asked, claims it for the lead, and
 // makes the lead's work order. Returns the work order (zero without Linear).
 func (c *jobChecked) linearSteps(args JobStartArgs, created *[]string) (atb.Issue, error) {
@@ -365,23 +385,23 @@ func JobStart(h *herdr.Herdr, args JobStartArgs) (exit.Code, error) {
 	}
 	defer conn.Close()
 	job := c.id.Job
-	var created []string
 	hint := fmt.Sprintf("clean up with: fleet close %s --force", job)
+	if err := c.reserve(conn); err != nil {
+		return 0, err
+	}
+	created := []string{fmt.Sprintf("job %s (open)", job), fmt.Sprintf("ledger row %s (state starting)", c.id.Agent)}
 	issue, err := c.linearSteps(args, &created)
 	if err != nil {
-		return startFailed(c.id.Agent, err, 0, created, "")
-	}
-	c.id.Issue = issue.Identifier
-	if _, err := conn.Exec(
-		"INSERT INTO jobs (job, parent_issue, key, repo, lead_cwd, state, started_at) VALUES (?1, ?2, ?3, ?4, ?5, 'open', ?6)",
-		job, c.parent, c.key, c.repo, c.cwd, db.Now()); err != nil {
-		return startFailed(c.id.Agent, exit.Database(err), 0, created, "")
-	}
-	created = append(created, fmt.Sprintf("job %s (open)", job))
-	if err := insertStarting(conn, c.id, c.cwd, c.task, c.parent); err != nil {
 		return startFailed(c.id.Agent, err, 0, created, hint)
 	}
-	created = append(created, fmt.Sprintf("ledger row %s (state starting)", c.id.Agent))
+	c.id.Issue = issue.Identifier
+	if err := setIssue(conn, c.id.Agent, issue.Identifier, c.parent); err != nil {
+		return startFailed(c.id.Agent, err, 0, created, hint)
+	}
+	// With --new-parent the job row learns its parent only now.
+	if _, err := conn.Exec("UPDATE jobs SET parent_issue = ?1 WHERE job = ?2 AND state = 'open'", c.parent, job); err != nil {
+		return startFailed(c.id.Agent, exit.Database(err), 0, created, hint)
+	}
 	if c.repo == "" {
 		if err := os.MkdirAll(c.cwd, 0o777); err != nil {
 			return startFailed(c.id.Agent, exit.IO(err), 0, created, hint)

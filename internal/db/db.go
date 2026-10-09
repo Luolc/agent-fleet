@@ -81,11 +81,14 @@ ALTER TABLE agents ADD COLUMN parent_issue TEXT NOT NULL DEFAULT '';
 // Version 5: the `jobs` table, one row per job started in this target, and
 // the agent's working directory (`cwd`, formerly `worktree`: fleet no
 // longer makes a worktree for an agent). A job is open until ended_at is
-// set; a name, and a non-empty key, are unique among open jobs. `repo` is
-// empty for a cross-repo job; `home_thread` is reserved for the thread
-// the job reports to; `outcome` is set when the job ends.
+// set; a name, and a non-empty key, are unique among open jobs, and a
+// parent issue has at most one live lead. `repo` is empty for a cross-repo
+// job; `home_thread` is reserved for the thread the job reports to;
+// `outcome` is set when the job ends.
 const schemaV5 = `
 ALTER TABLE agents RENAME COLUMN worktree TO cwd;
+CREATE UNIQUE INDEX agents_live_lead_parent ON agents (parent_issue)
+    WHERE role = 'lead' AND state != 'ended' AND parent_issue != '';
 CREATE TABLE jobs (
     id           INTEGER PRIMARY KEY,
     job          TEXT    NOT NULL,

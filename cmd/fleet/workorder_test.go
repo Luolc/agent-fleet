@@ -5,11 +5,15 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // startHerdr is a fake herdr that lets a start run to the end: a workspace
@@ -236,8 +240,12 @@ func TestSpawnStopsWhenAnAtbStepFails(t *testing.T) {
 		if _, after, _ := strings.Cut(w.calls(), "atb linear "+step); strings.Contains(after, "herdr") {
 			t.Errorf("%s: herdr was called after atb: %q", step, w.calls())
 		}
-		if got := row(w, "item-1-a"); got != "none" {
+		// The reserved row stays, without a work order, for `close --force`.
+		if got := row(w, "item-1-a"); got != " EX-10 starting "+dir(w, "wt") {
 			t.Errorf("%s: row = %s", step, got)
+		}
+		if !strings.Contains(out.stderr, "ledger row item-1-a (state starting)") || !strings.Contains(out.stderr, "close item-1 --force") {
+			t.Errorf("%s: the row and the cleanup are not listed: %q", step, out.stderr)
 		}
 	}
 }
@@ -507,9 +515,120 @@ func TestJobStartStopsWhenAnAtbStepFails(t *testing.T) {
 		if strings.Contains(w.calls(), "herdr workspace create") {
 			t.Errorf("%s: the workspace was created: %q", step, w.calls())
 		}
-		if got := jobRow(w, "item-2"); got != "none" {
+		// The reservation stays for `close --force`, and is listed.
+		if got := jobRow(w, "item-2"); got != "EX-10  example-dataset "+filepath.Join(w.dir, "home", "dev", "example-dataset")+" open" {
 			t.Errorf("%s: job row = %s", step, got)
 		}
+		if got := row(w, "item-2-lead"); !strings.HasPrefix(got, " EX-10 starting ") {
+			t.Errorf("%s: row = %s", step, got)
+		}
+		for _, want := range []string{"job item-2 (open)", "ledger row item-2-lead (state starting)", "clean up with: fleet close item-2 --force"} {
+			if !strings.Contains(out.stderr, want) {
+				t.Errorf("%s: %q missing from %q", step, want, out.stderr)
+			}
+		}
+	}
+}
+
+// gatedAtb is fakeAtbCreating whose claim of the parent EX-10 touches
+// <dir>/at-claim and then waits until <dir>/go exists, so a test can hold
+// a start between its reservation and its Linear steps.
+func (w *world) gatedAtb() {
+	w.t.Helper()
+	w.fakeAtbCreating("")
+	path := filepath.Join(w.dir, "fake-herdr", "atb")
+	script, err := os.ReadFile(path)
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	gate := `if [ "$2" = claim ] && [ "$3" = EX-10 ]; then
+  : > "$(dirname "$0")/../at-claim"
+  while [ ! -e "$(dirname "$0")/../go" ]; do sleep 0.05; done
+fi
+`
+	// The gate goes before the create/query answers, after the call log.
+	parts := strings.SplitN(string(script), "if [ \"$2\" = create ]", 2)
+	if len(parts) != 2 {
+		w.t.Fatal("unexpected fake atb")
+	}
+	if err := os.WriteFile(path, []byte(parts[0]+gate+"if [ \"$2\" = create ]"+parts[1]), 0o755); err != nil {
+		w.t.Fatal(err)
+	}
+}
+
+func TestJobStartReservesTheLeadSoAConcurrentStartOnTheParentIsRefused(t *testing.T) {
+	w := newWorld(t)
+	w.configure(withLinear)
+	w.useStartHerdr()
+	w.gatedAtb()
+	taskFile := task(w, "task.md", "import\n")
+	start := func(job string) *exec.Cmd {
+		cmd := w.bin([]string{"job", "start", job, "--repo", "example-dataset", "--parent-issue", "EX-10", "--task-file", taskFile},
+			"FLEET_AGENT=thread-1", "FLEET_ROLE=thread", "FLEET_TARGET="+target, linearKey)
+		return cmd
+	}
+	// alpha reserves its rows and is held at the parent claim.
+	alpha := start("alpha")
+	var alphaOut bytes.Buffer
+	alpha.Stdout, alpha.Stderr = &alphaOut, &alphaOut
+	if err := alpha.Start(); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := os.Stat(filepath.Join(w.dir, "at-claim")); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("alpha never reached the parent claim")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	// beta, on the same parent, while alpha is held: refused by the ledger,
+	// naming alpha's lead, without touching Linear.
+	beta := start("beta")
+	var betaOut bytes.Buffer
+	beta.Stdout, beta.Stderr = &betaOut, &betaOut
+	err := beta.Run()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 || !strings.Contains(betaOut.String(), "alpha-lead is live on parent issue EX-10") {
+		t.Errorf("beta: err %v, output %q", err, betaOut.String())
+	}
+	if strings.Contains(w.calls(), "beta") {
+		t.Errorf("beta reached atb: %q", w.calls())
+	}
+	if got := jobRow(w, "beta"); got != "none" {
+		t.Errorf("beta's job row = %s", got)
+	}
+	// Released, alpha finishes.
+	if err := os.WriteFile(filepath.Join(w.dir, "go"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := alpha.Wait(); err != nil {
+		t.Fatalf("alpha: %v, output %q", err, alphaOut.String())
+	}
+	if got := row(w, "alpha-lead"); !strings.HasPrefix(got, "EX-12 EX-10 active ") {
+		t.Errorf("alpha's row = %s", got)
+	}
+	// Control: once alpha's lead has ended, the parent is reused.
+	conn := w.ledger()
+	for _, stmt := range []string{
+		"UPDATE agents SET state = 'ended', ended_at = 1 WHERE name = 'alpha-lead'",
+		"UPDATE jobs SET state = 'ended', ended_at = 1 WHERE job = 'alpha'",
+	} {
+		if _, err := conn.Exec(stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	conn.Close()
+	gamma := start("gamma")
+	var gammaOut bytes.Buffer
+	gamma.Stdout, gamma.Stderr = &gammaOut, &gammaOut
+	if err := gamma.Run(); err != nil {
+		t.Fatalf("gamma: %v, output %q", err, gammaOut.String())
+	}
+	if got := row(w, "gamma-lead"); !strings.HasPrefix(got, "EX-12 EX-10 active ") {
+		t.Errorf("gamma's row = %s", got)
 	}
 }
 
