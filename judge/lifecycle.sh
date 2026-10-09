@@ -1,5 +1,5 @@
 # Sourced by inside.sh: job start, worktree, spawn, status, done, job list
-# and close against the real herdr. The job's repo is a local bare
+# and job end against the real herdr. The job's repo is a local bare
 # repository cloned to ~/dev, standing in for GitHub. The binary runs from
 # this plain shell with the caller's identity variables set as its pane
 # would have them; the variables the starts injected are checked
@@ -35,12 +35,16 @@ proc_env() {
   tr '\0' '\n' < "/proc/$pid/environ" | grep "^$P" | sort | tr '\n' ' '
 }
 status_flags() { # name:flags for every live agent, in the order status lists them
-  thr status --json "$@" | jq -r '[.[] | "\(.name):\(.flags | join(","))"] | join(" ")'
+  thr status --json "$@" | jq -r '[.agents[] | "\(.name):\(.flags | join(","))"] | join(" ")'
+}
+status_jobs() { # job:lead:workers for every open job, as status --json lists them
+  thr status --json "$@" | jq -r '[.jobs[] | "\(.job):\(.lead):\(.workers | join(","))"] | join(" ")'
 }
 job_row() { ledger "SELECT parent_issue, key, repo, lead_cwd, state, outcome FROM jobs WHERE job = '$1' ORDER BY id DESC LIMIT 1"; }
 
-# The thread agent is an agent here so the lead's `done` has someone to
-# reach; nothing starts thread agents yet.
+# The thread agent is an agent here so a worker's `done` has a lead-shaped
+# recipient to reach and `job end --force` a caller; nothing starts thread
+# agents yet.
 check "thread agent starts idle" idle "$(start_fake thread-1)"
 tpane=$(agent_field thread-1 pane_id)
 
@@ -134,14 +138,28 @@ for a in item-1-lead item-1-a item-1-b item-1-c; do settled "$a"; done
 check "status: live agents in start order with the owes-work flag" \
   "item-1-lead:owes-work item-1-a:owes-work item-1-b:owes-work item-1-c:owes-work" "$(status_flags)"
 check "status: --job on the only live job lists the same set" "$(status_flags)" "$(status_flags --job item-1)"
+check "status: the open job with its lead and workers" "item-1:item-1-lead:item-1-a,item-1-b,item-1-c" "$(status_jobs)"
 out=$(thr status 2>&1); rc=$?
 check "status: table exit 0 with the target from the environment" 0 "$rc"
-case "$out" in NAME*) head=yes ;; *) head=no ;; esac
-check "status: table starts with the header" yes "$head"
-has "status: table lists the agents and their flags" "$out" "item-1-lead" "item-1-c" "lead" "worker" "owes-work"
-fields=$(thr status --json | jq -r '.[] | select(.name == "item-1-a") | "\(.role) \(.job) \(.parent) \(.state) \(.herdr_status) \(.since_change_secs)"')
+case "$out" in JOB*) head=yes ;; *) head=no ;; esac
+check "status: table starts with the jobs header" yes "$head"
+has "status: table lists the job, the agents and their flags" "$out" "item-1-lead" "item-1-c" "lead" "worker" "owes-work" "
+NAME "
+fields=$(thr status --json | jq -r '.agents[] | select(.name == "item-1-a") | "\(.role) \(.job) \(.parent) \(.state) \(.herdr_status) \(.since_change_secs)"')
 check "status: json fields of a worker" "worker item-1 item-1-lead active idle null" "${fields/ done / idle }"
-check "status: --target from a plain shell" 4 "$("$T" --session judge status --target "$TARGET" --json | jq length)"
+check "status: --target from a plain shell" 4 "$("$T" --session judge status --target "$TARGET" --json | jq '.agents | length')"
+
+# The lead cannot end the job while workers are live, and nobody else ends
+# it without --force.
+out=$(lead job end --report-file "$(task lead-report 'what the job did 0xREPORT1')" 2>&1); rc=$?
+check "job end: exit 1 while workers are live" 1 "$rc"
+has "job end: names the live workers" "$out" "live workers: item-1-a, item-1-b, item-1-c"
+out=$(thr job end item-1 2>&1); rc=$?
+check "job end: exit 1 from a thread agent without --force" 1 "$rc"
+has "job end: says who ends a job" "$out" "a thread cannot end a job"
+out=$(lead job end 2>&1); rc=$?
+check "job end: exit 1 without a report file" 1 "$rc"
+has "job end: says the report file is required" "$out" "--report-file"
 
 # Completion reports: workers to the lead, the lead to the thread agent.
 for w in a b; do
@@ -170,43 +188,43 @@ settled item-1-lead
 check "status: done workers are no longer listed" "item-1-lead:owes-work" "$(status_flags)"
 check "job list: done workers are no longer listed" "item-1	-	-	$R	item-1-lead	-" "$(thr job list)"
 
-out=$(thr close item-1 2>&1); rc=$?
-check "close: refused with exit 1 while the lead is live" 1 "$rc"
-has "close: refusal names the live agent" "$out" "item-1-lead"
+out=$(lead done 2>&1); rc=$?
+check "done: exit 1 from a lead" 1 "$rc"
+has "done: points the lead to job end" "$out" "a lead ends its job with \`$T job end\`"
+check "job list: the job stays open with its lead" "item-1	-	-	$R	item-1-lead	-" "$(thr job list)"
 
-lead done >/dev/null; rc=$?
-check "done item-1-lead: exit 0 to the thread agent" 0 "$rc"
-has "done: report on the thread agent's screen" "$(screen thread-1)" "[FROM: item-1-lead]" "item-1-lead is done."
-check "done: a report without a report file names none" no \
-  "$(case "$(screen thread-1)" in *"item-1-lead is done. Report"*) echo yes ;; *) echo no ;; esac)"
-check "job list: a job whose lead ended is still open, without a lead" "item-1	-	-	$R	-	-" "$(thr job list)"
-
-# An agent outside the job whose cwd is inside the worktree blocks close.
+# An agent outside the job whose cwd is inside the worktree blocks the end.
 spane=$("${S[@]}" tab create --workspace "$("${S[@]}" pane get "$tpane" | jq -r .result.pane.workspace_id)" \
   --cwd "$WT/item-1" --label squatter --no-focus | jq -r '.result.root_pane.pane_id')
 "${S[@]}" agent start squatter --kind claude --pane "$spane" --timeout 20000 >/dev/null
-out=$(thr close item-1 2>&1); rc=$?
-check "close: exit 5 while an agent's cwd is in the worktree" 5 "$rc"
-has "close: names the agent in the way" "$out" "agent squatter"
-check "close: worktree kept while in use" yes "$([ -d "$WT/item-1" ] && echo yes || echo no)"
+out=$(lead job end --report-file /home/agent/tasks/lead-report.md 2>&1); rc=$?
+check "job end: exit 5 while an agent's cwd is in the worktree" 5 "$rc"
+has "job end: names the agent in the way" "$out" "agent squatter"
+check "job end: worktree kept while in use" yes "$([ -d "$WT/item-1" ] && echo yes || echo no)"
+check "job end: job and lead still live after the refusal" "open active " \
+  "$(ledger "SELECT state FROM jobs WHERE job = 'item-1'")$(ledger "SELECT state FROM agents WHERE name = 'item-1-lead'")"
 "${S[@]}" pane close "$spane" >/dev/null
 
-out=$(thr close item-1 2>&1); rc=$?
-check "close: exit 0 once nothing is in the way" 0 "$rc"
+# No work order and no parent: no Linear step, the conclusion is printed.
+out=$(lead job end --report-file /home/agent/tasks/lead-report.md 2>&1); rc=$?
+check "job end: exit 0 once nothing is in the way" 0 "$rc"
 [ "$rc" = 0 ] || printf '%s\n' "$out"
-has "close: reports 0 left" "$out" "0 left"
-check "close: worktree removed" no "$([ -e "$WT/item-1" ] && echo yes || echo no)"
-check "close: branch deleted" "" "$(git -C "$DEV" branch --list item-1)"
-check "close: main checkout kept" yes "$([ -d "$DEV/.git" ] && echo yes || echo no)"
-check "close: job workspace gone" 0 \
+has "job end: reports the outcome and the conclusion" "$out" "ended job item-1: done, 1 rows ended" \
+  "Job item-1 ended: done." "Lead: item-1-lead. Report: /home/agent/tasks/lead-report.md"
+check "job end: worktree removed" no "$([ -e "$WT/item-1" ] && echo yes || echo no)"
+check "job end: branch deleted" "" "$(git -C "$DEV" branch --list item-1)"
+check "job end: main checkout kept" yes "$([ -d "$DEV/.git" ] && echo yes || echo no)"
+check "job end: job workspace gone" 0 \
   "$("${S[@]}" workspace list | jq '[.result.workspaces[] | select(.label == "item-1")] | length')"
-check "close: job agents gone" 0 \
+check "job end: job agents gone" 0 \
   "$("${S[@]}" agent list | jq '[.result.agents[] | select(.name | startswith("item-1-"))] | length')"
-check "close: no live row left for the job" "0 " \
+check "job end: no live row left for the job" "0 " \
   "$(ledger "SELECT count(*) FROM agents WHERE job = 'item-1' AND state != 'ended'")"
-check "close: job row ended" "||$R|$DEV|ended| " "$(job_row item-1)"
-check "status: no live agents after close" "no live agents" "$(thr status)"
-check "job list: nothing open after close" "" "$(thr job list)"
+check "job end: job row ended as done" "||$R|$DEV|ended|done " "$(job_row item-1)"
+check "status: nothing after the job ended" "no open jobs
+
+no live agents" "$(thr status)"
+check "job list: nothing open after the job ended" "" "$(thr job list)"
 
 # A cross-repo job with a parent issue: Linear on through the parent's
 # team and project, read with a fake atb that answers the query; the lead
@@ -248,11 +266,42 @@ check "spawn in a cross-repo job: exit 0" 0 "$rc"
 check "spawn in a cross-repo job: the parent is queried, the work order created under it and claimed" \
   "linear query { issue(id: \"QT-10\") { team { key } project { name } } }|linear create --team QT --project Queried project --parent QT-10 --title wire worker --description-file /home/agent/tasks/wirea.md --json|linear claim QT-12 --agent wire-a --source wire-lead --scope cross-repo: job wire|" \
   "$(tr '\n' '|' < /home/agent/atb.log)"
-thr close wire --force >/dev/null 2>&1; rc=$?
-check "close --force: cross-repo job closed, exit 0" 0 "$rc"
-check "close --force: cross-repo directory removed" no "$([ -e /home/agent/cross-repo/wire ] && echo yes || echo no)"
-check "close --force: cross-repo job ended with its rows" "ended ended ended " \
-  "$(ledger "SELECT state FROM jobs WHERE job = 'wire'")$(ledger "SELECT state FROM agents WHERE job = 'wire' ORDER BY id")"
+# The lead ends the cross-repo job: its own work order gets the report
+# and is released, the parent gets the conclusion and is released, the
+# worker's pane (done, still open) is closed, the directory removed.
+settled wire-a
+PATH=/home/agent/fake-atb:$PATH ISSUE=QT-12 as wire-a worker wire-lead wire -- done --report-file /home/agent/tasks/wirea.md >/dev/null 2>&1; rc=$?
+check "done wire-a: exit 0" 0 "$rc"
+: > /home/agent/atb.log
+cat > /home/agent/fake-atb/atb <<'ATB'
+#!/bin/sh
+echo "$*" >> /home/agent/atb.log
+[ "$2" = comment ] && cat "$5" >> /home/agent/atb-bodies.log
+exit 0
+ATB
+out=$(PATH=/home/agent/fake-atb:$PATH ISSUE=QT-12 as wire-lead lead thread-1 wire -- job end --report-file /home/agent/tasks/wire.md --abandon 2>&1); rc=$?
+check "job end cross-repo: exit 0" 0 "$rc"
+[ "$rc" = 0 ] || printf '%s\n' "$out"
+check "job end cross-repo: report to the work order, released; conclusion to the parent, released" \
+  "linear comment QT-12 --body-file /home/agent/tasks/wire.md|linear release QT-12 --agent wire-lead --reason abandoned --abandon|linear comment QT-10 --body-file |linear release QT-10 --agent wire-lead --reason abandoned --abandon|" \
+  "$(sed 's|--body-file /tmp/.*|--body-file |' /home/agent/atb.log | tr '\n' '|')"
+check "job end cross-repo: the conclusion written to the parent" \
+  "Wire the repos 0xWIRE|Job wire ended: abandoned.|Lead: wire-lead. Work order: QT-12. Report: /home/agent/tasks/wire.md|" \
+  "$(tr '\n' '|' < /home/agent/atb-bodies.log)"
+has "job end cross-repo: the conclusion printed" "$out" "Job wire ended: abandoned."
+check "job end cross-repo: directory removed" no "$([ -e /home/agent/cross-repo/wire ] && echo yes || echo no)"
+check "job end cross-repo: job ended as abandoned with its rows" "ended|abandoned ended ended " \
+  "$(ledger "SELECT state, outcome FROM jobs WHERE job = 'wire'")$(ledger "SELECT state FROM agents WHERE job = 'wire' ORDER BY id")"
+check "job end cross-repo: workspace and agents gone" "0 0" \
+  "$("${S[@]}" workspace list | jq '[.result.workspaces[] | select(.label == "wire")] | length') $("${S[@]}" agent list | jq '[.result.agents[] | select(.name | startswith("wire-"))] | length')"
+cat > /home/agent/fake-atb/atb <<'ATB'
+#!/bin/sh
+echo "$*" >> /home/agent/atb.log
+case "$2" in
+  query) echo '{"issue":{"team":{"key":"QT"},"project":{"name":"Queried project"}}}' ;;
+  create) echo '{"identifier":"QT-12","url":"https://linear.example.test/QT-12"}' ;;
+esac
+ATB
 
 # The dedup key: a second open job with the same key is refused, naming
 # the first; a job whose lead is live cannot be started again.
@@ -265,19 +314,24 @@ has "job start: key refusal names the open job" "$out" "job item-4 is open with 
 out=$(thr job start item-4 --repo "$R" --task-file "$(task item-4 'again')" 2>&1); rc=$?
 check "job start: a job that is open refused with exit 1" 1 "$rc"
 has "job start: open job refusal says why" "$out" "already open"
-thr close item-4 --force >/dev/null 2>&1; rc=$?
-check "close --force: live lead closed, exit 0" 0 "$rc"
-check "close --force: lead's row ended" "ended " "$(ledger "SELECT state FROM agents WHERE name = 'item-4-lead'")"
+out=$(as item-4-lead lead thread-1 item-4 -- job end item-4 --force 2>&1); rc=$?
+check "job end --force: exit 1 from a lead" 1 "$rc"
+has "job end --force: says who reclaims" "$out" "a lead cannot reclaim a job"
+thr job end item-4 --force >/dev/null 2>&1; rc=$?
+check "job end --force: live lead reclaimed, exit 0" 0 "$rc"
+check "job end --force: lead's row ended, job abandoned" "ended ended|abandoned " \
+  "$(ledger "SELECT state FROM agents WHERE name = 'item-4-lead'")$(ledger "SELECT state, outcome FROM jobs WHERE job = 'item-4'")"
 out=$(thr job start item-5 --repo "$R" --key PR-4 --task-file "$(task item-5 'key free again')" 2>&1); rc=$?
 check "job start: the key is free once the job ended" 0 "$rc"
-thr close item-5 --force >/dev/null 2>&1
+env "${P}TARGET=$TARGET" "$T" --session judge job end item-5 --force >/dev/null 2>&1; rc=$?
+check "job end --force: from a shell with no identity, exit 0" 0 "$rc"
 
 # A directory left over from an earlier cross-repo job blocks a new job
 # of that name.
 mkdir -p /home/agent/cross-repo/item-6
 out=$(thr job start item-6 --task-file "$(task item-6 'never started')" 2>&1); rc=$?
 check "job start: job with a leftover directory refused with exit 1" 1 "$rc"
-has "job start: leftover refusal names the cleanup" "$out" "$T close item-6 --force"
+has "job start: leftover refusal names the cleanup" "$out" "$T job end item-6 --force"
 check "job start: leftover refusal wrote no row" "0 " "$(ledger "SELECT count(*) FROM agents WHERE name = 'item-6-lead'")"
 rmdir /home/agent/cross-repo/item-6
 
@@ -287,14 +341,14 @@ out=$(thr job start item-2 --repo "$R" --task-file "$(task item-2 'never deliver
 rm "$fake/unknown-screen"
 check "job start: exit 3 at an unknown screen" 3 "$rc"
 has "job start: unknown screen printed with the cleanup command" "$out" \
-  "Choose the text style" "created so far" "$T close item-2 --force"
+  "Choose the text style" "created so far" "$T job end item-2 --force"
 check "job start: half-made lead's row stays starting, job open" "starting open " \
   "$(ledger "SELECT state FROM agents WHERE name = 'item-2-lead'")$(ledger "SELECT state FROM jobs WHERE job = 'item-2'")"
-thr close item-2 >/dev/null 2>&1; rc=$?
-check "close: half-made job refused without --force" 1 "$rc"
-thr close item-2 --force >/dev/null 2>&1; rc=$?
-check "close --force: half-made job cleaned up, exit 0" 0 "$rc"
-check "close --force: half-made lead's row and job ended" "ended ended " \
+thr job end item-2 >/dev/null 2>&1; rc=$?
+check "job end: half-made job not ended by a thread agent without --force" 1 "$rc"
+thr job end item-2 --force >/dev/null 2>&1; rc=$?
+check "job end --force: half-made job cleaned up, exit 0" 0 "$rc"
+check "job end --force: half-made lead's row and job ended" "ended ended " \
   "$(ledger "SELECT state FROM agents WHERE name = 'item-2-lead'")$(ledger "SELECT state FROM jobs WHERE job = 'item-2'")"
 
 # A gateway that refuses the session is a failed start: exit 5, no retry.
@@ -303,9 +357,9 @@ out=$(thr job start item-3 --task-file "$(task item-3 'never delivered')" 2>&1);
 rm "$fake/gateway-full"
 check "job start: exit 5 when the gateway refuses the session" 5 "$rc"
 has "job start: gateway refusal printed with the cleanup command" "$out" \
-  "machine example-1 is at its limit" "$T close item-3 --force"
-thr close item-3 --force >/dev/null 2>&1; rc=$?
-check "close --force: after a failed start, exit 0" 0 "$rc"
-check "close --force: its cross-repo directory removed" no "$([ -e /home/agent/cross-repo/item-3 ] && echo yes || echo no)"
-check "close: nothing left running" "thread-1 fake " \
+  "machine example-1 is at its limit" "$T job end item-3 --force"
+thr job end item-3 --force >/dev/null 2>&1; rc=$?
+check "job end --force: after a failed start, exit 0" 0 "$rc"
+check "job end --force: its cross-repo directory removed" no "$([ -e /home/agent/cross-repo/item-3 ] && echo yes || echo no)"
+check "job end: nothing left running" "thread-1 fake " \
   "$("${S[@]}" agent list | jq -r '[.result.agents[].name] | sort | reverse | join(" ")') "

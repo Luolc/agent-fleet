@@ -22,7 +22,7 @@ const (
 		"with --name, on a new branch of the same name (no prefix) unless --branch is given. " +
 		"~/dev/<repo> runs `git fetch origin` and the branch starts at origin/HEAD, never at " +
 		"the local HEAD. The ledger of your target records the worktree for the job, so " +
-		"`fleet close <job>` removes it.\n\n" +
+		"`fleet job end` removes it.\n\n" +
 		"When the path already exists and the ledger records it for this job, the path is " +
 		"printed and nothing changes, so every agent of a job gets the same worktree. A path " +
 		"that exists otherwise is refused. stdout carries only the path.\n\n" +

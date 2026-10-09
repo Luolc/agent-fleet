@@ -1,8 +1,8 @@
-// Integration tests for `job start`, `spawn`, `done` and `close` over the
-// binary: the refusals that happen before anything is created, and `done`
-// and `close` against the fake herdr. Hermetic, see main_test.go. The full
-// job start → spawn → done → close chain runs against the real herdr in
-// the judge.
+// Integration tests for `job start`, `spawn`, `done` and `job end` over
+// the binary: the refusals that happen before anything is created, and
+// `done` and `job end` against the fake herdr. Hermetic, see main_test.go.
+// The full job start → spawn → done → job end chain runs against the real
+// herdr in the judge.
 package main
 
 import (
@@ -80,17 +80,17 @@ func state(w *world, name string) string {
 	return got
 }
 
-// jobState is the state of the newest job row named `job`, or "none".
+// jobState is the state, and the outcome once ended, of the newest job row named `job`, or "none".
 func jobState(w *world, job string) string {
 	w.t.Helper()
 	conn := w.ledger()
 	defer conn.Close()
-	var got string
+	var state, outcome string
 	if err := conn.QueryRow(
-		"SELECT state FROM jobs WHERE job = ?1 ORDER BY id DESC LIMIT 1", job).Scan(&got); err != nil {
+		"SELECT state, outcome FROM jobs WHERE job = ?1 ORDER BY id DESC LIMIT 1", job).Scan(&state, &outcome); err != nil {
 		return "none"
 	}
-	return got
+	return strings.TrimSpace(state + " " + outcome)
 }
 
 func task(w *world, name, body string) string {
@@ -300,37 +300,60 @@ func TestDoneKeepsTheRowLiveWhenDeliveryIsUnclear(t *testing.T) {
 	}
 }
 
-func TestDoneRefusesWithoutAParent(t *testing.T) {
+func TestDoneIsForWorkersOnly(t *testing.T) {
 	w := newWorld(t)
 	out := w.asThread("done")
+	if out.code != 1 || !strings.Contains(out.stderr, "a thread does not report with `done`") {
+		t.Errorf("thread: %+v", out)
+	}
+	out = w.asAgent("item-1-lead", "lead", "thread-1", "item-1", "done")
+	if out.code != 1 || !strings.Contains(out.stderr, "a lead ends its job with `fleet job end`") {
+		t.Errorf("lead: %+v", out)
+	}
+	out = w.asAgent("item-1-a", "worker", "", "item-1", "done")
 	if out.code != 1 || !strings.Contains(out.stderr, "FLEET_PARENT") {
-		t.Errorf("%+v", out)
+		t.Errorf("worker without parent: %+v", out)
 	}
 	if _, err := os.Stat(filepath.Join(w.dir, "argv")); err == nil {
 		t.Error("herdr was prompted")
 	}
 }
 
-func TestCloseRefusesLiveRowsWithoutForceAndNonThreadCallers(t *testing.T) {
+func TestJobEndRefusesTheWrongCallerLiveWorkersAndAMissingReport(t *testing.T) {
 	w := newWorld(t)
-	ledgerWith(w, []struct{ name, role, job string }{{"item-1-lead", "lead", "item-1"}})
-	out := w.asThread("close", "item-1")
-	if out.code != 1 || !strings.Contains(out.stderr, "item-1-lead") {
-		t.Errorf("%+v", out)
+	ledgerWith(w, []struct{ name, role, job string }{{"item-1-lead", "lead", "item-1"}, {"item-1-a", "worker", "item-1"}})
+	report := task(w, "report.md", "what I did\n")
+	asLead := func(args ...string) result {
+		return w.asAgent("item-1-lead", "lead", "thread-1", "item-1", append([]string{"job", "end"}, args...)...)
 	}
-	out = w.asAgent("item-1-lead", "lead", "thread-1", "item-1", "close", "item-1", "--force")
-	if out.code != 1 || !strings.Contains(out.stderr, "thread agent") {
-		t.Errorf("%+v", out)
+	for name, c := range map[string]struct {
+		out  result
+		want string
+	}{
+		"thread without --force": {w.asThread("job", "end", "item-1"), "a thread cannot end a job"},
+		"worker":                 {w.asAgent("item-1-a", "worker", "item-1-lead", "item-1", "job", "end", "--report-file", report), "a worker cannot end a job"},
+		"lead with --force":      {asLead("item-1", "--force"), "a lead cannot reclaim a job"},
+		"lead without report":    {asLead(), "--report-file is required"},
+		"lead of another job":    {asLead("item-2", "--report-file", report), "your job is item-1, not item-2"},
+		"lead with live workers": {asLead("--report-file", report), "live workers: item-1-a"},
+		"--force without job":    {w.asThread("job", "end", "--force"), "--force needs the job"},
+		"--force with report":    {w.asThread("job", "end", "item-1", "--force", "--report-file", report), "--force takes no report"},
+	} {
+		if c.out.code != 1 || !strings.Contains(c.out.stderr, c.want) {
+			t.Errorf("%s: %+v", name, c.out)
+		}
 	}
-	if got := state(w, "item-1-lead"); got != "active" {
-		t.Errorf("state = %s", got)
+	for _, name := range []string{"item-1-lead", "item-1-a"} {
+		if got := state(w, name); got != "active" {
+			t.Errorf("state(%s) = %s", name, got)
+		}
 	}
 	if got := jobState(w, "item-1"); got != "open" {
 		t.Errorf("job state = %s", got)
 	}
 }
 
-func TestCloseForceEndsTheJobAndRemovesTheCrossRepoDirectory(t *testing.T) {
+func TestJobEndForceEndsTheJobAndRemovesTheCrossRepoDirectory(t *testing.T) {
 	w := newWorld(t)
 	crossRepo := dir(w, filepath.Join("home", "cross-repo", "item-7"))
 	if err := os.WriteFile(filepath.Join(crossRepo, "notes.md"), []byte("scratch\n"), 0o644); err != nil {
@@ -348,7 +371,7 @@ func TestCloseForceEndsTheJobAndRemovesTheCrossRepoDirectory(t *testing.T) {
 	conn.Close()
 	// An agent in the directory blocks the removal.
 	w.closeHerdr(`{"name":"squatter","pane_id":"p1","cwd":"` + filepath.Join(crossRepo, "sub") + `"}`)
-	out := w.asThread("close", "item-7", "--force")
+	out := w.asThread("job", "end", "item-7", "--force")
 	if out.code != 5 || !strings.Contains(out.stderr, "agent squatter") {
 		t.Errorf("%+v", out)
 	}
@@ -356,7 +379,7 @@ func TestCloseForceEndsTheJobAndRemovesTheCrossRepoDirectory(t *testing.T) {
 		t.Error("the directory was removed while in use")
 	}
 	w.closeHerdr("")
-	out = w.asThread("close", "item-7", "--force")
+	out = w.asThread("job", "end", "item-7", "--force")
 	if out.code != 0 || !strings.Contains(out.stdout, "removed directory "+crossRepo) || !strings.Contains(out.stdout, "1 rows ended") {
 		t.Errorf("%+v", out)
 	}
@@ -366,13 +389,146 @@ func TestCloseForceEndsTheJobAndRemovesTheCrossRepoDirectory(t *testing.T) {
 	if got := state(w, "item-7-lead"); got != "ended" {
 		t.Errorf("state = %s", got)
 	}
-	if got := jobState(w, "item-7"); got != "ended" {
+	if got := jobState(w, "item-7"); got != "ended abandoned" {
 		t.Errorf("job state = %s", got)
 	}
-	// Closing again finds nothing to do and nothing to end.
-	out = w.asThread("close", "item-7")
+	// Again, from a shell with no identity: nothing to do, nothing to end.
+	out = w.run("", []string{"job", "end", "item-7", "--force"}, "FLEET_TARGET="+target)
 	if out.code != 0 || !strings.Contains(out.stdout, "0 rows ended") {
 		t.Errorf("again: %+v", out)
+	}
+}
+
+// jobEndHerdr is a fake herdr for a lead ending job item-1: workspace w1
+// labelled item-1 holds the lead (pane p0) and `other` (pane p9, gone
+// from the list once closed); `pane close` and `workspace close` are
+// logged to <dir>/calls, in order with atb's calls.
+func (w *world) jobEndHerdr() {
+	w.t.Helper()
+	script := `#!/bin/sh
+dir="$(dirname "$0")/.."
+case "$1 $2" in
+  "workspace list") echo '{"result":{"workspaces":[{"workspace_id":"w1","label":"item-1"}]}}' ;;
+  "agent list")
+    other=',{"name":"other","pane_id":"p9","workspace_id":"w1","cwd":"/elsewhere"}'
+    [ -e "$dir/closed-p9" ] && other=
+    echo '{"result":{"agents":[{"name":"item-1-lead","pane_id":"p0","workspace_id":"w1","cwd":"/c"}'"$other"']}}' ;;
+  "pane close"|"workspace close") echo "herdr $1 $2 $3" >> "$dir/calls"; touch "$dir/closed-$3"; echo '{"result":{}}' ;;
+  *) echo "fake herdr: unexpected command: $*" >&2; exit 2 ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(w.dir, "fake-herdr", "herdr"), []byte(script), 0o755); err != nil {
+		w.t.Fatal(err)
+	}
+}
+
+// endJob runs `job end` as item-1-lead with work order EX-12 and the
+// Linear key.
+func (w *world) endJob(args ...string) result {
+	w.t.Helper()
+	return w.run("", append([]string{"job", "end"}, args...),
+		"FLEET_AGENT=item-1-lead", "FLEET_ROLE=lead", "FLEET_PARENT=thread-1", "FLEET_TARGET="+target,
+		"FLEET_JOB=item-1", "FLEET_ISSUE=EX-12", linearKey)
+}
+
+func TestJobEndReportsReleasesCleansUpAndClosesTheWorkspaceLast(t *testing.T) {
+	for _, abandon := range []bool{false, true} {
+		w := newWorld(t)
+		openJobWithLead(w, "EX-10")
+		report := task(w, "report.md", "what the job did\n")
+		resolved, err := filepath.EvalSymlinks(report)
+		if err != nil {
+			t.Fatal(err)
+		}
+		w.jobEndHerdr()
+		w.fakeAtb("")
+		args := []string{"--report-file", report}
+		outcome, release := "done", "--reason done --done"
+		if abandon {
+			args = append(args, "--abandon")
+			outcome, release = "abandoned", "--reason abandoned --abandon"
+		}
+		out := w.endJob(args...)
+		if out.code != 0 {
+			t.Fatalf("abandon=%v: %+v", abandon, out)
+		}
+		conclusion := "Job item-1 ended: " + outcome + ".\nLead: item-1-lead. Work order: EX-12. Report: " + resolved + "\n"
+		if !strings.Contains(out.stdout, "ended job item-1: "+outcome+", 1 rows ended\n"+conclusion) {
+			t.Errorf("abandon=%v: stdout %q", abandon, out.stdout)
+		}
+		// The report and the release, the conclusion and the release, the
+		// other agent's pane, and the workspace last.
+		calls := w.calls()
+		want := []string{
+			"atb linear comment EX-12 --body-file " + resolved + " key=set\n",
+			"atb linear release EX-12 --agent item-1-lead " + release + " key=set\n",
+			"atb linear comment EX-10 --body-file ",
+			"atb linear release EX-10 --agent item-1-lead " + release + " key=set\n",
+			"herdr pane close p9\n",
+			"herdr workspace close w1\n",
+		}
+		at := 0
+		for _, step := range want {
+			i := strings.Index(calls[at:], step)
+			if i < 0 {
+				t.Fatalf("abandon=%v: %q not after position %d in calls:\n%s", abandon, step, at, calls)
+			}
+			at += i + len(step)
+		}
+		if strings.Contains(calls, "pane close p0") {
+			t.Errorf("the lead's own pane was closed: %s", calls)
+		}
+		// The report went to the work order, the conclusion to the parent.
+		if got := w.bodies(); got != "what the job did\n"+conclusion {
+			t.Errorf("abandon=%v: bodies written = %q, want the report then %q", abandon, got, conclusion)
+		}
+		if got := state(w, "item-1-lead"); got != "ended" {
+			t.Errorf("state = %s", got)
+		}
+		if got := jobState(w, "item-1"); got != "ended "+outcome {
+			t.Errorf("job state = %s", got)
+		}
+	}
+}
+
+func TestJobEndStopsWhenAnAtbStepFails(t *testing.T) {
+	w := newWorld(t)
+	openJobWithLead(w, "EX-10")
+	report := task(w, "report.md", "what the job did\n")
+	w.jobEndHerdr()
+	w.fakeAtb("release EX-10")
+	out := w.endJob("--report-file", report)
+	if out.code != 5 || !strings.Contains(out.stderr, "atb linear release EX-10 failed") {
+		t.Errorf("%+v", out)
+	}
+	if strings.Contains(out.stderr, "lin_api") || strings.Contains(out.stdout, "lin_api") {
+		t.Error("the key leaked")
+	}
+	if strings.Contains(w.calls(), "herdr") {
+		t.Errorf("herdr was touched: %s", w.calls())
+	}
+	if got := state(w, "item-1-lead"); got != "active" {
+		t.Errorf("state = %s", got)
+	}
+	if got := jobState(w, "item-1"); got != "open" {
+		t.Errorf("job state = %s", got)
+	}
+}
+
+func TestJobEndWithoutLinearSkipsAtb(t *testing.T) {
+	w := newWorld(t)
+	openJobWithLead(w, "")
+	report := task(w, "report.md", "what the job did\n")
+	w.jobEndHerdr()
+	out := w.asAgent("item-1-lead", "lead", "thread-1", "item-1", "job", "end", "--report-file", report)
+	if out.code != 0 || !strings.Contains(out.stdout, "Job item-1 ended: done.\nLead: item-1-lead. Report: ") {
+		t.Errorf("%+v", out)
+	}
+	if strings.Contains(w.calls(), "atb") {
+		t.Errorf("atb was called: %s", w.calls())
+	}
+	if got := jobState(w, "item-1"); got != "ended done" {
+		t.Errorf("job state = %s", got)
 	}
 }
 
@@ -385,13 +541,15 @@ func dirExists(path string) bool {
 // line, to <dir>/calls, with `key=set` when LINEAR_API_KEY reached it. The
 // subcommand named by failOn (`comment`, `release`, or a subcommand with
 // its first argument such as `claim EX-12`) prints the key it got to
-// stdout and stderr and exits 4.
+// stdout and stderr and exits 4. Every body file commented is appended to
+// <dir>/bodies.
 func (w *world) fakeAtb(failOn string) {
 	w.t.Helper()
 	script := `#!/bin/sh
 key=unset
 [ -n "$LINEAR_API_KEY" ] && key=set
 echo "atb $* key=$key" >> "$(dirname "$0")/../calls"
+[ "$2" = comment ] && cat "$5" >> "$(dirname "$0")/../bodies"
 if [ "$2" = "` + failOn + `" ] || [ "$2 $3" = "` + failOn + `" ]; then
   echo "error: refused: no holder, key $LINEAR_API_KEY" >&2
   echo "key $LINEAR_API_KEY"
@@ -401,6 +559,13 @@ fi
 	if err := os.WriteFile(filepath.Join(w.dir, "fake-herdr", "atb"), []byte(script), 0o755); err != nil {
 		w.t.Fatal(err)
 	}
+}
+
+// bodies is what every `atb linear comment` was given.
+func (w *world) bodies() string {
+	w.t.Helper()
+	data, _ := os.ReadFile(filepath.Join(w.dir, "bodies"))
+	return string(data)
 }
 
 func (w *world) calls() string {

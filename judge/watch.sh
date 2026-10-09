@@ -71,18 +71,18 @@ INSERT INTO agents (name, role, job, parent, state, started_at) VALUES
 SQL
 status_all() { # name=herdr_status:flags for every agent status lists
   "$T" --session judge status --target "$TARGET" --json "$@" |
-    jq -r '[.[] | "\(.name)=\(.herdr_status // "-"):\(.flags | join(","))"] | join(" ")'
+    jq -r '[.agents[] | "\(.name)=\(.herdr_status // "-"):\(.flags | join(","))"] | join(" ")'
 }
 # After a turn herdr reports `done` until the pane is looked at; w-lead
-# had its turns on the notices.
+# had its turns on the notices, thread-1 had none (it owes no work).
 check "status: herdr status and flags per agent, jobs in order" \
-  "thread-1=done: u-lead=idle:owes-work,suspect v-lead=-:missing fake=blocked:blocked w-lead=done:owes-work w-tick=working: w-hang=working:suspect w-gone=-:missing,suspect" \
+  "thread-1=idle: u-lead=idle:owes-work,suspect v-lead=-:missing fake=blocked:blocked w-lead=done:owes-work w-tick=working: w-hang=working:suspect w-gone=-:missing,suspect" \
   "$(status_all)"
 check "status: --job keeps exactly that job's agents" \
   "w-lead=done:owes-work w-tick=working: w-hang=working:suspect w-gone=-:missing,suspect" "$(status_all --job w)"
 check "status: --job on the other job" "v-lead=-:missing fake=blocked:blocked" "$(status_all --job v)"
 check "status: since_change_secs is set once watch has looked" true \
-  "$("$T" --session judge status --target "$TARGET" --json | jq '[.[] | select(.name == "w-hang") | .since_change_secs >= 7] | first')"
+  "$("$T" --session judge status --target "$TARGET" --json | jq '[.agents[] | select(.name == "w-hang") | .since_change_secs >= 7] | first')"
 for out in /home/agent/watch1.out /home/agent/watch2.out /home/agent/watch3.out; do
   [ "$fail" = 0 ] || { echo "--- $out"; cat "$out"; }
 done

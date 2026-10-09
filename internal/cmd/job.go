@@ -64,7 +64,7 @@ const (
 		"spawn` starts a worker, the task is delivered with the work order's URL, and the " +
 		"lead's row becomes active.\n\n" +
 		"There is no rollback and no retry. When a step fails after the reservation, the " +
-		"output lists what exists and the cleanup command `fleet close <job> --force`.\n\n" +
+		"output lists what exists and the cleanup command `fleet job end <job> --force`.\n\n" +
 		"Exit: 0 when the task was delivered; 1 when a check refuses; 2/3/4 as `send` for the " +
 		"delivery; 3 when the lead stops at a screen other than its input box (the screen is " +
 		"printed); 5 when atb, herdr or the database fails, including a failed start."
@@ -291,7 +291,7 @@ func (c *jobChecked) dedup(conn querier) error {
 	}
 	if err == nil {
 		return exit.Refusedf("job %s is already open in target %s; if it is left over, clean up with "+
-			"`fleet close %s --force`", job, c.me.Target, job)
+			"`fleet job end %s --force`", job, c.me.Target, job)
 	}
 	if c.key != "" {
 		var other string
@@ -334,7 +334,7 @@ func (c *jobChecked) ledgerAndHerdr(h *herdr.Herdr, conn *sql.DB) error {
 	}
 	if len(workspaces) != 0 || c.repo == "" && exists(c.cwd) {
 		return exit.Refusedf("job %s already has a workspace or the directory %s; if it is left over, "+
-			"clean up with `fleet close %s --force`", job, c.cwd, job)
+			"clean up with `fleet job end %s --force`", job, c.cwd, job)
 	}
 	if err := resources(c.cfg); err != nil {
 		return err
@@ -404,7 +404,7 @@ func JobStart(h *herdr.Herdr, args JobStartArgs) (exit.Code, error) {
 	}
 	defer conn.Close()
 	job := c.id.Job
-	hint := fmt.Sprintf("clean up with: fleet close %s --force", job)
+	hint := fmt.Sprintf("clean up with: fleet job end %s --force", job)
 	if err := c.reserve(conn); err != nil {
 		return 0, err
 	}

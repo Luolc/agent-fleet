@@ -1,8 +1,8 @@
 # Sourced by inside.sh after lifecycle.sh, which set up origin, ~/dev/$R and
-# ~/seed: `worktree` opens a worktree for the caller's job, and `close`
+# ~/seed: `worktree` opens a worktree for the caller's job, and `job end`
 # removes the ones recorded for the job. No agent of the job is started; the
 # binary runs from this shell with a job's identity variables, and the jobs
-# have no row in the jobs table (close needs none).
+# have no row in the jobs table (`job end --force` needs none).
 in_job() { local job=$1; shift; as "$job-a" worker "$job-lead" "$job" -- "$@"; }
 wt_rows() { ledger "SELECT path, repo, branch, job, created_by, removed_at IS NULL FROM worktrees WHERE job = '$1' ORDER BY id"; }
 
@@ -48,29 +48,29 @@ check "worktree: refusals wrote no row" "0 " \
   "$(ledger "SELECT count(*) FROM worktrees WHERE job IN ('item-6-review', 'item-8', 'item-9')")"
 rmdir "$WT/item-8"
 
-# close: an agent's cwd inside one of the job's worktrees, then an
+# job end --force: an agent's cwd inside one of the job's worktrees, then an
 # uncommitted change, each keeps both worktrees.
 spane=$("${S[@]}" tab create --workspace "$("${S[@]}" pane get "$tpane" | jq -r .result.pane.workspace_id)" \
   --cwd "$WT/item-6-review" --label squatter-2 --no-focus | jq -r '.result.root_pane.pane_id')
 "${S[@]}" agent start squatter-2 --kind claude --pane "$spane" --timeout 20000 >/dev/null
-out=$(thr close item-6 2>&1); rc=$?
-check "close: exit 5 while an agent's cwd is in a recorded worktree" 5 "$rc"
-has "close: names the agent in the recorded worktree" "$out" "agent squatter-2"
-check "close: recorded worktrees kept while one is in use" "yes yes" \
+out=$(thr job end item-6 --force 2>&1); rc=$?
+check "job end --force: exit 5 while an agent's cwd is in a recorded worktree" 5 "$rc"
+has "job end --force: names the agent in the recorded worktree" "$out" "agent squatter-2"
+check "job end --force: recorded worktrees kept while one is in use" "yes yes" \
   "$([ -d "$WT/item-6" ] && echo yes || echo no) $([ -d "$WT/item-6-review" ] && echo yes || echo no)"
 "${S[@]}" pane close "$spane" >/dev/null
 
 echo draft > "$WT/item-6-review/notes.txt"
-thr close item-6 >/dev/null 2>&1; rc=$?
-check "close: exit 5 when a recorded worktree has uncommitted changes" 5 "$rc"
-check "close: the uncommitted change is kept" draft "$(cat "$WT/item-6-review/notes.txt" 2>&1)"
+thr job end item-6 --force >/dev/null 2>&1; rc=$?
+check "job end --force: exit 5 when a recorded worktree has uncommitted changes" 5 "$rc"
+check "job end --force: the uncommitted change is kept" draft "$(cat "$WT/item-6-review/notes.txt" 2>&1)"
 rm "$WT/item-6-review/notes.txt"
 
-out=$(thr close item-6 2>&1); rc=$?
-check "close: recorded worktrees, exit 0 once nothing is in the way" 0 "$rc"
+out=$(thr job end item-6 --force 2>&1); rc=$?
+check "job end --force: recorded worktrees, exit 0 once nothing is in the way" 0 "$rc"
 [ "$rc" = 0 ] || printf '%s\n' "$out"
-check "close: recorded worktrees removed" "no no" \
+check "job end --force: recorded worktrees removed" "no no" \
   "$([ -e "$WT/item-6" ] && echo yes || echo no) $([ -e "$WT/item-6-review" ] && echo yes || echo no)"
-check "close: their branches deleted" "" "$(git -C "/home/agent/dev/$R" branch --list item-6 fix/item-6)"
-check "close: ledger marks them removed" "$WT/item-6|$R|item-6|item-6|item-6-a|0 $WT/item-6-review|$R|fix/item-6|item-6|item-6-a|0 " \
+check "job end --force: their branches deleted" "" "$(git -C "/home/agent/dev/$R" branch --list item-6 fix/item-6)"
+check "job end --force: ledger marks them removed" "$WT/item-6|$R|item-6|item-6|item-6-a|0 $WT/item-6-review|$R|fix/item-6|item-6|item-6-a|0 " \
   "$(wt_rows item-6)"

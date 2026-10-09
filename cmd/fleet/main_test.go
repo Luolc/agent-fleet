@@ -142,8 +142,8 @@ func (w *world) send(reply, body string) (result, string) {
 
 func TestEverySubcommandHasHelp(t *testing.T) {
 	w := newWorld(t)
-	for _, name := range [][]string{{"send"}, {"spawn"}, {"done"}, {"status"}, {"watch"}, {"close"}, {"worktree"},
-		{"job", "start"}, {"job", "list"}} {
+	for _, name := range [][]string{{"send"}, {"spawn"}, {"done"}, {"status"}, {"watch"}, {"worktree"},
+		{"job", "start"}, {"job", "list"}, {"job", "end"}} {
 		out := w.run("", append(name, "--help"))
 		if out.code != 0 {
 			t.Errorf("%s --help failed: %+v", name, out)
@@ -154,7 +154,7 @@ func TestEverySubcommandHasHelp(t *testing.T) {
 	}
 	for _, args := range [][]string{{"job", "--help"}, {"help", "job"}} {
 		out := w.run("", args)
-		if out.code != 0 || !strings.Contains(out.stdout, "start") || !strings.Contains(out.stdout, "list") {
+		if out.code != 0 || !strings.Contains(out.stdout, "start") || !strings.Contains(out.stdout, "list") || !strings.Contains(out.stdout, "end") {
 			t.Errorf("%v: %+v", args, out)
 		}
 	}
@@ -338,12 +338,12 @@ func TestStatusSkipsListEntriesThatAreNotAgents(t *testing.T) {
 	if out.code != 0 {
 		t.Fatalf("%+v", out)
 	}
-	var lines []map[string]any
-	if err := json.Unmarshal([]byte(out.stdout), &lines); err != nil {
+	var report statusReport
+	if err := json.Unmarshal([]byte(out.stdout), &report); err != nil {
 		t.Fatal(err)
 	}
 	got := map[string]any{}
-	for _, l := range lines {
+	for _, l := range report.Agents {
 		got[l["name"].(string)] = l["herdr_status"]
 	}
 	// x-lead is kept with its large seq; x-w1's float seq and the stray

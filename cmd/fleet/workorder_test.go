@@ -240,7 +240,7 @@ func TestSpawnStopsWhenAnAtbStepFails(t *testing.T) {
 		if _, after, _ := strings.Cut(w.calls(), "atb linear "+step); strings.Contains(after, "herdr") {
 			t.Errorf("%s: herdr was called after atb: %q", step, w.calls())
 		}
-		// The reserved row stays for `close --force`, keeping the work order
+		// The reserved row stays for `job end --force`, keeping the work order
 		// once that was created.
 		want := " EX-10 starting " + dir(w, "wt")
 		if step == "claim" {
@@ -249,7 +249,7 @@ func TestSpawnStopsWhenAnAtbStepFails(t *testing.T) {
 		if got := row(w, "item-1-a"); got != want {
 			t.Errorf("%s: row = %s, want %s", step, got, want)
 		}
-		if !strings.Contains(out.stderr, "ledger row item-1-a (state starting)") || !strings.Contains(out.stderr, "close item-1 --force") {
+		if !strings.Contains(out.stderr, "ledger row item-1-a (state starting)") || !strings.Contains(out.stderr, "job end item-1 --force") {
 			t.Errorf("%s: the row and the cleanup are not listed: %q", step, out.stderr)
 		}
 	}
@@ -520,14 +520,14 @@ func TestJobStartStopsWhenAnAtbStepFails(t *testing.T) {
 		if strings.Contains(w.calls(), "herdr workspace create") {
 			t.Errorf("%s: the workspace was created: %q", step, w.calls())
 		}
-		// The reservation stays for `close --force`, and is listed.
+		// The reservation stays for `job end --force`, and is listed.
 		if got := jobRow(w, "item-2"); got != "EX-10  example-dataset "+filepath.Join(w.dir, "home", "dev", "example-dataset")+" open" {
 			t.Errorf("%s: job row = %s", step, got)
 		}
 		if got := row(w, "item-2-lead"); !strings.HasPrefix(got, " EX-10 starting ") {
 			t.Errorf("%s: row = %s", step, got)
 		}
-		for _, want := range []string{"job item-2 (open)", "ledger row item-2-lead (state starting)", "clean up with: fleet close item-2 --force"} {
+		for _, want := range []string{"job item-2 (open)", "ledger row item-2-lead (state starting)", "clean up with: fleet job end item-2 --force"} {
 			if !strings.Contains(out.stderr, want) {
 				t.Errorf("%s: %q missing from %q", step, want, out.stderr)
 			}
@@ -690,7 +690,7 @@ func TestJobStartKeepsTheIdentifiersWrittenBeforeAnAtbStepFailed(t *testing.T) {
 		if got := row(w, "item-2-lead"); !strings.HasPrefix(got, c.leadRow) {
 			t.Errorf("%s: row = %q, want prefix %q", c.failOn, got, c.leadRow)
 		}
-		for _, want := range append(c.listed, "clean up with: fleet close item-2 --force") {
+		for _, want := range append(c.listed, "clean up with: fleet job end item-2 --force") {
 			if !strings.Contains(out.stderr, want) {
 				t.Errorf("%s: %q missing from %q", c.failOn, want, out.stderr)
 			}
