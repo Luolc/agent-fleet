@@ -243,3 +243,70 @@ func TestAnOpenJobsNameAndKeyAreUnique(t *testing.T) {
 		}
 	}
 }
+
+func TestAVersion5LedgerGainsTheThreadTablesAndKeepsItsRows(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fleet.db")
+	conn, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range []string{schema, schemaV2, schemaV3, schemaV4, schemaV5,
+		"INSERT INTO jobs (job, lead_cwd, state, started_at) VALUES ('a', '/c', 'open', 1)",
+		"PRAGMA user_version = 5"} {
+		if _, err := conn.Exec(step); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	conn, err = OpenAt(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	var jobs, threads, inbox, version int64
+	for query, into := range map[string]*int64{"SELECT count(*) FROM jobs": &jobs,
+		"SELECT count(*) FROM threads": &threads, "SELECT count(*) FROM inbox": &inbox,
+		"PRAGMA user_version": &version} {
+		if err := conn.QueryRow(query).Scan(into); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if jobs != 1 || threads != 0 || inbox != 0 || version != schemaVersion {
+		t.Errorf("jobs %d, threads %d, inbox %d, version %d", jobs, threads, inbox, version)
+	}
+}
+
+func TestAThreadHasAtMostOneLiveThreadAgentAndAMessageOneRow(t *testing.T) {
+	conn, err := OpenAt(filepath.Join(t.TempDir(), "fleet.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	insert := func(name, thread, state string) error {
+		_, err := conn.Exec("INSERT INTO agents (name, role, thread, state, started_at) VALUES (?1, 'thread', ?2, ?3, 1)",
+			name, thread, state)
+		return err
+	}
+	if err := insert("thread-a", "C1/1.1", "active"); err != nil {
+		t.Fatal(err)
+	}
+	if err := insert("thread-a2", "C1/1.1", "starting"); err == nil {
+		t.Error("a second live thread agent on C1/1.1 was accepted")
+	}
+	for _, ok := range []func() error{
+		func() error { return insert("thread-b", "C1/2.2", "active") },
+		func() error { return insert("thread-c", "C1/1.1", "ended") },
+	} {
+		if err := ok(); err != nil {
+			t.Error(err)
+		}
+	}
+	if _, err := conn.Exec("INSERT INTO inbox (msg_id, state, received_at) VALUES ('m1', 'reserved', 1)"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec("INSERT INTO inbox (msg_id, state, received_at) VALUES ('m1', 'reserved', 2)"); err == nil {
+		t.Error("a second row for msg_id m1 was accepted")
+	}
+}

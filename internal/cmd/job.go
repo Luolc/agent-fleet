@@ -49,14 +49,17 @@ const (
 		"for a cross-repo job, ~/cross-repo/<job>/ does not exist; with resource_check, the " +
 		"1-minute load average is below the CPU count and available memory is above 2 GiB; " +
 		"last, for a cross-repo job, the parent's team and project are read from Linear.\n\n" +
-		"Then the job is reserved: the job's row (open) and the lead's row (`starting`) are " +
+		"Then the job is reserved: the job's row (open, with the caller's thread as the job's " +
+		"home thread when it has one) and the lead's row (`starting`) are " +
 		"written in one transaction with the dedup checks, so two starts on the same name, " +
 		"key or parent cannot both pass. With Linear on, next and before anything else: the " +
 		"parent is created (--new-parent) and written onto both rows at once; the parent is " +
 		"claimed in the lead's name (`atb linear claim`, so Linear holds the same lock as the " +
 		"ledger); the lead's work order is created under the parent, titled with the task's " +
 		"first non-empty line without leading `#` (at most 80 characters) and described by " +
-		"the task file, written onto the lead's row, and claimed in the lead's name. If an atb " +
+		"the task file, written onto the lead's row, and claimed in the lead's name; when the " +
+		"caller has a thread ticket (FLEET_ISSUE), it is related to the parent (`atb linear " +
+		"relate`). If an atb " +
 		"step fails, nothing else is created; what was created is listed, with the cleanup " +
 		"command, and the rows keep the identifiers written so far.\n\n" +
 		"Then the cross-repo directory is made, the workspace is created with the FLEET_* " +
@@ -185,6 +188,9 @@ func jobStartChecks(h *herdr.Herdr, args JobStartArgs) (*jobChecked, *sql.DB, er
 	}
 	if err := CheckName(args.Job); err != nil {
 		return nil, nil, err
+	}
+	if args.Job == threadsWorkspace {
+		return nil, nil, exit.Refusedf("the job name `%s` is reserved for thread agents", threadsWorkspace)
 	}
 	c := &jobChecked{me: me, id: &identity.Identity{Agent: args.Job + "-lead", Role: identity.Lead,
 		Parent: me.Agent, Target: me.Target, Job: args.Job}}
@@ -348,8 +354,9 @@ func (c *jobChecked) ledgerAndHerdr(h *herdr.Herdr, conn *sql.DB) error {
 func (c *jobChecked) reserve(conn *sql.DB) error {
 	return reserve(conn, c.dedup, func(q querier) error {
 		if _, err := q.Exec(
-			"INSERT INTO jobs (job, parent_issue, key, repo, lead_cwd, state, started_at) VALUES (?1, ?2, ?3, ?4, ?5, 'open', ?6)",
-			c.id.Job, c.parent, c.key, c.repo, c.cwd, db.Now()); err != nil {
+			"INSERT INTO jobs (job, parent_issue, key, repo, lead_cwd, home_thread, state, started_at) "+
+				"VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'open', ?7)",
+			c.id.Job, c.parent, c.key, c.repo, c.cwd, c.me.Thread, db.Now()); err != nil {
 			return exit.Database(err)
 		}
 		return insertStarting(q, c.id, c.cwd, c.task, c.parent)
@@ -393,7 +400,18 @@ func (c *jobChecked) linearSteps(conn querier, args JobStartArgs, created *[]str
 		return atb.Issue{}, err
 	}
 	*created = append(*created, fmt.Sprintf("parent issue %s claimed by %s", c.parent, c.id.Agent))
-	return workOrder(conn, c.linear, c.parent, c.title, c.task, c.id.Agent, c.me.Agent, scope, created)
+	issue, err := workOrder(conn, c.linear, c.parent, c.title, c.task, c.id.Agent, c.me.Agent, scope, created)
+	if err != nil {
+		return atb.Issue{}, err
+	}
+	// The caller's thread ticket, when it has one, points at the job.
+	if c.me.Issue != "" {
+		if err := atb.Relate(c.me.Issue, c.parent); err != nil {
+			return atb.Issue{}, err
+		}
+		*created = append(*created, fmt.Sprintf("thread ticket %s related to %s", c.me.Issue, c.parent))
+	}
+	return issue, nil
 }
 
 // JobStart runs `job start`.
@@ -427,7 +445,7 @@ func JobStart(h *herdr.Herdr, args JobStartArgs) (exit.Code, error) {
 	if err != nil {
 		return startFailed(c.id.Agent, err, 0, created, hint)
 	}
-	code, err := startAndDeliver(h, conn, c.id, place, args.Model, args.Effort, c.body, issue.URL, &created)
+	code, err := startAndDeliver(h, conn, c.id, place, args.Model, args.Effort, c.me.Agent, c.body, issue.URL, &created)
 	if err != nil || code != exit.Ok {
 		return startFailed(c.id.Agent, err, code, created, hint)
 	}

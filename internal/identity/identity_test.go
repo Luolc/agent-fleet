@@ -51,3 +51,26 @@ func TestTheRolesAreThreadLeadAndWorker(t *testing.T) {
 		}
 	}
 }
+
+func TestTheThreadKeyTravelsOnlyInAThreadAgentsPane(t *testing.T) {
+	t.Setenv("FLEET_AGENT", "thread-c0123-1700000000-123")
+	t.Setenv("FLEET_ROLE", "thread")
+	t.Setenv("FLEET_THREAD", "C0123/1700000000.123")
+	id, err := FromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id.Thread != "C0123/1700000000.123" {
+		t.Errorf("Thread = %q", id.Thread)
+	}
+	pairs := id.EnvPairs()
+	if last := pairs[len(pairs)-1]; last != [2]string{"FLEET_THREAD", "C0123/1700000000.123"} {
+		t.Errorf("last pair = %q, want FLEET_THREAD", last)
+	}
+	lead := &Identity{Agent: "item-1-lead", Role: Lead, Thread: "C0123/1700000000.123"}
+	for _, pair := range lead.EnvPairs() {
+		if pair[0] == "FLEET_THREAD" {
+			t.Error("a lead's pane got FLEET_THREAD")
+		}
+	}
+}

@@ -5,7 +5,7 @@
 check "version: exit 0" 0 "$rc"
 "$T" --help >/dev/null 2>&1; rc=$?
 check "help: exit 0" 0 "$rc"
-for c in "job start" "job list" spawn send done status watch close worktree; do
+for c in inbox "thread end" "thread set-project" "thread relate" "job start" "job list" spawn send done status watch close worktree; do
   # shellcheck disable=SC2086
   out=$("$T" $c --help 2>&1); rc=$?
   case "$out" in *Exit*) states=yes ;; *) states=no ;; esac
@@ -13,6 +13,10 @@ for c in "job start" "job list" spawn send done status watch close worktree; do
 done
 out=$("$T" job --help 2>&1); rc=$?
 has "job --help: lists start and list" "$out" start list
+out=$("$T" thread --help 2>&1); rc=$?
+has "thread --help: lists end, set-project and relate" "$out" end set-project relate
+"$T" thread frobnicate >/dev/null 2>&1; rc=$?
+check "unknown thread subcommand: exit 1" 1 "$rc"
 out=$("$T" send 2>&1); rc=$?
 check "send: missing target is a usage error, exit 1" 1 "$rc"
 printf '%s\n' "$out" | grep -qi usage && says=yes || says=no

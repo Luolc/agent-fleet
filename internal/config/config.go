@@ -69,21 +69,30 @@ func Load(checkout string) (*Config, error) {
 	return c, nil
 }
 
+// decodeStrict decodes one JSON object into `into`: unknown keys, wrong
+// types and anything after the object are errors naming the key.
+func decodeStrict(data []byte, into any) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(into); err != nil {
+		var typeErr *json.UnmarshalTypeError
+		if errors.As(err, &typeErr) && typeErr.Field != "" {
+			return errors.New(typeErr.Field + ": expected " + typeErr.Type.String() + ", got " + typeErr.Value)
+		}
+		return errors.New("not a valid config: " + err.Error())
+	}
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		return errors.New("not a valid config: more than one JSON value")
+	}
+	return nil
+}
+
 // Parse reads a config file's content. Unknown keys and wrong types are
 // errors.
 func Parse(data []byte) (*Config, error) {
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
 	var f file
-	if err := dec.Decode(&f); err != nil {
-		var typeErr *json.UnmarshalTypeError
-		if errors.As(err, &typeErr) && typeErr.Field != "" {
-			return nil, errors.New(typeErr.Field + ": expected " + typeErr.Type.String() + ", got " + typeErr.Value)
-		}
-		return nil, errors.New("not a valid config: " + err.Error())
-	}
-	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
-		return nil, errors.New("not a valid config: more than one JSON value")
+	if err := decodeStrict(data, &f); err != nil {
+		return nil, err
 	}
 	// A null would decode as an absent key, and an absent key means the
 	// default; `"linear": null` must not turn Linear off.

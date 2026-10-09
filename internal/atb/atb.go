@@ -1,5 +1,6 @@
 // Package atb runs `atb linear`: create and claim an issue, read a parent
-// issue's team and project, write a worker report and release an issue.
+// issue's team and project, write a worker report and release an issue,
+// put an issue in a project, relate two issues, and run a read-only query.
 package atb
 
 import (
@@ -40,12 +41,24 @@ func CheckIdentifier(issue string) error {
 // taken from its output; anything else is a failure that does not show
 // the output.
 func Create(team, project, parent, title, file string) (Issue, error) {
-	op := "atb linear create"
-	argv := []string{"linear", "create", "--team", team, "--project", project}
+	argv := []string{"--team", team, "--project", project}
 	if parent != "" {
 		argv = append(argv, "--parent", parent)
 	}
-	argv = append(argv, "--title", title, "--description-file", file, "--json")
+	return create(append(argv, "--title", title, "--description-file", file)...)
+}
+
+// CreateThreadTicket is `atb linear create --team <team> --label thread
+// --title <title> --description-file <file> --json`: a thread ticket, in
+// no project.
+func CreateThreadTicket(team, title, file string) (Issue, error) {
+	return create("--team", team, "--label", "thread", "--title", title, "--description-file", file)
+}
+
+func create(args ...string) (Issue, error) {
+	op := "atb linear create"
+	argv := append([]string{"linear", "create"}, args...)
+	argv = append(argv, "--json")
 	out, err := run(op, argv...)
 	if err != nil {
 		return Issue{}, err
@@ -67,7 +80,7 @@ func TeamProject(issue string) (team, project string, err error) {
 		return "", "", err
 	}
 	op := "atb linear query " + issue
-	out, err := run(op, "linear", "query", `{ issue(id: "`+issue+`") { team { key } project { name } } }`)
+	out, err := Query(op, `{ issue(id: "`+issue+`") { team { key } project { name } } }`)
 	if err != nil {
 		return "", "", err
 	}
@@ -99,6 +112,25 @@ type issueData struct {
 type issueNode struct {
 	Team    *struct{ Key string }  `json:"team"`
 	Project *struct{ Name string } `json:"project"`
+}
+
+// Query is `atb linear query <graphql>`: the reply's JSON (the query's
+// data, with or without a `data` wrapper, as atb prints it). `op` names
+// the step in errors.
+func Query(op, graphql string) ([]byte, error) {
+	return run(op, "linear", "query", graphql)
+}
+
+// SetProject is `atb linear set-project <issue> --project <project>`.
+func SetProject(issue, project string) error {
+	_, err := run("atb linear set-project "+issue, "linear", "set-project", issue, "--project", project)
+	return err
+}
+
+// Relate is `atb linear relate <issue> <other>`.
+func Relate(issue, other string) error {
+	_, err := run("atb linear relate "+issue, "linear", "relate", issue, other)
+	return err
 }
 
 // Claim is `atb linear claim <issue> --agent <agent> --source <source>

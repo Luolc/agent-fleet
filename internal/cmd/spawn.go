@@ -222,7 +222,7 @@ func Spawn(h *herdr.Herdr, args SpawnArgs) (exit.Code, error) {
 		return startFailed(c.id.Agent, err, 0, created, hint)
 	}
 	created = append(created, fmt.Sprintf("tab %s (%s)", args.Name, place.TabID))
-	code, err := startAndDeliver(h, conn, c.id, place, args.Model, args.Effort, c.body, issue.URL, &created)
+	code, err := startAndDeliver(h, conn, c.id, place, args.Model, args.Effort, c.me.Agent, c.body, issue.URL, &created)
 	if err != nil || code != exit.Ok {
 		return startFailed(c.id.Agent, err, code, created, hint)
 	}
