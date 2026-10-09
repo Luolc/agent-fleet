@@ -120,7 +120,7 @@ func run(args []string) int {
 }
 
 func dispatch(args []string) (exit.Code, error) {
-	var session cliargs.OptString
+	session := cliargs.OptString{Name: "session", Placeholder: "NAME"}
 	fs := flagSet("fleet", &session)
 	var showVersion bool
 	fs.BoolVar(&showVersion, "version", false, "Print version")
@@ -142,8 +142,7 @@ func dispatch(args []string) (exit.Code, error) {
 	}
 	switch rest[0] {
 	case "help":
-		fmt.Fprint(os.Stdout, topHelp)
-		return exit.Ok, nil
+		return help(rest[1:])
 	case "send":
 		return runSend(rest[1:], &session)
 	case "status":
@@ -151,6 +150,21 @@ func dispatch(args []string) (exit.Code, error) {
 	default:
 		return 0, &usageError{fmt.Sprintf("unrecognized subcommand '%s'", rest[0]), topUsage}
 	}
+}
+
+// help is clap's implicit `help [COMMAND]` subcommand.
+func help(args []string) (exit.Code, error) {
+	helps := map[string]string{"send": sendHelp, "status": statusHelp, "help": topHelp}
+	if len(args) == 0 {
+		fmt.Fprint(os.Stdout, topHelp)
+		return exit.Ok, nil
+	}
+	text, ok := helps[args[0]]
+	if !ok {
+		return 0, &usageError{fmt.Sprintf("unrecognized subcommand '%s'", args[0]), topUsage}
+	}
+	fmt.Fprint(os.Stdout, text)
+	return exit.Ok, nil
 }
 
 // parse parses a command's arguments: help goes to stdout with exit 0,
@@ -180,7 +194,7 @@ func parse(fs *flag.FlagSet, args []string, help, usage string, positionals int,
 
 func runSend(args []string, session *cliargs.OptString) (exit.Code, error) {
 	fs := flagSet("send", session)
-	var file cliargs.OptString
+	file := cliargs.OptString{Name: "file", Placeholder: "PATH"}
 	fs.Var(&file, "file", "Read the body from this file instead of stdin")
 	got, helped, err := parse(fs, args, sendHelp, sendUsage, 1, "TO")
 	if err != nil || helped {
@@ -191,14 +205,15 @@ func runSend(args []string, session *cliargs.OptString) (exit.Code, error) {
 
 func runStatus(args []string, session *cliargs.OptString) (exit.Code, error) {
 	fs := flagSet("status", session)
-	var job, repo cliargs.OptString
-	var asJSON bool
+	job := cliargs.OptString{Name: "job", Placeholder: "JOB"}
+	repo := cliargs.OptString{Name: "repo", Placeholder: "REPO"}
+	asJSON := cliargs.Bool{Name: "json"}
 	fs.Var(&job, "job", "Only this job's agents")
-	fs.BoolVar(&asJSON, "json", false, "Machine-readable output")
+	fs.Var(&asJSON, "json", "Machine-readable output")
 	fs.Var(&repo, "repo", "Dataset repo whose ledger to read")
 	_, helped, err := parse(fs, args, statusHelp, statusUsage, 0)
 	if err != nil || helped {
 		return exit.Ok, err
 	}
-	return cmd.Status(herdr.New(session.Ptr()), cmd.StatusArgs{Job: job.Ptr(), JSON: asJSON, Repo: repo.Ptr()})
+	return cmd.Status(herdr.New(session.Ptr()), cmd.StatusArgs{Job: job.Ptr(), JSON: asJSON.Value, Repo: repo.Ptr()})
 }

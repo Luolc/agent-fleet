@@ -7,6 +7,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -260,5 +261,76 @@ func TestSendRefusesEmptyAndForgedBodiesBeforeCallingHerdr(t *testing.T) {
 		if argv != "" {
 			t.Errorf("herdr was called for body %q", body)
 		}
+	}
+}
+
+func TestHelpSubcommandNamesACommand(t *testing.T) {
+	w := newWorld(t)
+	out := w.run("", []string{"help", "send"})
+	if out.code != 0 || !strings.Contains(out.stdout, "Usage: fleet send") {
+		t.Errorf("help send: %+v", out)
+	}
+	out = w.run("", []string{"help", "frobnicate"})
+	if out.code != 1 || !strings.Contains(out.stderr, "unrecognized subcommand 'frobnicate'") {
+		t.Errorf("help frobnicate: %+v", out)
+	}
+	out = w.run("", []string{"help"})
+	if out.code != 0 || !strings.Contains(out.stdout, "Usage: fleet [OPTIONS] <COMMAND>") {
+		t.Errorf("help: %+v", out)
+	}
+}
+
+func TestRepeatedOptionIsRefusedBeforeDelivery(t *testing.T) {
+	w := newWorld(t)
+	w.herdr(`{"result":{"type":"agent_prompted"}}`, "", false)
+	one, two := filepath.Join(w.dir, "one.md"), filepath.Join(w.dir, "two.md")
+	for _, f := range []string{one, two} {
+		if err := os.WriteFile(f, []byte("body\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out := w.run("", []string{"send", "x-lead", "--file", one, "--file", two}, "FLEET_AGENT=x-worker")
+	if out.code != 1 || !strings.Contains(out.stderr, "the argument '--file <PATH>' cannot be used multiple times") {
+		t.Errorf("%+v", out)
+	}
+	if _, err := os.Stat(filepath.Join(w.dir, "argv")); err == nil {
+		t.Error("herdr was called")
+	}
+	out = w.run("", []string{"status", "--json", "--json"})
+	if out.code != 1 || !strings.Contains(out.stderr, "the argument '--json' cannot be used multiple times") {
+		t.Errorf("%+v", out)
+	}
+}
+
+func TestReplyKeysAreExact(t *testing.T) {
+	w := newWorld(t)
+	// A capitalized key is not the key the source looks up: unknown, exit 2.
+	out, _ := w.send(`{"result":{"Type":"agent_prompted"}}`, "hi\n")
+	if out.code != 2 || !strings.Contains(out.stderr, `unexpected herdr reply: {"Type":"agent_prompted"}`) {
+		t.Errorf("%+v", out)
+	}
+}
+
+func TestStatusSkipsListEntriesThatAreNotAgents(t *testing.T) {
+	w := statusWorld(t)
+	w.herdr("unused", `{"result":{"agents":[`+
+		`{"name":"x-lead","agent_status":"idle","state_change_seq":9007199254740993},`+
+		`42,{"name":"x-w1","agent_status":"blocked","state_change_seq":3.5},{"name":7}]}}`, false)
+	out := w.run("", []string{"status", "--repo", repo, "--json", "--job", "x"})
+	if out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	var lines []map[string]any
+	if err := json.Unmarshal([]byte(out.stdout), &lines); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]any{}
+	for _, l := range lines {
+		got[l["name"].(string)] = l["herdr_status"]
+	}
+	// x-lead is kept with its large seq; x-w1's float seq and the stray
+	// values are skipped, so it counts as missing.
+	if got["x-lead"] != "idle" || got["x-w1"] != nil || got["x-w2"] != nil {
+		t.Errorf("herdr_status by name = %v", got)
 	}
 }

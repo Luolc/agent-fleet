@@ -83,22 +83,30 @@ comment, `///` the item's doc comment.
   `flag.FlagSet`. clap behaviors that `flag` lacks are reproduced in
   `internal/cliargs`: flags after positionals (`send <to> --file x`), `--`
   ending the flags, `--session` accepted both before and after the command
-  (clap `global = true`). Help (`-h`, `--help`) prints to stdout and exits 0;
-  every other parse error prints clap's wording (`error: ...`, the usage line,
-  `For more information, try '--help'.`) to stderr and exits 1, as the source
-  maps clap's exit 2 to 1. clap's implicit `help` subcommand exists too. The
-  help text is clap's `about` and `long_about` verbatim, kept as constants
-  next to the command (`SendAbout`, `SendLongAbout`); the layout (usage
-  line, Arguments, Options) is assembled in `cmd/fleet` and approximates
-  clap's, it is not byte-identical.
+  (clap `global = true`), a flag given twice refused, and the implicit
+  `help [COMMAND]` subcommand (the named command's help; an unknown name is
+  an unrecognized subcommand). Help (`-h`, `--help`) prints to stdout and
+  exits 0; every other parse error exits 1 (the source maps clap's exit 2 to
+  1) and prints clap's frame to stderr: `error: <message>`, the usage line,
+  `For more information, try '--help'.`. The message is clap's for what
+  `cliargs` detects (a missing positional, an unexpected argument, an
+  unknown subcommand, a repeated flag) and `flag`'s own for what `flag`
+  detects (an unknown flag, a bad value); the words differ there. The help
+  text is clap's `about` and `long_about` verbatim, kept as constants next
+  to the command (`SendAbout`, `SendLongAbout`); the layout (usage line,
+  Arguments, Options) is assembled in `cmd/fleet` and approximates clap's,
+  it is not byte-identical.
 - serde to `encoding/json`: field order is declaration order with `json`
   tags in snake_case; `Option` fields are pointers so they serialize as
   `null`; a `Vec` serializes as `[]` when empty, so slices are initialized,
   never nil. Pretty output is a `json.Encoder` with `SetIndent("", "  ")` and
   `SetEscapeHTML(false)` (serde does not escape `<`, `>`, `&`). Untyped
-  `serde_json::Value` lookups decode with `UseNumber` and type-assert, so a
-  missing key and a wrong type are skipped exactly where the source skips
-  them.
+  `serde_json::Value` lookups never decode into a struct (struct decoding
+  matches keys case-insensitively): `herdr.Lookup` reads the exact key with
+  numbers kept as `json.Number`, and array elements are type-asserted one
+  at a time, so a missing key, a wrong type and a stray element are skipped
+  exactly where the source skips them. A `Value` printed with `{}` is
+  `herdr.Display`: compact, object keys sorted, as serde's Display.
 - rusqlite to `modernc.org/sqlite` through `database/sql`: one `*sql.DB` with
   `SetMaxOpenConns(1)`, so the pragmas and the transaction state belong to one
   connection as with one rusqlite connection. The DSN carries the source's
@@ -108,16 +116,27 @@ comment, `///` the item's doc comment.
   `?1`-style parameters are kept; SQLite binds them by index. NULL-able
   columns scan into `sql.Null*`.
 - `std::process::Command` to `os/exec`: `exec.CommandContext` with a 60 s
-  deadline per herdr call, `WaitDelay` 5 s, `Setpgid` and a `Cancel` that
-  kills the process group, and an explicit `Env` built from an allow-list of
-  the caller's environment (`PATH`, `HOME`, `USER`, `LOGNAME`, `TMPDIR`,
-  `TERM`, `LANG`, `LC_*`, `XDG_*`, `HERDR_*`). stdout and stderr are captured
-  separately. A call that hits the deadline is exit 5.
+  deadline per herdr call, `WaitDelay` 5 s, `Setpgid`, and an explicit `Env`
+  built from an allow-list of the caller's environment (`PATH`, `HOME`,
+  `USER`, `LOGNAME`, `TMPDIR`, `TERM`, `LANG`, `LC_*`, `XDG_*`, `HERDR_*`).
+  stdout and stderr are captured separately. When the call returns, for any
+  reason, the process group is killed: nothing herdr starts for a call may
+  outlive it. A call that hits the deadline is exit 5 and the message names
+  only the operation (`herdr agent prompt timed out ...`), never an argument,
+  which may be a message body. A `WaitDelay` that expires after herdr itself
+  exited is not an error: what herdr printed is the reply.
+- Native error text: where the source embeds a Rust error's `Display` (an
+  `io::Error`, a rusqlite error, a serde error, an `ExitStatus`), the Go form
+  embeds Go's error text in the same position and keeps the words the source
+  puts around it verbatim, odd ones included (`cannot read <path>: `,
+  `database: `, and the no-JSON message's `(exit exit status: N)`, where the
+  source prints the status's own Display after the word `exit`). Only the
+  wrapped text differs; it is not listed per message.
 - Strings: `trim()` is `strings.TrimSpace`, `trim_start()` is
   `strings.TrimLeftFunc(s, unicode.IsSpace)`, `chars().count()` is
   `utf8.RuneCountInString`, `{:<width$}` is `%-*s` (both pad by runes).
-  `String::from_utf8_lossy` is `string(bytes)`: Go strings carry the bytes
-  through unchanged.
+  Rust's `lines()` ends a line at `\n` or `\r\n`; a Go port of it trims the
+  `\r`. `String::from_utf8_lossy` is `string(bytes)` (see Deviations).
 - Printing: `println!` writes to `os.Stdout`, `eprintln!` to `os.Stderr`,
   directly, as the source does. Process-level tests re-run the test binary
   (`TestMain` with `FLEET_TEST_RUN_MAIN=1`) against a fake `herdr` script on
@@ -127,7 +146,14 @@ comment, `///` the item's doc comment.
 
 ## Deviations
 
-- Every herdr call has a deadline (above); the source waits forever.
-- A file or stdin body that is not valid UTF-8 is passed through; the source
-  refuses the file (exit 1) or fails on stdin (exit 5).
-- Help and usage-error layout approximates clap's (above).
+- Every herdr call has a deadline, and the process group is killed when the
+  call returns (above); the source waits forever and leaves descendants.
+- Invalid UTF-8 passes through everywhere: a file or stdin body (the source
+  refuses the file with exit 1 and fails on stdin with exit 5), herdr's
+  stdout and stderr and the screen (the source replaces the bad bytes with
+  U+FFFD).
+- `encoding/json` escapes U+2028 and U+2029 in strings; serde writes them
+  literally.
+- Help and usage-error layout approximates clap's, and `flag`'s own
+  messages are kept where `flag` detects the error (above).
+- Native error text is Go's where the source embeds Rust's (above).

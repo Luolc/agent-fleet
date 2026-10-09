@@ -140,16 +140,16 @@ func HerdrAgents(h *herdr.Herdr) (map[string]InHerdr, error) {
 	if err != nil {
 		return nil, err
 	}
-	var reply struct {
-		Agents *[]map[string]any `json:"agents"`
-	}
-	decoder := json.NewDecoder(bytes.NewReader(result))
-	decoder.UseNumber()
-	if err := decoder.Decode(&reply); err != nil || reply.Agents == nil {
+	list, ok := herdr.Lookup(result, "agents").([]any)
+	if !ok {
 		return nil, exit.Environmentf("herdr agent list: no agents array in the reply")
 	}
 	agents := make(map[string]InHerdr)
-	for _, agent := range *reply.Agents {
+	for _, entry := range list {
+		agent, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
 		name, ok := agent["name"].(string)
 		if !ok {
 			continue

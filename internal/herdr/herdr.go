@@ -20,11 +20,13 @@ import (
 	"github.com/Luolc/agent-fleet/internal/exit"
 )
 
-// callTimeout bounds one herdr call; herdr's own longest wait is 30 s.
-const callTimeout = 60 * time.Second
+// callTimeout bounds one herdr call; herdr's own longest wait is 30 s. A
+// variable so the test can shorten it.
+var callTimeout = 60 * time.Second
 
-// waitDelay is how long Wait keeps the pipes open after herdr exits.
-const waitDelay = 5 * time.Second
+// waitDelay is how long Wait keeps the pipes open after herdr exits. A
+// variable so the test can shorten it.
+var waitDelay = 5 * time.Second
 
 // Herdr is how to reach the herdr server. Inside a pane herdr finds its
 // own session through `HERDR_SOCKET_PATH`; from cron or a test the session
@@ -95,8 +97,20 @@ func (h *Herdr) run(args ...string) (stdout, stderr []byte, err error) {
 	cmd.Stdout = &out
 	cmd.Stderr = &errOut
 	err = cmd.Run()
+	// Whatever herdr left behind in its process group (a descendant holding
+	// the pipes past WaitDelay, or everything after the deadline) goes with
+	// it; nothing herdr starts for a call is meant to outlive the call.
+	if cmd.Process != nil {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
 	if ctx.Err() != nil {
-		return nil, nil, exit.Environmentf("herdr %s timed out after %v", strings.Join(args, " "), callTimeout)
+		// Only the operation is named: args may carry a message body.
+		return nil, nil, exit.Environmentf("herdr %s timed out after %v", strings.Join(args[:min(2, len(args))], " "), callTimeout)
+	}
+	// herdr itself has exited and what it printed is in hand; the
+	// descendant that kept the pipes open was just killed.
+	if errors.Is(err, exec.ErrWaitDelay) {
+		err = nil
 	}
 	var exitErr *exec.ExitError
 	if err != nil && !errors.As(err, &exitErr) {
@@ -122,18 +136,20 @@ func (h *Herdr) Call(args ...string) (*Reply, error) {
 		}
 	}
 	if text == "" {
-		return nil, exit.Environmentf("herdr gave no JSON reply (%s): %s",
+		// "exit exit status: N": the source prints the status's own Display
+		// after the word exit.
+		return nil, exit.Environmentf("herdr gave no JSON reply (exit %s): %s",
 			status(err), firstLine(stderr, stdout))
 	}
+	// Exact keys: a map lookup, never a struct, which would match
+	// case-insensitively.
 	var value map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(text), &value); err != nil {
 		return nil, exit.Environmentf("herdr reply is not JSON: %v", err)
 	}
 	if raw, ok := value["error"]; ok {
-		var fields map[string]any
-		_ = json.Unmarshal(raw, &fields)
 		field := func(name string) string {
-			s, _ := fields[name].(string)
+			s, _ := Lookup(raw, name).(string)
 			return s
 		}
 		return &Reply{Error: &ReplyError{Code: field("code"), Message: field("message")}}, nil
@@ -165,15 +181,11 @@ func (h *Herdr) Prompt(target, text string) (PromptOutcome, error) {
 		return PromptOutcome{}, err
 	}
 	if reply.Error == nil {
-		var result struct {
-			Type string `json:"type"`
-		}
-		_ = json.Unmarshal(reply.Result, &result)
-		if result.Type == "agent_prompted" {
+		if kind, _ := Lookup(reply.Result, "type").(string); kind == "agent_prompted" {
 			return PromptOutcome{Kind: Prompted}, nil
 		}
 		return PromptOutcome{Kind: Unknown,
-			Reason: fmt.Sprintf("unexpected herdr reply: %s", compact(reply.Result))}, nil
+			Reason: fmt.Sprintf("unexpected herdr reply: %s", Display(reply.Result))}, nil
 	}
 	code, message := reply.Error.Code, reply.Error.Message
 	switch code {
@@ -253,9 +265,11 @@ func status(err error) string {
 }
 
 // firstLine is the first non-empty line of stderr, else of stdout, else "".
+// A line ends at "\n" or "\r\n", as Rust's `lines()` splits.
 func firstLine(texts ...string) string {
 	for _, text := range texts {
 		line, _, _ := strings.Cut(text, "\n")
+		line = strings.TrimSuffix(line, "\r")
 		if line != "" {
 			return line
 		}
@@ -263,10 +277,45 @@ func firstLine(texts ...string) string {
 	return ""
 }
 
-func compact(raw json.RawMessage) string {
-	var buf bytes.Buffer
-	if json.Compact(&buf, raw) != nil {
+// Lookup is `value.get(key)` on a JSON object: the value under the exact
+// key, decoded with numbers kept as json.Number, or nil when `raw` is not
+// an object or has no such key.
+func Lookup(raw json.RawMessage, key string) any {
+	var object map[string]json.RawMessage
+	if json.Unmarshal(raw, &object) != nil {
+		return nil
+	}
+	field, ok := object[key]
+	if !ok {
+		return nil
+	}
+	return Decode(field)
+}
+
+// Decode is one JSON value as Go data with numbers kept as json.Number;
+// nil when it does not parse.
+func Decode(raw json.RawMessage) any {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var value any
+	if decoder.Decode(&value) != nil {
+		return nil
+	}
+	return value
+}
+
+// Display renders a reply as serde_json's Display does: compact, object
+// keys sorted, `<`, `>` and `&` unescaped.
+func Display(raw json.RawMessage) string {
+	value := Decode(raw)
+	if value == nil {
 		return string(raw)
 	}
-	return buf.String()
+	var buf bytes.Buffer
+	encoder := json.NewEncoder(&buf)
+	encoder.SetEscapeHTML(false)
+	if encoder.Encode(value) != nil {
+		return string(raw)
+	}
+	return strings.TrimSuffix(buf.String(), "\n")
 }
