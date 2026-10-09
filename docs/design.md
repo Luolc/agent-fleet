@@ -34,7 +34,7 @@ What the judge pins down (the CLI reference and `--json` output are added as the
 
 ## Known issues and next steps
 
-Every command is ported; the judge is green against the Go binary. Next: make the judge a blocking CI check (delete `continue-on-error` in `.github/workflows/ci.yml`) and run it once more against the earlier binary. `watch`'s screen filter knows only Claude Code's screen, and its judge arm runs with a 5 s stale limit, so it is sensitive to a loaded machine.
+Every command is ported; the judge is green against the Go binary and is a blocking CI check. `watch`'s screen filter knows only Claude Code's screen, and its judge arm runs with a 5 s stale limit, so it is sensitive to a loaded machine.
 
 ## Decision log
 
