@@ -15,9 +15,10 @@ import (
 
 // DoneAbout and DoneLongAbout are the help texts of `done`.
 const (
-	DoneAbout     = "Report that your task is finished to the agent that spawned you, and end your row"
-	DoneLongAbout = "Report that your task is finished to the agent that spawned you, and end your row.\n\n" +
-		"Call it from your own pane when your work is done. The report goes to FLEET_PARENT " +
+	DoneAbout     = "Report that your task is finished to your lead, and end your row (workers only)"
+	DoneLongAbout = "Report that your task is finished to your lead, and end your row (workers only).\n\n" +
+		"Call it from your own pane when your work is done; a lead ends its job with `fleet job " +
+		"end` instead. The report goes to FLEET_PARENT " +
 		"through the same path as `fleet send`, with the header; it names the report file " +
 		"(as an absolute path) when one is given.\n\n" +
 		"When FLEET_ISSUE names your Linear work order, --report-file is required: the " +
@@ -29,7 +30,7 @@ const (
 		"When herdr reports the report as delivered, " +
 		"your row in the ledger is marked ended, so `fleet status` stops listing you as " +
 		"owing work. On any other outcome the row stays live and you may run `done` again.\n\n" +
-		"Exit: as `send`; 1 also when FLEET_PARENT is empty (a thread agent has no parent), " +
+		"Exit: as `send`; 1 also when the caller is not a worker, FLEET_PARENT is empty, " +
 		"the report file cannot be read, FLEET_ISSUE is set " +
 		"and --report-file is not given, or --abandon is given while FLEET_ISSUE is empty; " +
 		"5 also when an atb step fails."
@@ -88,8 +89,11 @@ func Done(h *herdr.Herdr, args DoneArgs) (exit.Code, error) {
 	if err != nil {
 		return 0, err
 	}
+	if me.Role != identity.Worker {
+		return 0, exit.Refusedf("a %s does not report with `done`; a lead ends its job with `fleet job end`", me.Role)
+	}
 	if me.Parent == "" {
-		return 0, exit.Refusedf("FLEET_PARENT is empty: only a lead or a worker reports with `done`")
+		return 0, exit.Refusedf("FLEET_PARENT is empty: a worker reports to the lead that spawned it")
 	}
 	reportFile, err := reportPath(args, me.Issue)
 	if err != nil {

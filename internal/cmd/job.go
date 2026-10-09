@@ -67,7 +67,7 @@ const (
 		"spawn` starts a worker, the task is delivered with the work order's URL, and the " +
 		"lead's row becomes active.\n\n" +
 		"There is no rollback and no retry. When a step fails after the reservation, the " +
-		"output lists what exists and the cleanup command `fleet close <job> --force`.\n\n" +
+		"output lists what exists and the cleanup command `fleet job end <job> --force`.\n\n" +
 		"Exit: 0 when the task was delivered; 1 when a check refuses; 2/3/4 as `send` for the " +
 		"delivery; 3 when the lead stops at a screen other than its input box (the screen is " +
 		"printed); 5 when atb, herdr or the database fails, including a failed start."
@@ -113,7 +113,9 @@ type JobListArgs struct {
 
 // jobRow is an open job as the ledger records it.
 type jobRow struct {
+	ID          int64
 	Job         string
+	State       string
 	ParentIssue string
 	Key         string
 	Repo        string
@@ -125,9 +127,24 @@ type jobRow struct {
 // openJob is the open job named `job`, or nil.
 func openJob(conn *sql.DB, job string) (*jobRow, error) {
 	var r jobRow
-	err := conn.QueryRow("SELECT job, parent_issue, key, repo, lead_cwd, home_thread, started_at FROM jobs "+
+	err := conn.QueryRow("SELECT id, job, state, parent_issue, key, repo, lead_cwd, home_thread, started_at FROM jobs "+
 		"WHERE job = ?1 AND state = 'open'", job).Scan(
-		&r.Job, &r.ParentIssue, &r.Key, &r.Repo, &r.LeadCwd, &r.HomeThread, &r.StartedAt)
+		&r.ID, &r.Job, &r.State, &r.ParentIssue, &r.Key, &r.Repo, &r.LeadCwd, &r.HomeThread, &r.StartedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, exit.Database(err)
+	}
+	return &r, nil
+}
+
+// latestJob is the newest job named `job` in any state, or nil.
+func latestJob(conn *sql.DB, job string) (*jobRow, error) {
+	var r jobRow
+	err := conn.QueryRow("SELECT id, job, state, parent_issue, key, repo, lead_cwd, home_thread, started_at FROM jobs "+
+		"WHERE job = ?1 ORDER BY id DESC LIMIT 1", job).Scan(
+		&r.ID, &r.Job, &r.State, &r.ParentIssue, &r.Key, &r.Repo, &r.LeadCwd, &r.HomeThread, &r.StartedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -139,7 +156,7 @@ func openJob(conn *sql.DB, job string) (*jobRow, error) {
 
 // openJobs are the open jobs, oldest first.
 func openJobs(conn *sql.DB) ([]jobRow, error) {
-	rows, err := conn.Query("SELECT job, parent_issue, key, repo, lead_cwd, home_thread, started_at FROM jobs " +
+	rows, err := conn.Query("SELECT id, job, state, parent_issue, key, repo, lead_cwd, home_thread, started_at FROM jobs " +
 		"WHERE state = 'open' ORDER BY id")
 	if err != nil {
 		return nil, exit.Database(err)
@@ -148,7 +165,7 @@ func openJobs(conn *sql.DB) ([]jobRow, error) {
 	var jobs []jobRow
 	for rows.Next() {
 		var r jobRow
-		if err := rows.Scan(&r.Job, &r.ParentIssue, &r.Key, &r.Repo, &r.LeadCwd, &r.HomeThread, &r.StartedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.Job, &r.State, &r.ParentIssue, &r.Key, &r.Repo, &r.LeadCwd, &r.HomeThread, &r.StartedAt); err != nil {
 			return nil, exit.Database(err)
 		}
 		jobs = append(jobs, r)
@@ -297,7 +314,7 @@ func (c *jobChecked) dedup(conn querier) error {
 	}
 	if err == nil {
 		return exit.Refusedf("job %s is already open in target %s; if it is left over, clean up with "+
-			"`fleet close %s --force`", job, c.me.Target, job)
+			"`fleet job end %s --force`", job, c.me.Target, job)
 	}
 	if c.key != "" {
 		var other string
@@ -340,7 +357,7 @@ func (c *jobChecked) ledgerAndHerdr(h *herdr.Herdr, conn *sql.DB) error {
 	}
 	if len(workspaces) != 0 || c.repo == "" && exists(c.cwd) {
 		return exit.Refusedf("job %s already has a workspace or the directory %s; if it is left over, "+
-			"clean up with `fleet close %s --force`", job, c.cwd, job)
+			"clean up with `fleet job end %s --force`", job, c.cwd, job)
 	}
 	if err := resources(c.cfg); err != nil {
 		return err
@@ -422,7 +439,7 @@ func JobStart(h *herdr.Herdr, args JobStartArgs) (exit.Code, error) {
 	}
 	defer conn.Close()
 	job := c.id.Job
-	hint := fmt.Sprintf("clean up with: fleet close %s --force", job)
+	hint := fmt.Sprintf("clean up with: fleet job end %s --force", job)
 	if err := c.reserve(conn); err != nil {
 		return 0, err
 	}

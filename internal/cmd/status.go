@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -21,9 +22,10 @@ import (
 
 // StatusAbout and StatusLongAbout are the help texts of `status`.
 const (
-	StatusAbout     = "Show who is running and who owes work (read-only)"
-	StatusLongAbout = "Show who is running and who owes work (read-only).\n\n" +
-		"Joins the ledger's live rows (state starting or active) with `herdr agent list`. For each " +
+	StatusAbout     = "Show the open jobs, who is running and who owes work (read-only)"
+	StatusLongAbout = "Show the open jobs, who is running and who owes work (read-only).\n\n" +
+		"First the target's open jobs as `fleet job list` prints them, then the agents: the " +
+		"ledger's live rows (state starting or active) joined with `herdr agent list`. For each " +
 		"agent: role, job, parent, age, herdr status, and time since `fleet watch` last saw its " +
 		"status, state_change_seq or screen change (`-` before watch has looked at it). Flags:\n" +
 		"  owes-work  a lead or worker that has not run `fleet done` but is idle or done in herdr\n" +
@@ -36,9 +38,9 @@ const (
 
 // StatusArgs are the arguments of `status`.
 type StatusArgs struct {
-	// Job, when set, keeps only this job's agents.
+	// Job, when set, keeps only this job and its agents.
 	Job *string
-	// JSON asks for machine-readable output: a JSON array, one object per agent.
+	// JSON asks for machine-readable output: {"jobs": [...], "agents": [...]}.
 	JSON bool
 	// Target, when set, replaces FLEET_TARGET: the ledger is
 	// ~/.local/state/fleet/<target>/fleet.db (db.Path).
@@ -175,6 +177,12 @@ func HerdrAgents(h *herdr.Herdr) (map[string]InHerdr, error) {
 	return agents, nil
 }
 
+// report is the whole of `status`.
+type report struct {
+	Jobs   []jobLine `json:"jobs"`
+	Agents []line    `json:"agents"`
+}
+
 // Status runs `status`.
 func Status(h *herdr.Herdr, args StatusArgs) (exit.Code, error) {
 	conn, err := OpenLedger(args.Target)
@@ -182,6 +190,13 @@ func Status(h *herdr.Herdr, args StatusArgs) (exit.Code, error) {
 		return 0, err
 	}
 	defer conn.Close()
+	jobs, err := jobLines(conn)
+	if err != nil {
+		return 0, err
+	}
+	if args.Job != nil {
+		jobs = slices.DeleteFunc(jobs, func(j jobLine) bool { return j.Job != *args.Job })
+	}
 	rows, err := LiveRows(conn, args.Job)
 	if err != nil {
 		return 0, err
@@ -204,14 +219,34 @@ func Status(h *herdr.Herdr, args StatusArgs) (exit.Code, error) {
 		encoder := json.NewEncoder(&buf)
 		encoder.SetEscapeHTML(false)
 		encoder.SetIndent("", "  ")
-		if err := encoder.Encode(lines); err != nil {
+		if err := encoder.Encode(report{Jobs: jobs, Agents: lines}); err != nil {
 			return 0, exit.Environmentf("json: %v", err)
 		}
 		fmt.Fprint(os.Stdout, buf.String())
 	} else {
+		printJobs(jobs, now)
+		fmt.Fprintln(os.Stdout)
 		printTable(lines)
 	}
 	return exit.Ok, nil
+}
+
+// printJobs prints the open jobs as a table.
+func printJobs(jobs []jobLine, now int64) {
+	if len(jobs) == 0 {
+		fmt.Fprintln(os.Stdout, "no open jobs")
+		return
+	}
+	rows := make([][]string, 0, len(jobs))
+	for _, j := range jobs {
+		lead := "-"
+		if j.Lead != nil {
+			lead = *j.Lead
+		}
+		rows = append(rows, []string{j.Job, orDash(j.ParentIssue), orDash(j.Key), orDash(j.Repo), lead,
+			orDash(strings.Join(j.Workers, ",")), Duration(now - j.StartedAt)})
+	}
+	printAligned([]string{"JOB", "PARENT", "KEY", "REPO", "LEAD", "WORKERS", "AGE"}, rows)
 }
 
 func statusLine(live Live, agent *InHerdr, now int64) line {
@@ -270,17 +305,26 @@ func printTable(lines []line) {
 			herdrStatus, sinceChange, strings.Join(l.Flags, ","),
 		})
 	}
-	header := [8]string{"NAME", "ROLE", "JOB", "PARENT", "AGE", "HERDR", "CHANGED", "FLAGS"}
-	var widths [8]int
+	rows := make([][]string, 0, len(cells))
+	for _, row := range cells {
+		rows = append(rows, row[:])
+	}
+	printAligned([]string{"NAME", "ROLE", "JOB", "PARENT", "AGE", "HERDR", "CHANGED", "FLAGS"}, rows)
+}
+
+// printAligned prints a header and rows in columns two spaces apart, with
+// no trailing space.
+func printAligned(header []string, rows [][]string) {
+	widths := make([]int, len(header))
 	for i, h := range header {
 		widths[i] = len(h)
 	}
-	for _, row := range cells {
+	for _, row := range rows {
 		for i, cell := range row {
 			widths[i] = max(widths[i], utf8.RuneCountInString(cell))
 		}
 	}
-	print := func(row [8]string) {
+	print := func(row []string) {
 		text := make([]string, 0, len(row))
 		for i, cell := range row {
 			text = append(text, fmt.Sprintf("%-*s", widths[i], cell))
@@ -288,7 +332,7 @@ func printTable(lines []line) {
 		fmt.Fprintln(os.Stdout, strings.TrimRightFunc(strings.Join(text, "  "), unicode.IsSpace))
 	}
 	print(header)
-	for _, row := range cells {
+	for _, row := range rows {
 		print(row)
 	}
 }

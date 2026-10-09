@@ -14,8 +14,14 @@ import (
 
 const target = "example-dataset"
 
-// statusWorld is a ledger with five live rows and one ended, and a herdr
-// that knows four of them.
+// statusReport is the shape of `status --json`.
+type statusReport struct {
+	Jobs   []map[string]any `json:"jobs"`
+	Agents []map[string]any `json:"agents"`
+}
+
+// statusWorld is a ledger with two open jobs, five live rows and one
+// ended, and a herdr that knows four of them.
 func statusWorld(t *testing.T) *world {
 	t.Helper()
 	w := newWorld(t)
@@ -29,6 +35,13 @@ func statusWorld(t *testing.T) *world {
 	}
 	defer conn.Close()
 	started := db.Now() - 600
+	for _, job := range []string{"x", "y"} {
+		if _, err := conn.Exec(
+			"INSERT INTO jobs (job, parent_issue, repo, lead_cwd, state, started_at) VALUES (?1, 'EX-1', 'example-dataset', '/c', 'open', ?2)",
+			job, started); err != nil {
+			t.Fatal(err)
+		}
+	}
 	rows := []struct{ name, role, job, parent, state string }{
 		{"thread-1", "thread", "", "", "active"},
 		{"x-lead", "lead", "x", "thread-1", "active"},
@@ -62,9 +75,17 @@ func TestStatusFlagsIdleDebtorsBlockedAndMissingAgents(t *testing.T) {
 	if out.code != 0 {
 		t.Fatalf("%+v", out)
 	}
-	var lines []map[string]any
-	if err := json.Unmarshal([]byte(out.stdout), &lines); err != nil {
+	var report statusReport
+	if err := json.Unmarshal([]byte(out.stdout), &report); err != nil {
 		t.Fatalf("%v in %q", err, out.stdout)
+	}
+	lines := report.Agents
+	if len(report.Jobs) != 2 || report.Jobs[0]["job"] != "x" || report.Jobs[1]["job"] != "y" {
+		t.Errorf("jobs = %v", report.Jobs)
+	}
+	workers, _ := json.Marshal(report.Jobs[0]["workers"])
+	if report.Jobs[0]["lead"] != "x-lead" || string(workers) != `["x-w1","x-w2"]` {
+		t.Errorf("job x = %v", report.Jobs[0])
 	}
 	find := func(name string) map[string]any {
 		for _, l := range lines {
@@ -107,7 +128,7 @@ func TestStatusFiltersByJobAndPrintsATable(t *testing.T) {
 		t.Fatalf("%+v", out)
 	}
 	text := out.stdout
-	if !strings.HasPrefix(text, "NAME") {
+	if !strings.HasPrefix(text, "JOB ") || !strings.Contains(text, "\nNAME ") {
 		t.Errorf("%s", text)
 	}
 	for _, name := range []string{"x-lead", "x-w1", "x-w2"} {
@@ -115,7 +136,7 @@ func TestStatusFiltersByJobAndPrintsATable(t *testing.T) {
 			t.Errorf("%s missing from:\n%s", name, text)
 		}
 	}
-	if strings.Contains(text, "y-lead") {
+	if strings.Contains(text, "y-lead") || strings.Contains(text, "\ny ") {
 		t.Errorf("%s", text)
 	}
 	if !strings.Contains(text, "owes-work") || !strings.Contains(text, "missing") {

@@ -106,7 +106,19 @@ CREATE UNIQUE INDEX jobs_open_job ON jobs (job) WHERE state = 'open';
 CREATE UNIQUE INDEX jobs_open_key ON jobs (key) WHERE state = 'open' AND key != '';
 `
 
-// Version 6: thread agents. `agents.thread` is the thread key of a thread
+// Version 6 adds `steps`: the completed steps of a multi-step ending
+// (`job end`), keyed by the ending, so a retry skips what is done.
+const schemaV6 = `
+CREATE TABLE steps (
+    id      INTEGER PRIMARY KEY,
+    key     TEXT    NOT NULL,
+    step    TEXT    NOT NULL,
+    done_at INTEGER NOT NULL,
+    UNIQUE (key, step)
+);
+`
+
+// Version 7: thread agents. `agents.thread` is the thread key of a thread
 // agent's row (empty for the other roles), and a thread has at most one
 // live thread agent. `threads` is one row per thread this target has
 // seen: its slug (the agent is `thread-<slug>`), the channel's context
@@ -116,7 +128,7 @@ CREATE UNIQUE INDEX jobs_open_key ON jobs (key) WHERE state = 'open' AND key != 
 // took it, `delivered` once the thread agent has it, `dropped` when it
 // was given up (Linear unavailable); a rerun of the same message does
 // nothing lasting.
-const schemaV6 = `
+const schemaV7 = `
 ALTER TABLE agents ADD COLUMN thread TEXT NOT NULL DEFAULT '';
 CREATE UNIQUE INDEX agents_live_thread ON agents (thread)
     WHERE role = 'thread' AND state != 'ended' AND thread != '';
@@ -137,18 +149,6 @@ CREATE TABLE inbox (
     thread      TEXT    NOT NULL DEFAULT '',
     state       TEXT    NOT NULL CHECK (state IN ('reserved', 'delivered', 'dropped')),
     received_at INTEGER NOT NULL
-);
-`
-
-// Version 7: `steps`, the recorded steps of an ending (`thread end`):
-// one row per step done, keyed by the ending, so a retry skips them.
-const schemaV7 = `
-CREATE TABLE steps (
-    id      INTEGER PRIMARY KEY,
-    key     TEXT    NOT NULL,
-    step    TEXT    NOT NULL,
-    done_at INTEGER NOT NULL,
-    UNIQUE (key, step)
 );
 `
 

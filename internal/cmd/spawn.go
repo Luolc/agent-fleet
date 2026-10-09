@@ -52,7 +52,7 @@ const (
 		"is delivered as `fleet send` would, and the row becomes active.\n\n" +
 		"There is no rollback and no retry. When a step fails after something was created, the " +
 		"output lists what exists; the worker's row stays `starting`, and the cleanup is the " +
-		"lead's call (`fleet close <job> --force` ends every row of the job).\n\n" +
+		"lead's call (`fleet job end <job> --force` from outside ends every row of the job).\n\n" +
 		"Exit: 0 when the task was delivered; 1 when a check refuses; 2/3/4 as `send` for the " +
 		"delivery; 3 when the worker stops at a screen other than its input box (the screen is " +
 		"printed); 5 when atb, herdr or the database fails, including a failed start."
@@ -202,7 +202,7 @@ func Spawn(h *herdr.Herdr, args SpawnArgs) (exit.Code, error) {
 		return 0, err
 	}
 	defer conn.Close()
-	hint := fmt.Sprintf("the cleanup is the lead's call; `fleet close %s --force` ends every row of the job", c.me.Job)
+	hint := fmt.Sprintf("the cleanup is the lead's call; `fleet job end %s --force` from outside ends every row of the job", c.me.Job)
 	// The worker's row is reserved in one transaction with the checks, so
 	// two spawns of one name, or past the cap, cannot both pass.
 	if err := reserve(conn, c.dedup, func(q querier) error {

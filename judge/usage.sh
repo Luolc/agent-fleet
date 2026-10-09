@@ -5,7 +5,7 @@
 check "version: exit 0" 0 "$rc"
 "$T" --help >/dev/null 2>&1; rc=$?
 check "help: exit 0" 0 "$rc"
-for c in inbox "thread end" "thread set-project" "thread relate" "job start" "job list" spawn send done status watch close worktree; do
+for c in inbox "thread end" "thread set-project" "thread relate" "job start" "job list" "job end" spawn send done status watch worktree; do
   # shellcheck disable=SC2086
   out=$("$T" $c --help 2>&1); rc=$?
   case "$out" in *Exit*) states=yes ;; *) states=no ;; esac
@@ -49,6 +49,9 @@ check "watch: exit 5 without a ledger" 5 "$rc"
 check "job list: exit 5 without a ledger" 5 "$rc"
 
 out=$(as thread-1 thread "" "" -- done 2>&1); rc=$?
+check "done: exit 1 from a thread agent" 1 "$rc"
+has "done: says done is for workers" "$out" "a thread does not report with \`done\`"
+out=$(as item-1-a worker "" item-1 -- done 2>&1); rc=$?
 check "done: exit 1 without a parent" 1 "$rc"
 has "done: names the empty variable" "$out" "${P}PARENT"
 as item-1-a worker item-1-lead item-1 -- done --report-file /home/agent/missing.md >/dev/null 2>&1; rc=$?
@@ -57,14 +60,20 @@ out=$(ISSUE=EX-7 as item-1-a worker item-1-lead item-1 -- done 2>&1); rc=$?
 check "done: exit 1 with a work order and no report file" 1 "$rc"
 has "done: says the report file is required" "$out" "--report-file"
 
-out=$(as item-1-lead lead thread-1 item-1 -- close item-1 2>&1); rc=$?
-check "close: exit 1 from a lead" 1 "$rc"
-has "close: says only a thread agent closes" "$out" "thread agent"
-out=$(as item-1-lead lead "" item-1 -- close item-1 2>&1); rc=$?
-check "close: exit 1 from a lead without a parent" 1 "$rc"
-out=$(env "${P}AGENT=x" "${P}ROLE=orchestra" "$T" --session judge close item-1 2>&1); rc=$?
-check "close: exit 1 from the removed orchestra role" 1 "$rc"
-has "close: names the roles" "$out" "thread, lead or worker"
+out=$(as item-1-a worker item-1-lead item-1 -- job end --report-file /home/agent/tasks/usage.md 2>&1); rc=$?
+check "job end: exit 1 from a worker" 1 "$rc"
+has "job end: says who ends a job" "$out" "a worker cannot end a job"
+out=$(as item-1-lead lead thread-1 item-1 -- job end item-2 --report-file /home/agent/tasks/usage.md 2>&1); rc=$?
+check "job end: exit 1 from the lead of another job" 1 "$rc"
+has "job end: names the caller's job" "$out" "your job is item-1, not item-2"
+out=$(as thread-1 thread "" "" -- job end --force 2>&1); rc=$?
+check "job end --force: exit 1 without the job" 1 "$rc"
+out=$(as thread-1 thread "" "" -- job end item-1 --force --report-file /home/agent/tasks/usage.md 2>&1); rc=$?
+check "job end --force: exit 1 with a report file" 1 "$rc"
+has "job end --force: says it takes no report" "$out" "--force takes no report"
+out=$(env "${P}AGENT=x" "${P}ROLE=orchestra" "$T" --session judge job end item-1 --force 2>&1); rc=$?
+check "job end: exit 1 from the removed orchestra role" 1 "$rc"
+has "job end: names the roles" "$out" "thread, lead or worker"
 
 mkdir -p /home/agent/tasks /home/agent/somedir
 printf 'a task\n' > /home/agent/tasks/usage.md
