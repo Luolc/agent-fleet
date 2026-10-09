@@ -22,7 +22,8 @@ const version = "0.0.0"
 const longAbout = "Runs and coordinates coding agents on a dataset machine through herdr.\n\n" +
 	"Every agent is started by fleet and carries its identity in FLEET_* " +
 	"environment variables; messages between agents go through `fleet send`, " +
-	"which adds the `[FROM: <agent>]` header. State lives in ~/scratch/<repo>/fleet.db.\n\n" +
+	"which adds the `[FROM: <agent>]` header. State lives in " +
+	"$XDG_STATE_HOME/fleet/<repo>/fleet.db (~/.local/state when XDG_STATE_HOME is unset).\n\n" +
 	"Exit codes, shared by every command:\n" +
 	"  0  ok\n" +
 	"  1  usage error or precondition refused (role, cap, resources, empty body)\n" +
@@ -88,10 +89,9 @@ const doneUsage = "Usage: fleet done [OPTIONS]"
 var doneHelp = cmd.DoneLongAbout + "\n\n" + doneUsage + `
 
 Options:
-      --result-file <PATH>  File with the result, named in the report so the parent can read it
-      --report-file <PATH>  Worker report, written to --issue with atb before the report is delivered
-      --issue <ISSUE>       Linear issue (your child issue) for the worker report, released after it
-      --abandon             Release the issue as abandoned instead of done; needs --report-file
+      --report-file <PATH>  Your report, named in the message so the parent can read it, and written
+                            to FLEET_ISSUE with atb first when that is set (then it is required)
+      --abandon             Release FLEET_ISSUE as abandoned instead of done
       --session <NAME>      ` + sessionHelp + `
   -h, --help                Print help
 `
@@ -104,7 +104,8 @@ Options:
       --job <JOB>       Only this job's agents
       --json            Machine-readable output: a JSON array, one object per agent
       --repo <REPO>     Dataset repo whose ledger to read (` + "`owner/name` or `name`" + `); the ledger is
-                        ~/scratch/<name>/fleet.db. Defaults to FLEET_REPO, which every agent has
+                        $XDG_STATE_HOME/fleet/<name>/fleet.db (~/.local/state when XDG_STATE_HOME is
+                        unset). Defaults to FLEET_REPO, which every agent has
       --session <NAME>  ` + sessionHelp + `
   -h, --help            Print help
 `
@@ -115,7 +116,8 @@ var watchHelp = cmd.WatchLongAbout + "\n\n" + watchUsage + `
 
 Options:
       --repo <REPO>     Dataset repo whose ledger to read (` + "`owner/name` or `name`" + `); the ledger is
-                        ~/scratch/<name>/fleet.db. Defaults to FLEET_REPO; cron must pass it
+                        $XDG_STATE_HOME/fleet/<name>/fleet.db (~/.local/state when XDG_STATE_HOME is
+                        unset). Defaults to FLEET_REPO; cron must pass it
       --session <NAME>  ` + sessionHelp + `
   -h, --help            Print help
 `
@@ -315,20 +317,16 @@ func runSpawn(args []string, session *cliargs.OptString) (exit.Code, error) {
 
 func runDone(args []string, session *cliargs.OptString) (exit.Code, error) {
 	fs := flagSet("done", session)
-	resultFile := cliargs.OptString{Name: "result-file", Placeholder: "PATH"}
 	reportFile := cliargs.OptString{Name: "report-file", Placeholder: "PATH"}
-	issue := cliargs.OptString{Name: "issue", Placeholder: "ISSUE"}
 	abandon := cliargs.Bool{Name: "abandon"}
-	fs.Var(&resultFile, "result-file", "File with the result")
-	fs.Var(&reportFile, "report-file", "File with the worker report")
-	fs.Var(&issue, "issue", "Linear issue the report is written to")
+	fs.Var(&reportFile, "report-file", "File with the report")
 	fs.Var(&abandon, "abandon", "Release the issue as abandoned")
 	_, helped, err := parse(fs, args, doneHelp, doneUsage, nil)
 	if err != nil || helped {
 		return exit.Ok, err
 	}
 	return cmd.Done(herdr.New(session.Ptr()), cmd.DoneArgs{
-		ResultFile: resultFile.Ptr(), ReportFile: reportFile.Ptr(), Issue: issue.Ptr(), Abandon: abandon.Value})
+		ReportFile: reportFile.Ptr(), Abandon: abandon.Value})
 }
 
 func runStatus(args []string, session *cliargs.OptString) (exit.Code, error) {

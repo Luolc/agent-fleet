@@ -55,8 +55,8 @@ const (
 // WatchArgs are the arguments of `watch`.
 type WatchArgs struct {
 	// Repo is the dataset repo whose ledger to read (`owner/name` or
-	// `name`); the ledger is ~/scratch/<name>/fleet.db. Defaults to
-	// FLEET_REPO; cron must pass it.
+	// `name`); the ledger is ~/.local/state/fleet/<name>/fleet.db (db.Path).
+	// Defaults to FLEET_REPO; cron must pass it.
 	Repo *string
 }
 

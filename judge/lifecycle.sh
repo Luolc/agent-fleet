@@ -64,7 +64,7 @@ check "spawn lead: Claude's fixed arguments" \
   "$(proc_args item-1-lead)"
 has "spawn lead: header and task on screen" "$(screen item-1-lead)" "[FROM: orchestra]" "0xLEAD1"
 check "spawn lead: identity variables in its process" \
-  "${P}AGENT=item-1-lead ${P}JOB=item-1 ${P}PARENT=orchestra ${P}REPO=acme/$R ${P}ROLE=lead " \
+  "${P}AGENT=item-1-lead ${P}ISSUE= ${P}JOB=item-1 ${P}PARENT=orchestra ${P}REPO=acme/$R ${P}ROLE=lead " \
   "$(proc_env item-1-lead)"
 check "spawn lead: ledger row active with its places" \
   "lead|item-1|orchestra|orchestra|active|$WT/item-1|/home/agent/tasks/lead.md|$(agent_field item-1-lead pane_id) " \
@@ -84,7 +84,7 @@ check "spawn worker: pane renamed" item-1-a \
   "$("${S[@]}" pane get "$(agent_field item-1-a pane_id)" | jq -r .result.pane.label)"
 has "spawn worker: header and task on screen" "$(screen item-1-a)" "[FROM: item-1-lead]" "0xWORKA"
 check "spawn worker: identity variables in its process" \
-  "${P}AGENT=item-1-a ${P}JOB=item-1 ${P}PARENT=item-1-lead ${P}REPO=acme/$R ${P}ROLE=worker " \
+  "${P}AGENT=item-1-a ${P}ISSUE= ${P}JOB=item-1 ${P}PARENT=item-1-lead ${P}REPO=acme/$R ${P}ROLE=worker " \
   "$(proc_env item-1-a)"
 check "spawn worker: ledger row active in the job" "worker|item-1|item-1-lead|active|$WT/item-1 " \
   "$(ledger "SELECT role, job, parent, state, worktree FROM agents WHERE name = 'item-1-a'")"
@@ -118,12 +118,26 @@ check "status: json fields of a worker" "worker item-1 item-1-lead active idle n
 check "status: --repo accepts the bare repo name" 4 "$("$T" --session judge status --repo "$R" --json | jq length)"
 
 # Completion reports: workers to the lead, the lead to the orchestra.
-for w in a b c; do
+for w in a b; do
   settled item-1-lead
-  as "item-1-$w" worker item-1-lead item-1 -- done --result-file "/home/agent/tasks/$w.md" >/dev/null; rc=$?
+  as "item-1-$w" worker item-1-lead item-1 -- done --report-file "/home/agent/tasks/$w.md" >/dev/null; rc=$?
   check "done item-1-$w: exit 0" 0 "$rc"
 done
-has "done: report on the lead's screen" "$(screen item-1-lead)" "[FROM: item-1-c]" "item-1-c is done. Result: /home/agent/tasks/c.md"
+has "done: report on the lead's screen" "$(screen item-1-lead)" "[FROM: item-1-b]" "item-1-b is done. Report: /home/agent/tasks/b.md"
+# With a work order the report goes to Linear first, through a fake atb
+# that logs its arguments.
+mkdir -p /home/agent/fake-atb
+printf '#!/bin/sh\necho "$*" >> /home/agent/atb.log\n' > /home/agent/fake-atb/atb
+chmod +x /home/agent/fake-atb/atb
+settled item-1-lead
+PATH=/home/agent/fake-atb:$PATH ISSUE=EX-7 as item-1-c worker item-1-lead item-1 -- \
+  done --report-file /home/agent/tasks/c.md --abandon >/dev/null; rc=$?
+check "done item-1-c with a work order: exit 0" 0 "$rc"
+check "done: report written to the issue, then the issue released as abandoned" \
+  "linear comment EX-7 --body-file /home/agent/tasks/c.md|linear release EX-7 --agent item-1-c --reason abandoned --abandon|" \
+  "$(tr '\n' '|' < /home/agent/atb.log)"
+has "done: abandoned report names the issue and the file" "$(screen item-1-lead)" "[FROM: item-1-c]" \
+  "item-1-c abandoned the task. Issue: EX-7. Report: /home/agent/tasks/c.md"
 check "done: the worker's row is ended" "ended|1 " \
   "$(ledger "SELECT state, ended_at IS NOT NULL FROM agents WHERE name = 'item-1-a'")"
 settled item-1-lead
@@ -136,8 +150,8 @@ has "close: refusal names the live agent" "$out" "item-1-lead"
 lead done >/dev/null; rc=$?
 check "done item-1-lead: exit 0 to the orchestra" 0 "$rc"
 has "done: report on the orchestra's screen" "$(screen orchestra)" "[FROM: item-1-lead]" "item-1-lead is done."
-check "done: a report without a result file names none" no \
-  "$(case "$(screen orchestra)" in *"item-1-lead is done. Result"*) echo yes ;; *) echo no ;; esac)"
+check "done: a report without a report file names none" no \
+  "$(case "$(screen orchestra)" in *"item-1-lead is done. Report"*) echo yes ;; *) echo no ;; esac)"
 
 # An agent outside the job whose cwd is inside the worktree blocks close.
 spane=$("${S[@]}" tab create --workspace "$("${S[@]}" pane get "$opane" | jq -r .result.pane.workspace_id)" \

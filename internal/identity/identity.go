@@ -50,13 +50,15 @@ func (r Role) String() string {
 }
 
 // Identity is who is calling. `Parent` and `Job` are empty for `orchestra`
-// and `human-interface`.
+// and `human-interface`; `Issue`, the agent's Linear work order, is empty
+// when it has none.
 type Identity struct {
 	Agent  string
 	Role   Role
 	Parent string
 	Repo   string
 	Job    string
+	Issue  string
 }
 
 const hint = "this pane was not started by fleet; agents get these variables from `fleet spawn`"
@@ -91,17 +93,19 @@ func FromEnv() (*Identity, error) {
 		Parent: os.Getenv("FLEET_PARENT"),
 		Repo:   os.Getenv("FLEET_REPO"),
 		Job:    os.Getenv("FLEET_JOB"),
+		Issue:  os.Getenv("FLEET_ISSUE"),
 	}, nil
 }
 
 // EnvPairs are the variables to inject into a pane for an agent with this
 // identity.
-func (id *Identity) EnvPairs() [5][2]string {
-	return [5][2]string{
+func (id *Identity) EnvPairs() [6][2]string {
+	return [6][2]string{
 		{"FLEET_AGENT", id.Agent},
 		{"FLEET_ROLE", id.Role.String()},
 		{"FLEET_PARENT", id.Parent},
 		{"FLEET_REPO", id.Repo},
 		{"FLEET_JOB", id.Job},
+		{"FLEET_ISSUE", id.Issue},
 	}
 }

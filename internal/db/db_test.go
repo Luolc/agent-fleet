@@ -7,7 +7,7 @@ import (
 )
 
 func TestLedgerOpensInWALModeAndReopens(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "scratch", "example-dataset", "fleet.db")
+	path := filepath.Join(t.TempDir(), "fleet", "example-dataset", "fleet.db")
 	conn, err := OpenAt(path)
 	if err != nil {
 		t.Fatal(err)
@@ -46,21 +46,38 @@ func TestLedgerOpensInWALModeAndReopens(t *testing.T) {
 	}
 }
 
-func TestLedgerPathUsesTheRepoNameUnderScratch(t *testing.T) {
-	home := "/home/example"
-	path, err := PathUnder(home, "acme/example-dataset")
+func TestLedgerPathUsesTheRepoNameUnderTheStateDir(t *testing.T) {
+	path, err := PathUnder("/state", "acme/example-dataset")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "/home/example/scratch/example-dataset/fleet.db"; path != want {
+	if want := "/state/fleet/example-dataset/fleet.db"; path != want {
 		t.Errorf("path = %q, want %q", path, want)
 	}
-	bare, err := PathUnder(home, "example-dataset")
+	bare, err := PathUnder("/state", "example-dataset")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if bare != path {
 		t.Errorf("bare name gives %q, want %q", bare, path)
+	}
+}
+
+func TestLedgerPathFallsBackToLocalStateWithoutXDGStateHome(t *testing.T) {
+	t.Setenv("HOME", "/home/example")
+	for _, xdg := range []string{"/xdg/state", ""} {
+		t.Setenv("XDG_STATE_HOME", xdg)
+		path, err := Path("acme/example-dataset")
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "/xdg/state/fleet/example-dataset/fleet.db"
+		if xdg == "" {
+			want = "/home/example/.local/state/fleet/example-dataset/fleet.db"
+		}
+		if path != want {
+			t.Errorf("XDG_STATE_HOME=%q: path = %q, want %q", xdg, path, want)
+		}
 	}
 }
 

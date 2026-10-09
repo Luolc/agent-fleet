@@ -21,13 +21,12 @@ func Comment(issue, file string) error {
 }
 
 // Release is `atb linear release <issue> --agent <agent> --reason done
-// --done`, or `--abandon` in place of `--done`.
+// --done`, or `--reason abandoned --abandon` when abandoned.
 func Release(issue, agent string, abandon bool) error {
-	outcome := "--done"
 	if abandon {
-		outcome = "--abandon"
+		return run("release", issue, "--agent", agent, "--reason", "abandoned", "--abandon")
 	}
-	return run("release", issue, "--agent", agent, "--reason", "done", outcome)
+	return run("release", issue, "--agent", agent, "--reason", "done", "--done")
 }
 
 // run runs `atb linear <sub> <issue> args...`. Any non-zero exit is an
