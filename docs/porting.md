@@ -173,6 +173,11 @@ comment, `///` the item's doc comment.
   `utf8.RuneCountInString`, `{:<width$}` is `%-*s` (both pad by runes).
   Rust's `lines()` ends a line at `\n` or `\r\n`; a Go port of it trims the
   `\r`. `String::from_utf8_lossy` is `string(bytes)` (see Deviations).
+- Collections and hashing: a `BTreeSet<String>` that is only built and
+  compared is a sorted slice without duplicates (`slices.Sort`, then
+  `slices.Compact`; `slices.Equal`, `slices.Contains`). A hand-written
+  FNV-1a 64 is `hash/fnv`'s `New64a`, printed with `%016x`, so a screen
+  hash the earlier implementation wrote to the ledger reads as unchanged.
 - Printing: `println!` writes to `os.Stdout`, `eprintln!` to `os.Stderr`,
   directly, as the source does. Process-level tests re-run the test binary
   (`TestMain` with `FLEET_TEST_RUN_MAIN=1`) against a fake `herdr` script on
