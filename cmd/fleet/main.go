@@ -37,9 +37,6 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 		fmt.Fprintln(stdout, "fleet", version)
 		return 0
-	case "help", "-h", "--help":
-		fmt.Fprint(stdout, usage)
-		return 0
 	default:
 		fmt.Fprintf(stderr, "fleet: unknown command %q\n", args[0])
 		fmt.Fprint(stderr, usage)
