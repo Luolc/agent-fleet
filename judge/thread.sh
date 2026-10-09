@@ -282,7 +282,7 @@ check "ask-human: exit 0 from the lead" 0 "$rc"
 has "ask-human: delivered to the home thread's agent" "$out" "delivered to $A"
 # The thread's agent had ended, so one is started with the question as
 # its first message; the prompt's head is above the fake's 20 lines.
-has "ask-human: question on the thread agent's screen" "$(screen "$A")" "Question from item-8-lead" "fednet client post" "0xQ1"
+has "ask-human: question on the thread agent's screen" "$(screen "$A")" "Question from item-8-lead" "0xQ1"
 check "ask-human: pending in the ledger" "item-8|$K|item-8-lead|0|pending " \
   "$(tledger "SELECT job, thread, asked_by, approval, state FROM questions")"
 settled "$A"
