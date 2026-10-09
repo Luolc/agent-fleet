@@ -17,7 +17,7 @@ import (
 	"github.com/Luolc/agent-fleet/internal/exit"
 )
 
-const schemaVersion = 5
+const schemaVersion = 6
 
 // Version 1: the `agents` table. Ended rows are kept as history, so `name`
 // is unique only among rows that have not ended.
@@ -106,8 +106,20 @@ CREATE UNIQUE INDEX jobs_open_job ON jobs (job) WHERE state = 'open';
 CREATE UNIQUE INDEX jobs_open_key ON jobs (key) WHERE state = 'open' AND key != '';
 `
 
+// Version 6 adds `steps`: the completed steps of a multi-step ending
+// (`job end`), keyed by the ending, so a retry skips what is done.
+const schemaV6 = `
+CREATE TABLE steps (
+    id      INTEGER PRIMARY KEY,
+    key     TEXT    NOT NULL,
+    step    TEXT    NOT NULL,
+    done_at INTEGER NOT NULL,
+    UNIQUE (key, step)
+);
+`
+
 // migrations[v] upgrades a ledger at version v to v+1.
-var migrations = [schemaVersion]string{schema, schemaV2, schemaV3, schemaV4, schemaV5}
+var migrations = [schemaVersion]string{schema, schemaV2, schemaV3, schemaV4, schemaV5, schemaV6}
 
 // Path is where the ledger of `target` lives:
 // `$XDG_STATE_HOME/fleet/<target>/fleet.db`, with `~/.local/state` when

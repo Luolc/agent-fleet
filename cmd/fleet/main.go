@@ -52,7 +52,6 @@ Commands:
   done      ` + cmd.DoneAbout + `
   status    ` + cmd.StatusAbout + `
   watch     ` + cmd.WatchAbout + `
-  close     ` + cmd.CloseAbout + `
   worktree  ` + cmd.WorktreeAbout + `
   help      Print this message or the help of the given subcommand(s)
 
@@ -82,6 +81,7 @@ var jobHelp = cmd.JobAbout + ".\n\n" + jobUsage + `
 Commands:
   start  ` + cmd.JobStartAbout + `
   list   ` + cmd.JobListAbout + `
+  end    ` + cmd.JobEndAbout + `
 
 Options:
   -h, --help  Print help
@@ -119,6 +119,23 @@ Options:
   -h, --help             Print help
 `
 
+const jobEndUsage = "Usage: fleet job end [OPTIONS] [JOB]"
+
+var jobEndHelp = cmd.JobEndLongAbout + "\n\n" + jobEndUsage + `
+
+Arguments:
+  [JOB]  Job id; required with --force, otherwise it must be your own job (FLEET_JOB)
+
+Options:
+      --report-file <PATH>  Your report, written to your work order with atb when FLEET_ISSUE is set,
+                            and named in the conclusion (required without --force)
+      --abandon             End the job as abandoned instead of done
+      --force               Reclaim the job from outside (a thread agent, or no FLEET_ROLE): no report,
+                            no Linear step; the cleanup after a failed start or a lost lead
+      --session <NAME>      ` + sessionHelp + `
+  -h, --help                Print help
+`
+
 const spawnUsage = "Usage: fleet spawn [OPTIONS] --task-file <PATH> --cwd <DIR> <NAME>"
 
 var spawnHelp = cmd.SpawnLongAbout + "\n\n" + spawnUsage + `
@@ -152,8 +169,8 @@ const statusUsage = "Usage: fleet status [OPTIONS]"
 var statusHelp = cmd.StatusLongAbout + "\n\n" + statusUsage + `
 
 Options:
-      --job <JOB>        Only this job's agents
-      --json             Machine-readable output: a JSON array, one object per agent
+      --job <JOB>        Only this job and its agents
+      --json             Machine-readable output: {"jobs": [...], "agents": [...]}
       --target <TARGET>  ` + targetHelp + `
       --session <NAME>   ` + sessionHelp + `
   -h, --help             Print help
@@ -167,19 +184,6 @@ Options:
       --target <TARGET>  ` + targetHelp + `
       --session <NAME>   ` + sessionHelp + `
   -h, --help             Print help
-`
-
-const closeUsage = "Usage: fleet close [OPTIONS] <JOB>"
-
-var closeHelp = cmd.CloseLongAbout + "\n\n" + closeUsage + `
-
-Arguments:
-  <JOB>  Job id, as given to ` + "`fleet job start`" + `
-
-Options:
-      --force           Close even if agents are still recorded as live (the cleanup after a failed start)
-      --session <NAME>  ` + sessionHelp + `
-  -h, --help            Print help
 `
 
 const worktreeUsage = "Usage: fleet worktree [OPTIONS] <REPO>"
@@ -276,8 +280,6 @@ func dispatch(args []string) (exit.Code, error) {
 		return runStatus(rest[1:], &session)
 	case "watch":
 		return runWatch(rest[1:], &session)
-	case "close":
-		return runClose(rest[1:], &session)
 	case "worktree":
 		return runWorktree(rest[1:], &session)
 	default:
@@ -288,7 +290,7 @@ func dispatch(args []string) (exit.Code, error) {
 // help is clap's implicit `help [COMMAND]` subcommand.
 func help(args []string) (exit.Code, error) {
 	helps := map[string]string{"job": jobHelp, "send": sendHelp, "spawn": spawnHelp, "done": doneHelp,
-		"status": statusHelp, "watch": watchHelp, "close": closeHelp, "worktree": worktreeHelp, "help": topHelp}
+		"status": statusHelp, "watch": watchHelp, "worktree": worktreeHelp, "help": topHelp}
 	if len(args) == 0 {
 		fmt.Fprint(os.Stdout, topHelp)
 		return exit.Ok, nil
@@ -301,6 +303,9 @@ func help(args []string) (exit.Code, error) {
 		case "list":
 			fmt.Fprint(os.Stdout, jobListHelp)
 			return exit.Ok, nil
+		case "end":
+			fmt.Fprint(os.Stdout, jobEndHelp)
+			return exit.Ok, nil
 		}
 	}
 	text, ok := helps[args[0]]
@@ -312,8 +317,8 @@ func help(args []string) (exit.Code, error) {
 }
 
 // parse parses a command's arguments: help goes to stdout with exit 0,
-// any other failure is a usageError. names are the positionals in order;
-// required are the flags that must be given (clap: a non-Option `#[arg]`),
+// any other failure is a usageError. names are the positionals in order, a
+// name in brackets ("[JOB]") is optional; required are the flags that must be given (clap: a non-Option `#[arg]`),
 // listed after the positionals when missing, as clap lists them.
 func parse(fs *flag.FlagSet, args []string, help, usage string, names []string, required ...*cliargs.OptString) ([]string, bool, error) {
 	positionals := len(names)
@@ -328,7 +333,9 @@ func parse(fs *flag.FlagSet, args []string, help, usage string, names []string, 
 	var missing []string
 	if len(got) < positionals {
 		for _, name := range names[len(got):] {
-			missing = append(missing, "  <"+name+">")
+			if !strings.HasPrefix(name, "[") {
+				missing = append(missing, "  <"+name+">")
+			}
 		}
 	}
 	for _, flag := range required {
@@ -370,6 +377,8 @@ func runJob(args []string, session *cliargs.OptString) (exit.Code, error) {
 		return runJobStart(args[1:], session)
 	case "list":
 		return runJobList(args[1:], session)
+	case "end":
+		return runJobEnd(args[1:], session)
 	default:
 		return 0, &usageError{fmt.Sprintf("unrecognized subcommand '%s'", args[0]), jobUsage}
 	}
@@ -471,15 +480,24 @@ func runWatch(args []string, session *cliargs.OptString) (exit.Code, error) {
 	return cmd.Watch(herdr.New(session.Ptr()), cmd.WatchArgs{Target: target.Ptr()})
 }
 
-func runClose(args []string, session *cliargs.OptString) (exit.Code, error) {
-	fs := flagSet("close", session)
+func runJobEnd(args []string, session *cliargs.OptString) (exit.Code, error) {
+	fs := flagSet("job end", session)
+	reportFile := cliargs.OptString{Name: "report-file", Placeholder: "PATH"}
+	abandon := cliargs.Bool{Name: "abandon"}
 	force := cliargs.Bool{Name: "force"}
-	fs.Var(&force, "force", "Close even if agents are still recorded as live")
-	got, helped, err := parse(fs, args, closeHelp, closeUsage, []string{"JOB"})
+	fs.Var(&reportFile, "report-file", "File with the report")
+	fs.Var(&abandon, "abandon", "End the job as abandoned")
+	fs.Var(&force, "force", "Reclaim the job from outside")
+	got, helped, err := parse(fs, args, jobEndHelp, jobEndUsage, []string{"[JOB]"})
 	if err != nil || helped {
 		return exit.Ok, err
 	}
-	return cmd.Close(herdr.New(session.Ptr()), cmd.CloseArgs{Job: got[0], Force: force.Value})
+	var job *string
+	if len(got) == 1 {
+		job = &got[0]
+	}
+	return cmd.JobEnd(herdr.New(session.Ptr()), cmd.JobEndArgs{
+		Job: job, ReportFile: reportFile.Ptr(), Abandon: abandon.Value, Force: force.Value})
 }
 
 func runWorktree(args []string, session *cliargs.OptString) (exit.Code, error) {

@@ -1,6 +1,6 @@
 // Integration tests for `worktree` over the binary against real git: a
 // bare origin under the test's temp dir and its clone at ~/dev, and for
-// `close` a fake herdr with no workspaces.
+// `job end --force` a fake herdr with no workspaces.
 package main
 
 import (
@@ -223,7 +223,7 @@ esac
 	}
 }
 
-func TestCloseRemovesTheJobsRecordedWorktreesWithTheSameChecks(t *testing.T) {
+func TestJobEndForceRemovesTheJobsRecordedWorktreesWithTheSameChecks(t *testing.T) {
 	w := newWorld(t)
 	checkout, _ := w.origin()
 	wt := filepath.Join(w.dir, "home", "wt", dataset)
@@ -235,7 +235,7 @@ func TestCloseRemovesTheJobsRecordedWorktreesWithTheSameChecks(t *testing.T) {
 	if out := w.worktree("item-2", dataset); out.code != 0 {
 		t.Fatalf("%+v", out)
 	}
-	close := func() result { return w.asThread("close", "item-1") }
+	close := func() result { return w.asThread("job", "end", "item-1", "--force") }
 
 	// An agent's cwd inside the second worktree blocks both removals.
 	w.closeHerdr(`{"name":"squatter","pane_id":"p1","cwd":"` + filepath.Join(wt, "item-1-b", "sub") + `"}`)
