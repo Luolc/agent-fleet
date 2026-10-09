@@ -1,6 +1,7 @@
 package db
 
 import (
+	"database/sql"
 	"path/filepath"
 	"testing"
 )
@@ -60,5 +61,41 @@ func TestLedgerPathUsesTheRepoNameUnderScratch(t *testing.T) {
 	}
 	if bare != path {
 		t.Errorf("bare name gives %q, want %q", bare, path)
+	}
+}
+
+func TestAVersion2LedgerGainsTheWorktreesTableAndKeepsItsRows(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fleet.db")
+	conn, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range []string{schema, schemaV2,
+		"INSERT INTO agents (name, role, state, started_at) VALUES ('a-lead', 'lead', 'active', 1)",
+		"PRAGMA user_version = 2"} {
+		if _, err := conn.Exec(step); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	conn, err = OpenAt(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	var agents, worktrees, version int64
+	if err := conn.QueryRow("SELECT count(*) FROM agents").Scan(&agents); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.QueryRow("SELECT count(*) FROM worktrees").Scan(&worktrees); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if agents != 1 || worktrees != 0 || version != 3 {
+		t.Errorf("agents %d, worktrees %d, version %d; want 1, 0, 3", agents, worktrees, version)
 	}
 }
