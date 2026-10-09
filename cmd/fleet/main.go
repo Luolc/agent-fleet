@@ -109,6 +109,7 @@ var threadEndHelp = cmd.ThreadEndLongAbout + "\n\n" + threadEndUsage + `
 
 Options:
       --summary-file <PATH>  The session's summary, written to the thread ticket and given to the next session
+      --force                Finish the local cleanup even when a Linear step keeps failing; the steps left are printed
       --session <NAME>       ` + sessionHelp + `
   -h, --help                 Print help
 `
@@ -450,12 +451,14 @@ func runThread(args []string, session *cliargs.OptString) (exit.Code, error) {
 	case "end":
 		fs := flagSet("thread end", session)
 		summary := cliargs.OptString{Name: "summary-file", Placeholder: "PATH"}
+		force := cliargs.Bool{Name: "force"}
 		fs.Var(&summary, "summary-file", "The session's summary")
+		fs.Var(&force, "force", "Finish the local cleanup even when a Linear step keeps failing")
 		_, helped, err := parse(fs, args[1:], threadEndHelp, threadEndUsage, nil, &summary)
 		if err != nil || helped {
 			return exit.Ok, err
 		}
-		return cmd.ThreadEnd(herdr.New(session.Ptr()), cmd.ThreadEndArgs{SummaryFile: summary.Value})
+		return cmd.ThreadEnd(herdr.New(session.Ptr()), cmd.ThreadEndArgs{SummaryFile: summary.Value, Force: force.Value})
 	case "set-project":
 		got, helped, err := parse(flagSet("thread set-project", session), args[1:], threadSetProjectHelp,
 			threadSetProjectUsage, []string{"PROJECT"})

@@ -14,6 +14,13 @@ cat > /home/agent/fake-thread/atb <<'ATB'
 #!/bin/sh
 echo "$*" >> /home/agent/atb.log
 [ -e /home/agent/linear-down ] && { echo "error: Linear unreachable" >&2; exit 4; }
+# While /home/agent/release-down exists, `release` fails: atb's own
+# failure first (exit 1), then exit 4 (no holder), as atb 0.2.3 answers
+# after a release whose comment was written and whose state update failed.
+if [ "$2" = release ] && [ -e /home/agent/release-down ]; then
+  if [ -e /home/agent/release-failed-once ]; then echo "error: refused: no holder" >&2; exit 4; fi
+  : > /home/agent/release-failed-once; echo "error: state update failed" >&2; exit 1
+fi
 case "$2" in
   create) echo '{"identifier":"TH-5","url":"https://linear.example.test/TH-5"}' ;;
   comment) cp "$5" "/home/agent/comment-$3.md" ;;
@@ -30,6 +37,10 @@ cat > /home/agent/fake-thread/herdr <<'SHIM'
 args="$*"
 if [ -e /home/agent/kill-at-rename ] && [ "${args#*pane rename}" != "$args" ]; then
   rm /home/agent/kill-at-rename; kill -9 $PPID; sleep 1
+fi
+# While /home/agent/tab-close-fails exists, one `tab close` fails.
+if [ -e /home/agent/tab-close-fails ] && [ "${args#*tab close}" != "$args" ]; then
+  rm /home/agent/tab-close-fails; echo '{"error":{"code":"internal","message":"tab busy"}}'; exit 1
 fi
 exec /usr/local/bin/herdr "$@"
 SHIM
@@ -192,6 +203,40 @@ check "inbox: Linear unavailable starts no agent" agent_not_found "$(agent_field
 check "inbox: Linear unavailable leaves no live row and no session" "0 0 " \
   "$(tledger "SELECT count(*) FROM agents WHERE name = 'thread-c0999-1-1' AND state != 'ended'")$(tledger "SELECT sessions FROM threads WHERE thread = 'C0999/1.1'")"
 check "inbox: Linear unavailable drops the message" "dropped " "$(tledger "SELECT state FROM inbox WHERE msg_id = 'm4'")"
+
+# thread end after a partial release: the comment is recorded, the retry
+# skips it and still fails on the release (exit 4 is not success), --force
+# ends the row, lists the release and closes the tab.
+: > /home/agent/atb.log
+touch /home/agent/release-down
+out=$(thra "$K" TH-5 -- thread end --summary-file /home/agent/summary.md 2>&1); rc=$?
+check "thread end: exit 5 when the release fails" 5 "$rc"
+check "thread end: the comment step is recorded, the row live" "comment active " \
+  "$(tledger "SELECT step FROM steps WHERE key = 'thread-end:' || (SELECT max(id) FROM agents WHERE name = '$A')")$(tledger "SELECT state FROM agents WHERE name = '$A' ORDER BY id DESC LIMIT 1")"
+out=$(thra "$K" TH-5 -- thread end --summary-file /home/agent/summary.md 2>&1); rc=$?
+check "thread end: retry exit 5 on release exit 4" 5 "$rc"
+check "thread end: retry skipped the comment, no herdr call" "release TH-5|release TH-5|" \
+  "$(sed -n 's/^linear \(release TH-5\).*/\1/p' /home/agent/atb.log | tr '\n' '|')$(grep -c comment /home/agent/atb.log | sed 's/^1$//')"
+out=$(thra "$K" TH-5 -- thread end --summary-file /home/agent/summary.md --force 2>&1); rc=$?
+rm -f /home/agent/release-down /home/agent/release-failed-once
+check "thread end --force: exit 0" 0 "$rc"
+has "thread end --force: lists the release to finish by hand" "$out" "Linear steps not done" "atb linear release TH-5 --agent $A --reason done --done"
+check "thread end --force: row ended, tab closed" "ended agent_not_found" \
+  "$(tledger "SELECT state FROM agents WHERE name = '$A' ORDER BY id DESC LIMIT 1")$(agent_field "$A" agent_status)"
+
+# thread end whose tab close fails after the row ended: the retry closes it.
+inbox "$(event m6 "$K" 'again 0xMSG6')" >/dev/null 2>&1; rc=$?
+check "inbox: session 4 for the tab-close arm, exit 0" 0 "$rc"
+settled "$A"
+touch /home/agent/tab-close-fails
+out=$(thra "$K" TH-5 -- thread end --summary-file /home/agent/summary.md 2>&1); rc=$?
+check "thread end: exit 5 when the tab close fails" 5 "$rc"
+check "thread end: row ended, tab still open" "ended $A" \
+  "$(tledger "SELECT state FROM agents WHERE name = '$A' ORDER BY id DESC LIMIT 1")$(agent_field "$A" name)"
+: > /home/agent/atb.log
+out=$(thra "$K" TH-5 -- thread end --summary-file /home/agent/summary.md 2>&1); rc=$?
+check "thread end: retry exit 0" 0 "$rc"
+check "thread end: retry called no atb and closed the tab" " agent_not_found" "$(cat /home/agent/atb.log) $(agent_field "$A" agent_status)"
 
 # A job started from a thread agent has that thread as its home thread.
 out=$(thra "$K" TH-5 -- job start item-8 --repo "$R" --task-file "$(task item-8 'home thread job')" 2>&1); rc=$?

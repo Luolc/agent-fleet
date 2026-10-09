@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -47,7 +48,9 @@ case "$1 $2" in
     if [ -e "$dir/kill-at-rename" ]; then rm "$dir/kill-at-rename"; kill -9 $PPID; sleep 1; fi
     echo '{"result":{}}' ;;
   "tab rename") echo '{"result":{}}' ;;
-  "tab close") echo "$3" > "$dir/closed-tab"; echo '{"result":{}}' ;;
+  "tab close")
+    if [ -e "$dir/tab-close-fails" ]; then rm "$dir/tab-close-fails"; echo '{"error":{"code":"internal","message":"tab busy"}}'; exit 1; fi
+    echo "$3" > "$dir/closed-tab"; echo '{"result":{}}' ;;
   "agent read") printf '%s\n' "────────────" "❯ " "────────────" ;;
   "agent prompt")
     printf '%s\n' "$@" > "$dir/argv"
@@ -65,7 +68,12 @@ dir="$(dirname "$0")/.."
 key=unset
 [ -n "$LINEAR_API_KEY" ] && key=set
 echo "atb $* key=$key" >> "$dir/calls"
-[ "$2" = "` + failOn + `" ] && { echo "error: Linear unreachable" >&2; exit 4; }
+if [ "$2" = "` + failOn + `" ]; then
+  # The first failure is atb's own (exit 1); after it the issue has no
+  # holder, so the retry is exit 4, as atb 0.2.3 answers.
+  if [ -e "$dir/failed-once" ]; then echo "error: refused: no holder" >&2; exit 4; fi
+  : > "$dir/failed-once"; echo "error: Linear unreachable" >&2; exit 1
+fi
 case "$2" in
   create) echo '{"identifier":"TH-5","url":"https://linear.example.test/TH-5"}' ;;
   comment) cat "$5" > "$dir/comment-$3" ;;
@@ -705,5 +713,128 @@ func TestInboxKeepsTheMessageWhenTheOutageNoticeCannotBePosted(t *testing.T) {
 	}
 	if got := inboxRow(w2, "m1"); got != "reserved" {
 		t.Errorf("inbox row = %q, want reserved", got)
+	}
+}
+
+// stepsOf are the recorded steps of the newest thread agent row's ending.
+func stepsOf(w *world) string {
+	w.t.Helper()
+	conn := w.defaultLedger()
+	defer conn.Close()
+	var id int64
+	if err := conn.QueryRow("SELECT id FROM agents WHERE role = 'thread' ORDER BY id DESC LIMIT 1").Scan(&id); err != nil {
+		w.t.Fatal(err)
+	}
+	rows, err := conn.Query("SELECT step FROM steps WHERE key = ?1 ORDER BY id", "thread-end:"+strconv.FormatInt(id, 10))
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	defer rows.Close()
+	var steps []string
+	for rows.Next() {
+		var step string
+		if err := rows.Scan(&step); err != nil {
+			w.t.Fatal(err)
+		}
+		steps = append(steps, step)
+	}
+	return strings.Join(steps, " ")
+}
+
+func TestThreadEndResumesAfterAPartialReleaseAndForceFinishesLocally(t *testing.T) {
+	w := threadWorld(t, "release")
+	if out := w.inbox(w.event("m1", "first", "")); out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	if err := os.WriteFile(filepath.Join(w.dir, "has-thread-c0123-1700000000-123"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	summary := task(w, "summary.md", "bye\n")
+	_ = os.Remove(filepath.Join(w.dir, "calls"))
+	// The comment is written, the release fails: exit 5, the comment
+	// recorded, the row live, the tab open.
+	out := w.asThreadAgent("TH-5", "thread", "end", "--summary-file", summary)
+	if out.code != 5 || !strings.Contains(out.stderr, "atb linear release") {
+		t.Fatalf("first: %+v", out)
+	}
+	if got := stepsOf(w); got != "comment" {
+		t.Errorf("steps = %q", got)
+	}
+	// The retry skips the comment; the release now answers exit 4 (no
+	// holder), which is still a failure.
+	_ = os.Remove(filepath.Join(w.dir, "calls"))
+	out = w.asThreadAgent("TH-5", "thread", "end", "--summary-file", summary)
+	if out.code != 5 {
+		t.Fatalf("retry: %+v", out)
+	}
+	got := strings.TrimSpace(w.calls())
+	if strings.Contains(got, "comment") || !strings.HasPrefix(got, "atb linear release TH-5") || strings.Contains(got, "herdr") {
+		t.Errorf("retry calls = %q", got)
+	}
+	if got := threadAgentRow(w); got != "TH-5 active" {
+		t.Errorf("row = %q", got)
+	}
+	// --force: the release is skipped and listed, the row ended, the tab
+	// closed.
+	_ = os.Remove(filepath.Join(w.dir, "calls"))
+	out = w.asThreadAgent("TH-5", "thread", "end", "--summary-file", summary, "--force")
+	if out.code != 0 {
+		t.Fatalf("force: %+v", out)
+	}
+	if !strings.Contains(out.stdout, "ended session 1 of thread "+threadKey+"\nLinear steps not done, finish them by hand:\n"+
+		"  - atb linear release TH-5 --agent thread-c0123-1700000000-123 --reason done --done\n") ||
+		strings.Contains(out.stdout, "comment") {
+		t.Errorf("force stdout = %q", out.stdout)
+	}
+	if got := strings.TrimSpace(w.calls()); !strings.HasPrefix(got, "atb linear release TH-5") || !strings.HasSuffix(got, "herdr agent get\nherdr tab close") {
+		t.Errorf("force calls = %q", got)
+	}
+	if got := threadAgentRow(w); got != "TH-5 ended" {
+		t.Errorf("row = %q", got)
+	}
+	if got := strings.TrimSpace(w.file("closed-tab")); got != "t9" {
+		t.Errorf("closed tab = %q", got)
+	}
+	if got := stepsOf(w); got != "comment end-row" {
+		t.Errorf("steps = %q", got)
+	}
+}
+
+func TestThreadEndRetriesAFailedTabCloseAfterTheRowEnded(t *testing.T) {
+	w := threadWorld(t, "")
+	if out := w.inbox(w.event("m1", "first", "")); out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	for _, marker := range []string{"has-thread-c0123-1700000000-123", "tab-close-fails"} {
+		if err := os.WriteFile(filepath.Join(w.dir, marker), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	summary := task(w, "summary.md", "bye\n")
+	out := w.asThreadAgent("TH-5", "thread", "end", "--summary-file", summary)
+	if out.code != 5 || !strings.Contains(out.stderr, "tab busy") {
+		t.Fatalf("first: %+v", out)
+	}
+	if got := threadAgentRow(w); got != "TH-5 ended" {
+		t.Errorf("row = %q", got)
+	}
+	if got := stepsOf(w); got != "comment release end-row" {
+		t.Errorf("steps = %q", got)
+	}
+	_ = os.Remove(filepath.Join(w.dir, "calls"))
+	out = w.asThreadAgent("TH-5", "thread", "end", "--summary-file", summary)
+	if out.code != 0 {
+		t.Fatalf("retry: %+v", out)
+	}
+	if got := strings.TrimSpace(w.calls()); got != "herdr agent get\nherdr tab close" {
+		t.Errorf("retry calls = %q", got)
+	}
+	if got := strings.TrimSpace(w.file("closed-tab")); got != "t9" {
+		t.Errorf("closed tab = %q", got)
+	}
+	// Once the tab is gone there is nothing left to do.
+	_ = os.Remove(filepath.Join(w.dir, "has-thread-c0123-1700000000-123"))
+	if out := w.asThreadAgent("TH-5", "thread", "end", "--summary-file", summary); out.code != 0 {
+		t.Errorf("after the tab closed: %+v", out)
 	}
 }

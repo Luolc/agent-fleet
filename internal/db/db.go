@@ -17,7 +17,7 @@ import (
 	"github.com/Luolc/agent-fleet/internal/exit"
 )
 
-const schemaVersion = 6
+const schemaVersion = 7
 
 // Version 1: the `agents` table. Ended rows are kept as history, so `name`
 // is unique only among rows that have not ended.
@@ -140,8 +140,20 @@ CREATE TABLE inbox (
 );
 `
 
+// Version 7: `steps`, the recorded steps of an ending (`thread end`):
+// one row per step done, keyed by the ending, so a retry skips them.
+const schemaV7 = `
+CREATE TABLE steps (
+    id      INTEGER PRIMARY KEY,
+    key     TEXT    NOT NULL,
+    step    TEXT    NOT NULL,
+    done_at INTEGER NOT NULL,
+    UNIQUE (key, step)
+);
+`
+
 // migrations[v] upgrades a ledger at version v to v+1.
-var migrations = [schemaVersion]string{schema, schemaV2, schemaV3, schemaV4, schemaV5, schemaV6}
+var migrations = [schemaVersion]string{schema, schemaV2, schemaV3, schemaV4, schemaV5, schemaV6, schemaV7}
 
 // Path is where the ledger of `target` lives:
 // `$XDG_STATE_HOME/fleet/<target>/fleet.db`, with `~/.local/state` when

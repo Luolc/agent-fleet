@@ -41,10 +41,15 @@ const (
 		"release`); a later message in the thread starts a new session that gets every such " +
 		"summary. Then your row in the ledger is ended, and last your tab is closed, which " +
 		"ends your own pane.\n\n" +
+		"Each step done is recorded in the ledger (table `steps`), so running it again after " +
+		"a failure skips the steps done and continues with the rest; an atb exit 4 (no " +
+		"holder) on the retry is a failure, never taken as the step having been done. With " +
+		"--force a Linear step that fails is skipped and listed at the end, with the command " +
+		"to finish it by hand, and the local cleanup (row, tab) is done anyway.\n\n" +
 		"Exit: 0 when the session ended (you will not see it: the tab closes); 1 when the " +
 		"caller is not a thread agent started by `fleet inbox` (FLEET_THREAD), or the summary " +
-		"file cannot be read or is empty; 5 when an atb step fails (nothing else changes), or " +
-		"herdr or the database fails."
+		"file cannot be read or is empty; 5 when an atb step fails without --force (the steps " +
+		"before it stay recorded), or herdr or the database fails."
 	ThreadSetProjectAbout     = "Put your thread ticket into a Linear project (thread agents only)"
 	ThreadSetProjectLongAbout = "Put your thread ticket into a Linear project (thread agents only).\n\n" +
 		"The ticket is FLEET_ISSUE; the project is matched exactly against the unarchived " +
@@ -515,6 +520,9 @@ func resumeThreadStart(h *herdr.Herdr, conn *sql.DB, target string, cfg *config.
 type ThreadEndArgs struct {
 	// SummaryFile is the session's summary.
 	SummaryFile string
+	// Force finishes the local cleanup even when a Linear step keeps
+	// failing; the steps not done are printed.
+	Force bool
 }
 
 // threadCaller is the caller as a thread agent started by `fleet inbox`;
@@ -533,7 +541,10 @@ func threadCaller() (*identity.Identity, error) {
 	return me, nil
 }
 
-// ThreadEnd runs `thread end`.
+// ThreadEnd runs `thread end`. The ending's steps (the ticket comment,
+// the release, the row) are recorded under `thread-end:<row id>`, so a
+// run after a partial failure skips what was done; the tab close is
+// always attempted last, since the tab is where the caller runs.
 func ThreadEnd(h *herdr.Herdr, args ThreadEndArgs) (exit.Code, error) {
 	me, err := threadCaller()
 	if err != nil {
@@ -551,42 +562,89 @@ func ThreadEnd(h *herdr.Herdr, args ThreadEndArgs) (exit.Code, error) {
 		return 0, err
 	}
 	defer conn.Close()
-	var session int64
+	var rowID, session int64
+	if err := conn.QueryRow("SELECT id FROM agents WHERE name = ?1 ORDER BY id DESC LIMIT 1", me.Agent).Scan(&rowID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, exit.Refusedf("the ledger has no row for %s", me.Agent)
+		}
+		return 0, exit.Database(err)
+	}
 	if row, err := threadByKey(conn, me.Thread); err != nil {
 		return 0, err
 	} else if row != nil {
 		session = row.Sessions
 	}
+	e := &threadEnding{conn: conn, key: fmt.Sprintf("thread-end:%d", rowID), force: args.Force}
 	if me.Issue != "" {
 		file, remove, err := tempFile(fmt.Sprintf("Session %d ended\n\n%s", session, strings.TrimSpace(string(summary))+"\n"))
 		if err != nil {
 			return 0, err
 		}
 		defer remove()
-		if err := atb.Comment(me.Issue, file); err != nil {
+		if err := e.linear("comment", func() error { return atb.Comment(me.Issue, file) },
+			fmt.Sprintf("atb linear comment %s --body-file <the summary, headed `Session %d ended`>", me.Issue, session)); err != nil {
 			return 0, err
 		}
-		if err := atb.Release(me.Issue, me.Agent, false); err != nil {
+		if err := e.linear("release", func() error { return atb.Release(me.Issue, me.Agent, false) },
+			fmt.Sprintf("atb linear release %s --agent %s --reason done --done", me.Issue, me.Agent)); err != nil {
 			return 0, err
 		}
 	}
-	if err := endRow(conn, me.Agent); err != nil {
+	if err := runStep(conn, e.key, "end-row", func() error { return endRow(conn, me.Agent) }); err != nil {
 		return 0, err
 	}
+	missed := e.missed
 	fmt.Fprintf(os.Stdout, "ended session %d of thread %s\n", session, me.Thread)
-	agent, err := h.CallOK("agent", "get", me.Agent)
-	if err != nil {
-		return 0, err
+	if len(missed) > 0 {
+		fmt.Fprintf(os.Stdout, "Linear steps not done, finish them by hand:\n")
+		for _, m := range missed {
+			fmt.Fprintf(os.Stdout, "  - %s\n", m)
+		}
 	}
-	inner, _ := herdr.Lookup(agent, "agent").(map[string]any)
+	return exit.Ok, closeOwnTab(h, me.Agent)
+}
+
+// threadEnding is one `thread end`: its step key, and with --force the
+// Linear steps skipped, each as the command to finish it by hand.
+type threadEnding struct {
+	conn   *sql.DB
+	key    string
+	force  bool
+	missed []string
+}
+
+// linear runs a Linear step through runStep; a failure is returned, or
+// with --force printed and listed in `missed`.
+func (e *threadEnding) linear(step string, do func() error, byHand string) error {
+	err := runStep(e.conn, e.key, step, do)
+	if err == nil || !e.force {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "fleet: %v\n", err)
+	e.missed = append(e.missed, byHand)
+	return nil
+}
+
+// closeOwnTab closes the tab the agent `name` runs in; an agent herdr no
+// longer has needs nothing closed.
+func closeOwnTab(h *herdr.Herdr, name string) error {
+	reply, err := h.Call("agent", "get", name)
+	if err != nil {
+		return err
+	}
+	if reply.Error != nil && reply.Error.Code == "agent_not_found" {
+		return nil
+	}
+	if reply.Error != nil {
+		return exit.Environmentf("herdr: %s: %s", reply.Error.Code, reply.Error.Message)
+	}
+	inner, _ := herdr.Lookup(reply.Result, "agent").(map[string]any)
 	tab, _ := inner["tab_id"].(string)
 	if tab == "" {
-		return 0, exit.Environmentf("herdr agent get %s has no tab_id", me.Agent)
+		return exit.Environmentf("herdr agent get %s has no tab_id", name)
 	}
-	if _, err := h.CallOK("tab", "close", tab); err != nil {
-		return 0, err
-	}
-	return exit.Ok, nil
+	_, err = h.CallOK("tab", "close", tab)
+	return err
 }
 
 // ticketCaller is threadCaller with a thread ticket.

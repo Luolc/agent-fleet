@@ -265,16 +265,16 @@ func TestAVersion5LedgerGainsTheThreadTablesAndKeepsItsRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer conn.Close()
-	var jobs, threads, inbox, version int64
+	var jobs, threads, inbox, steps, version int64
 	for query, into := range map[string]*int64{"SELECT count(*) FROM jobs": &jobs,
 		"SELECT count(*) FROM threads": &threads, "SELECT count(*) FROM inbox": &inbox,
-		"PRAGMA user_version": &version} {
+		"SELECT count(*) FROM steps": &steps, "PRAGMA user_version": &version} {
 		if err := conn.QueryRow(query).Scan(into); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if jobs != 1 || threads != 0 || inbox != 0 || version != schemaVersion {
-		t.Errorf("jobs %d, threads %d, inbox %d, version %d", jobs, threads, inbox, version)
+	if jobs != 1 || threads != 0 || inbox != 0 || steps != 0 || version != schemaVersion {
+		t.Errorf("jobs %d, threads %d, inbox %d, steps %d, version %d", jobs, threads, inbox, steps, version)
 	}
 }
 
