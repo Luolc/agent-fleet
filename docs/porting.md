@@ -58,8 +58,13 @@ One Rust module is one Go file. The command modules share one package, so
 each one's `Args` and `run` carry the command name: `SendArgs`, `Send`,
 `StatusArgs`, `Status`. Items a command module exported for another command
 (`with_header`, `deliver`, `live_rows`, ...) are exported Go identifiers in
-the same file. Go-only scaffolding that no source module has (the flag
-helpers) lives in `internal/cliargs`.
+the same file. Two modules that export one name get distinct Go names:
+`status`'s `herdr_agents` (the map `status` and `watch` read) is
+`HerdrAgents`, `spawn`'s (the raw array `close` reads) is `HerdrAgentList`.
+Module-private items (`plan`, `reach_input_box`) are unexported; a private
+name that would collide with a command's exported name carries the command
+name (`spawn`'s `plan` is `planSpawn`). Go-only scaffolding that no source
+module has (the flag helpers) lives in `internal/cliargs`.
 
 Doc comments are ported with the code: `//!` becomes the package or file
 comment, `///` the item's doc comment.
@@ -83,7 +88,9 @@ comment, `///` the item's doc comment.
   `flag.FlagSet`. clap behaviors that `flag` lacks are reproduced in
   `internal/cliargs`: flags after positionals (`send <to> --file x`), `--`
   ending the flags, `--session` accepted both before and after the command
-  (clap `global = true`), a flag given twice refused, and the implicit
+  (clap `global = true`), a flag given twice refused, a required flag (a
+  non-`Option` `#[arg(long)]`, `spawn --task-file`) missing refused with
+  clap's "required arguments were not provided" list, and the implicit
   `help [COMMAND]` subcommand (the named command's help; an unknown name is
   an unrecognized subcommand). Help (`-h`, `--help`) prints to stdout and
   exits 0; every other parse error exits 1 (the source maps clap's exit 2 to
@@ -125,6 +132,27 @@ comment, `///` the item's doc comment.
   only the operation (`herdr agent prompt timed out ...`), never an argument,
   which may be a message body. A `WaitDelay` that expires after herdr itself
   exited is not an error: what herdr printed is the reply.
+- Function size: `?` becomes an `if err != nil` branch each, so a long
+  source function can exceed the linter's complexity cap (gocognit 20).
+  Such a function is split at the source's own seams (the checks before
+  anything is created, a closure, a polling loop) into unexported helpers
+  in the same file; the order of operations and every message are
+  unchanged. `spawn`'s `run` is `spawnChecks`, `spawnCreate` and `Spawn`.
+- Closures: a function that takes `impl FnMut` arguments
+  (`reach_input_box`) takes `func` values; the test's scripted closures are
+  the same funcs.
+- `std::process::Command` for `git`: `exec.Command` as the source runs it,
+  with the full environment and no deadline; stdout and stderr captured
+  separately. Only herdr calls get the bounded runner above. A raw
+  `Command::new("herdr")` outside `Herdr` (`spawn`'s `pane_text`) goes
+  through `herdr.Run`, the exported form of the bounded runner, so it has
+  the same deadline, environment and process-group kill.
+- Paths and the machine: `fs::canonicalize` is `filepath.EvalSymlinks` then
+  `filepath.Abs`; `Path::exists` is `os.Stat` without an error (false on any
+  error, as the source); `thread::available_parallelism` is
+  `runtime.NumCPU` (marked `TODO(port)`: the source also honors a cgroup
+  CPU quota). An `f64` printed with `{}` is `strconv.FormatFloat(x, 'f',
+  -1, 64)`: no exponent, no trailing zeros, `2` for `2.0`.
 - Native error text: where the source embeds a Rust error's `Display` (an
   `io::Error`, a rusqlite error, a serde error, an `ExitStatus`), the Go form
   embeds Go's error text in the same position and keeps the words the source

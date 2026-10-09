@@ -40,6 +40,7 @@ var topHelp = longAbout + "\n\n" + topUsage + `
 
 Commands:
   send    ` + cmd.SendAbout + `
+  spawn   ` + cmd.SpawnAbout + `
   status  ` + cmd.StatusAbout + `
   help    Print this message or the help of the given subcommand(s)
 
@@ -60,6 +61,22 @@ Options:
       --file <PATH>     Read the body from this file instead of stdin
       --session <NAME>  ` + sessionHelp + `
   -h, --help            Print help
+`
+
+const spawnUsage = "Usage: fleet spawn [OPTIONS] --task-file <PATH> <NAME>"
+
+var spawnHelp = cmd.SpawnLongAbout + "\n\n" + spawnUsage + `
+
+Arguments:
+  <NAME>  Job id (from the orchestra) or worker name (from a lead). Only [a-z0-9-]
+
+Options:
+      --task-file <PATH>  File with the task, delivered as the agent's first message (with the header)
+      --branch <NAME>     Branch for the job's worktree (lead only). Default: data/<job>
+      --model <MODEL>     Model passed to the agent as --model. Default: the agent's own
+      --effort <EFFORT>   Effort passed to the agent as --effort. Default: the agent's own
+      --session <NAME>    ` + sessionHelp + `
+  -h, --help              Print help
 `
 
 const statusUsage = "Usage: fleet status [OPTIONS]"
@@ -145,6 +162,8 @@ func dispatch(args []string) (exit.Code, error) {
 		return help(rest[1:])
 	case "send":
 		return runSend(rest[1:], &session)
+	case "spawn":
+		return runSpawn(rest[1:], &session)
 	case "status":
 		return runStatus(rest[1:], &session)
 	default:
@@ -154,7 +173,7 @@ func dispatch(args []string) (exit.Code, error) {
 
 // help is clap's implicit `help [COMMAND]` subcommand.
 func help(args []string) (exit.Code, error) {
-	helps := map[string]string{"send": sendHelp, "status": statusHelp, "help": topHelp}
+	helps := map[string]string{"send": sendHelp, "spawn": spawnHelp, "status": statusHelp, "help": topHelp}
 	if len(args) == 0 {
 		fmt.Fprint(os.Stdout, topHelp)
 		return exit.Ok, nil
@@ -168,8 +187,11 @@ func help(args []string) (exit.Code, error) {
 }
 
 // parse parses a command's arguments: help goes to stdout with exit 0,
-// any other failure is a usageError.
-func parse(fs *flag.FlagSet, args []string, help, usage string, positionals int, names ...string) ([]string, bool, error) {
+// any other failure is a usageError. names are the positionals in order;
+// required are the flags that must be given (clap: a non-Option `#[arg]`),
+// listed after the positionals when missing, as clap lists them.
+func parse(fs *flag.FlagSet, args []string, help, usage string, names []string, required ...*cliargs.OptString) ([]string, bool, error) {
+	positionals := len(names)
 	got, err := cliargs.Parse(fs, args)
 	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -178,11 +200,18 @@ func parse(fs *flag.FlagSet, args []string, help, usage string, positionals int,
 		}
 		return nil, false, &usageError{err.Error(), usage}
 	}
+	var missing []string
 	if len(got) < positionals {
-		missing := make([]string, 0, positionals-len(got))
 		for _, name := range names[len(got):] {
 			missing = append(missing, "  <"+name+">")
 		}
+	}
+	for _, flag := range required {
+		if !flag.Given {
+			missing = append(missing, "  --"+flag.Name+" <"+flag.Placeholder+">")
+		}
+	}
+	if len(missing) > 0 {
 		return nil, false, &usageError{
 			"the following required arguments were not provided:\n" + strings.Join(missing, "\n"), usage}
 	}
@@ -196,11 +225,29 @@ func runSend(args []string, session *cliargs.OptString) (exit.Code, error) {
 	fs := flagSet("send", session)
 	file := cliargs.OptString{Name: "file", Placeholder: "PATH"}
 	fs.Var(&file, "file", "Read the body from this file instead of stdin")
-	got, helped, err := parse(fs, args, sendHelp, sendUsage, 1, "TO")
+	got, helped, err := parse(fs, args, sendHelp, sendUsage, []string{"TO"})
 	if err != nil || helped {
 		return exit.Ok, err
 	}
 	return cmd.Send(herdr.New(session.Ptr()), cmd.SendArgs{To: got[0], File: file.Ptr()})
+}
+
+func runSpawn(args []string, session *cliargs.OptString) (exit.Code, error) {
+	fs := flagSet("spawn", session)
+	taskFile := cliargs.OptString{Name: "task-file", Placeholder: "PATH"}
+	branch := cliargs.OptString{Name: "branch", Placeholder: "NAME"}
+	model := cliargs.OptString{Name: "model", Placeholder: "MODEL"}
+	effort := cliargs.OptString{Name: "effort", Placeholder: "EFFORT"}
+	fs.Var(&taskFile, "task-file", "File with the task")
+	fs.Var(&branch, "branch", "Branch for the job's worktree (lead only)")
+	fs.Var(&model, "model", "Model passed to the agent as --model")
+	fs.Var(&effort, "effort", "Effort passed to the agent as --effort")
+	got, helped, err := parse(fs, args, spawnHelp, spawnUsage, []string{"NAME"}, &taskFile)
+	if err != nil || helped {
+		return exit.Ok, err
+	}
+	return cmd.Spawn(herdr.New(session.Ptr()), cmd.SpawnArgs{
+		Name: got[0], TaskFile: taskFile.Value, Branch: branch.Ptr(), Model: model.Ptr(), Effort: effort.Ptr()})
 }
 
 func runStatus(args []string, session *cliargs.OptString) (exit.Code, error) {
@@ -211,7 +258,7 @@ func runStatus(args []string, session *cliargs.OptString) (exit.Code, error) {
 	fs.Var(&job, "job", "Only this job's agents")
 	fs.Var(&asJSON, "json", "Machine-readable output")
 	fs.Var(&repo, "repo", "Dataset repo whose ledger to read")
-	_, helped, err := parse(fs, args, statusHelp, statusUsage, 0)
+	_, helped, err := parse(fs, args, statusHelp, statusUsage, nil)
 	if err != nil || helped {
 		return exit.Ok, err
 	}
