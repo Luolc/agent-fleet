@@ -50,10 +50,24 @@ check "watch: third run exit 0" 0 "$rc"
 has "watch: unchanged set, the orchestra is not told again" "$(cat /home/agent/watch3.out)" "suspect set unchanged (3 suspect)"
 lacks "watch: unchanged set, nothing delivered" "$(cat /home/agent/watch3.out)" "delivered to"
 
-flags=$("$T" --session judge status --repo "acme/$R" --json |
-  jq -r '[.[] | "\(.name)=\(.herdr_status // "-"):\(.flags | join(","))"] | join(" ")')
-check "status: herdr status and flags per agent" \
-  "orchestra=done: w-lead=idle:owes-work,suspect w-tick=working: w-hang=working:suspect w-gone=-:missing,suspect" "$flags"
+# A second job for the --job filter: a lead gone from herdr, and the fake
+# agent the send arm left at its permission prompt, so one row is blocked.
+now=$(date +%s)
+sqlite3 "$DB" >/dev/null <<SQL
+INSERT INTO agents (name, role, job, parent, state, started_at) VALUES
+    ('v-lead', 'lead', 'v', 'orchestra', 'active', $now),
+    ('fake', 'worker', 'v', 'v-lead', 'active', $now);
+SQL
+status_all() { # name=herdr_status:flags for every agent status lists
+  "$T" --session judge status --repo "acme/$R" --json "$@" |
+    jq -r '[.[] | "\(.name)=\(.herdr_status // "-"):\(.flags | join(","))"] | join(" ")'
+}
+check "status: herdr status and flags per agent, jobs in order" \
+  "orchestra=done: v-lead=-:missing fake=blocked:blocked w-lead=idle:owes-work,suspect w-tick=working: w-hang=working:suspect w-gone=-:missing,suspect" \
+  "$(status_all)"
+check "status: --job keeps exactly that job's agents" \
+  "w-lead=idle:owes-work,suspect w-tick=working: w-hang=working:suspect w-gone=-:missing,suspect" "$(status_all --job w)"
+check "status: --job on the other job" "v-lead=-:missing fake=blocked:blocked" "$(status_all --job v)"
 check "status: since_change_secs is set once watch has looked" true \
   "$("$T" --session judge status --repo "acme/$R" --json | jq '[.[] | select(.name == "w-hang") | .since_change_secs >= 7] | first')"
 for out in /home/agent/watch1.out /home/agent/watch2.out /home/agent/watch3.out; do

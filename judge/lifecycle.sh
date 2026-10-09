@@ -33,7 +33,7 @@ proc_env() {
   tr '\0' '\n' < "/proc/$pid/environ" | grep "^$P" | sort | tr '\n' ' '
 }
 status_flags() { # name:flags for every live agent, in the order status lists them
-  orch status --json | jq -r '[.[] | "\(.name):\(.flags | join(","))"] | join(" ")'
+  orch status --json "$@" | jq -r '[.[] | "\(.name):\(.flags | join(","))"] | join(" ")'
 }
 
 # The orchestra is an agent here so the lead's `done` has someone to reach.
@@ -107,8 +107,7 @@ check "spawn: refused worker has no ledger row" "0 " "$(ledger "SELECT count(*) 
 for a in item-1-lead item-1-a item-1-b item-1-c; do settled "$a"; done
 check "status: live agents in start order with the owes-work flag" \
   "item-1-lead:owes-work item-1-a:owes-work item-1-b:owes-work item-1-c:owes-work" "$(status_flags)"
-check "status: --job keeps only that job" "item-1-a:owes-work" \
-  "$(orch status --json --job item-1 | jq -r '[.[] | select(.name == "item-1-a") | "\(.name):\(.flags | join(","))"] | join(" ")')"
+check "status: --job on the only live job lists the same set" "$(status_flags)" "$(status_flags --job item-1)"
 out=$(orch status 2>&1); rc=$?
 check "status: table exit 0 with the repo from the environment" 0 "$rc"
 case "$out" in NAME*) head=yes ;; *) head=no ;; esac
