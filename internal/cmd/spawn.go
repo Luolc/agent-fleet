@@ -251,24 +251,8 @@ func reachInputBox(
 		if err := keys(trust); err != nil {
 			return err
 		}
-		deadline := time.Now().Add(wait)
-		for {
-			time.Sleep(poll)
-			if text, err = screen(); err != nil {
-				return err
-			}
-			if IsInputBox(text) {
-				state, err := status()
-				if err != nil {
-					return err
-				}
-				if settled(state) {
-					break
-				}
-			}
-			if !time.Now().Before(deadline) {
-				break
-			}
+		if text, err = pollInputBox(screen, status, wait, poll); err != nil {
+			return err
 		}
 	}
 	state, err := status()
@@ -280,6 +264,31 @@ func reachInputBox(
 	}
 	return exit.New(exit.Blocked,
 		fmt.Sprintf("is not ready at its input box (herdr status %q); its screen:\n%s", state, text))
+}
+
+// pollInputBox reads the screen every `poll` until it shows the input box
+// with herdr settled, or `wait` has passed; the last screen is returned.
+func pollInputBox(screen, status func() (string, error), wait, poll time.Duration) (string, error) {
+	deadline := time.Now().Add(wait)
+	for {
+		time.Sleep(poll)
+		text, err := screen()
+		if err != nil {
+			return "", err
+		}
+		if IsInputBox(text) {
+			state, err := status()
+			if err != nil {
+				return "", err
+			}
+			if state == "idle" || state == "done" {
+				return text, nil
+			}
+		}
+		if !time.Now().Before(deadline) {
+			return text, nil
+		}
+	}
 }
 
 // paneText is the pane's recent text (plain text, like `agent read`), for
@@ -423,7 +432,7 @@ func CheckAgentName(name string) error {
 	if err := CheckName(name); err != nil {
 		return err
 	}
-	if name == "" || !(name[0] >= 'a' && name[0] <= 'z') || len(name) > 32 {
+	if name == "" || name[0] < 'a' || name[0] > 'z' || len(name) > 32 {
 		return exit.Refusedf(
 			"agent name %q must start with a letter and have at most 32 characters (herdr's rule)", name)
 	}
@@ -575,162 +584,205 @@ func liveNameTaken(conn *sql.DB, name string) (bool, error) {
 	return true, nil
 }
 
-// Spawn runs `spawn`.
-func Spawn(h *herdr.Herdr, args SpawnArgs) (exit.Code, error) {
+// checked is what the checks before anything is created established:
+// the caller, the plan, the task (with its header, and its canonical
+// path), the places, and the commit a lead branches from.
+type checked struct {
+	me         *identity.Identity
+	p          plan
+	text       string
+	task       string
+	worktree   string
+	checkout   string
+	base       string
+	workspaces []string
+}
+
+// spawnChecks runs every check, in the source's order: the plan, the task
+// file, the ledger, herdr's view, the resources, then origin/HEAD for a
+// lead. `conn` is open on success.
+func spawnChecks(h *herdr.Herdr, args SpawnArgs) (*checked, *sql.DB, error) {
 	me, err := identity.FromEnv()
 	if err != nil {
-		return 0, err
+		return nil, nil, err
 	}
 	p, err := planSpawn(me, args)
 	if err != nil {
-		return 0, err
+		return nil, nil, err
 	}
 	data, err := os.ReadFile(args.TaskFile)
 	if err != nil {
-		return 0, exit.Refusedf("cannot read %s: %v", args.TaskFile, err)
+		return nil, nil, exit.Refusedf("cannot read %s: %v", args.TaskFile, err)
 	}
 	text, err := WithHeader(me.Agent, string(data))
 	if err != nil {
-		return 0, err
+		return nil, nil, err
 	}
 	task, err := canonicalize(args.TaskFile)
 	if err != nil {
-		return 0, exit.IO(err)
+		return nil, nil, exit.IO(err)
 	}
 	repo, err := RepoName(me.Repo)
 	if err != nil {
-		return 0, err
+		return nil, nil, err
 	}
 	home, err := Home()
 	if err != nil {
-		return 0, err
+		return nil, nil, err
 	}
 	conn, err := db.Open(me.Repo)
 	if err != nil {
-		return 0, err
+		return nil, nil, err
 	}
-	defer conn.Close()
+	c := &checked{me: me, p: p, text: text, task: task, checkout: filepath.Join(home, "dev", repo)}
+	if err := c.ledgerAndHerdr(h, conn, filepath.Join(home, "wt", repo, p.job)); err != nil {
+		_ = conn.Close()
+		return nil, nil, err
+	}
+	return c, conn, nil
+}
 
+// ledgerAndHerdr is the ledger checks, then herdr's view, then the
+// resources and origin/HEAD; `leadWorktree` is the worktree a lead gets.
+func (c *checked) ledgerAndHerdr(h *herdr.Herdr, conn *sql.DB, leadWorktree string) error {
+	me, p := c.me, c.p
 	taken, err := liveNameTaken(conn, p.agent)
 	if err != nil {
-		return 0, err
+		return err
 	}
 	if taken {
-		return 0, exit.Refusedf("%s is already live in the ledger; names are never reused while live", p.agent)
+		return exit.Refusedf("%s is already live in the ledger; names are never reused while live", p.agent)
 	}
 	// Ledger checks first, then herdr's view.
-	var worktree string
 	if p.role == identity.Lead {
-		worktree = filepath.Join(home, "wt", repo, p.job)
-	} else {
-		var found sql.NullString
-		err := conn.QueryRow("SELECT worktree FROM agents WHERE name = ?1 AND state != 'ended'", me.Agent).Scan(&found)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return 0, exit.Database(err)
-		}
-		if !found.Valid || found.String == "" {
-			return 0, exit.Refusedf("%s has no live row with a worktree", me.Agent)
-		}
-		var live int64
-		if err := conn.QueryRow("SELECT count(*) FROM agents WHERE job = ?1 AND state != 'ended'", p.job).Scan(&live); err != nil {
-			return 0, exit.Database(err)
-		}
-		if live >= jobCap {
-			return 0, exit.Refusedf("job %s already has %d live agents; the cap is %d including the lead",
-				p.job, live, jobCap)
-		}
-		worktree = found.String
+		c.worktree = leadWorktree
+	} else if c.worktree, err = workerWorktree(conn, me.Agent, p.job); err != nil {
+		return err
 	}
 	agents, err := HerdrAgentList(h)
 	if err != nil {
-		return 0, err
+		return err
 	}
 	for _, entry := range agents {
 		a, _ := entry.(map[string]any)
 		if name, _ := a["name"].(string); name == p.agent {
-			return 0, exit.Refusedf("herdr already has an agent named %s", p.agent)
+			return exit.Refusedf("herdr already has an agent named %s", p.agent)
 		}
 	}
-	workspaces, err := WorkspacesLabelled(h, p.job)
-	if err != nil {
-		return 0, err
+	if c.workspaces, err = WorkspacesLabelled(h, p.job); err != nil {
+		return err
 	}
 	switch {
-	case p.role == identity.Lead && (len(workspaces) != 0 || exists(worktree)):
-		return 0, exit.Refusedf("job %s already has a workspace or the worktree %s; "+
-			"if it is left over, clean up with `fleet close %s --force`", p.job, worktree, p.job)
-	case p.role == identity.Worker && len(workspaces) != 1:
-		return 0, exit.Environmentf("expected one workspace labelled %s, herdr has %d", p.job, len(workspaces))
+	case p.role == identity.Lead && (len(c.workspaces) != 0 || exists(c.worktree)):
+		return exit.Refusedf("job %s already has a workspace or the worktree %s; "+
+			"if it is left over, clean up with `fleet close %s --force`", p.job, c.worktree, p.job)
+	case p.role == identity.Worker && len(c.workspaces) != 1:
+		return exit.Environmentf("expected one workspace labelled %s, herdr has %d", p.job, len(c.workspaces))
 	}
 	loadavg, err := os.ReadFile("/proc/loadavg")
 	if err != nil {
-		return 0, exit.IO(err)
+		return exit.IO(err)
 	}
 	meminfo, err := os.ReadFile("/proc/meminfo")
 	if err != nil {
-		return 0, exit.IO(err)
+		return exit.IO(err)
 	}
 	// TODO(port): available_parallelism also honors a cgroup CPU quota;
 	// NumCPU honors only the affinity mask.
 	if err := CheckResources(string(loadavg), runtime.NumCPU(), string(meminfo)); err != nil {
-		return 0, err
+		return err
 	}
-	checkout := filepath.Join(home, "dev", repo)
 	// Only a lead makes a branch; a worker uses its job's worktree.
-	base := ""
 	if p.role == identity.Lead {
-		if base, err = originHead(checkout); err != nil {
-			return 0, err
+		if c.base, err = originHead(c.checkout); err != nil {
+			return err
 		}
 	}
+	return nil
+}
 
+// workerWorktree is the job's worktree from the lead's live row, once the
+// job is under its cap.
+func workerWorktree(conn *sql.DB, lead, job string) (string, error) {
+	var found sql.NullString
+	err := conn.QueryRow("SELECT worktree FROM agents WHERE name = ?1 AND state != 'ended'", lead).Scan(&found)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return "", exit.Database(err)
+	}
+	if !found.Valid || found.String == "" {
+		return "", exit.Refusedf("%s has no live row with a worktree", lead)
+	}
+	var live int64
+	if err := conn.QueryRow("SELECT count(*) FROM agents WHERE job = ?1 AND state != 'ended'", job).Scan(&live); err != nil {
+		return "", exit.Database(err)
+	}
+	if live >= jobCap {
+		return "", exit.Refusedf("job %s already has %d live agents; the cap is %d including the lead",
+			job, live, jobCap)
+	}
+	return found.String, nil
+}
+
+// spawnCreate is everything after the row is written: the worktree and
+// workspace (lead) or tab (worker), the agent, the delivery and the
+// `active` row. Every step appends what it made to `created`.
+func spawnCreate(h *herdr.Herdr, conn *sql.DB, c *checked, args SpawnArgs, created *[]string) (exit.Code, error) {
+	p := c.p
+	id := &identity.Identity{Agent: p.agent, Role: p.role, Parent: c.me.Agent, Repo: c.me.Repo, Job: p.job}
+	var place Place
+	var err error
+	if p.branch != nil {
+		if _, err := Git("-C", c.checkout, "worktree", "add", c.worktree, "--no-track", "-b", *p.branch, c.base); err != nil {
+			return 0, err
+		}
+		*created = append(*created, fmt.Sprintf("worktree %s on branch %s", c.worktree, *p.branch))
+		if place, err = CreateWorkspace(h, p.job, p.tabLabel, c.worktree, id); err != nil {
+			return 0, err
+		}
+		*created = append(*created, fmt.Sprintf("workspace %s (%s)", p.job, place.WorkspaceID))
+	} else {
+		if place, err = CreateTab(h, c.workspaces[0], p.tabLabel, c.worktree, id); err != nil {
+			return 0, err
+		}
+		*created = append(*created, fmt.Sprintf("tab %s (%s)", p.tabLabel, place.TabID))
+	}
+	if _, err := conn.Exec("UPDATE agents SET pane_id = ?1 WHERE name = ?2 AND state != 'ended'",
+		place.PaneID, p.agent); err != nil {
+		return 0, exit.Database(err)
+	}
+	if err := StartAgent(h, p.agent, place.PaneID, args.Model, args.Effort); err != nil {
+		return 0, err
+	}
+	*created = append(*created, fmt.Sprintf("agent %s in pane %s", p.agent, place.PaneID))
+	code, err := Deliver(h, p.agent, c.text)
+	if err != nil {
+		return 0, err
+	}
+	if code != exit.NotFound {
+		if _, err := conn.Exec("UPDATE agents SET state = 'active' WHERE name = ?1 AND state = 'starting'",
+			p.agent); err != nil {
+			return 0, exit.Database(err)
+		}
+	}
+	return code, nil
+}
+
+// Spawn runs `spawn`.
+func Spawn(h *herdr.Herdr, args SpawnArgs) (exit.Code, error) {
+	c, conn, err := spawnChecks(h, args)
+	if err != nil {
+		return 0, err
+	}
+	defer conn.Close()
+	p := c.p
 	if _, err := conn.Exec(
 		"INSERT INTO agents (name, role, job, worktree, parent, report_to, task, state, started_at) "+
 			"VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?6, 'starting', ?7)",
-		p.agent, p.role.String(), p.job, worktree, me.Agent, task, db.Now()); err != nil {
+		p.agent, p.role.String(), p.job, c.worktree, c.me.Agent, c.task, db.Now()); err != nil {
 		return 0, exit.Database(err)
 	}
-	id := &identity.Identity{Agent: p.agent, Role: p.role, Parent: me.Agent, Repo: me.Repo, Job: p.job}
 	created := []string{fmt.Sprintf("ledger row %s (state starting)", p.agent)}
-	code, err := func() (exit.Code, error) {
-		var place Place
-		if p.branch != nil {
-			if _, err := Git("-C", checkout, "worktree", "add", worktree, "--no-track", "-b", *p.branch, base); err != nil {
-				return 0, err
-			}
-			created = append(created, fmt.Sprintf("worktree %s on branch %s", worktree, *p.branch))
-			place, err = CreateWorkspace(h, p.job, p.tabLabel, worktree, id)
-			if err != nil {
-				return 0, err
-			}
-			created = append(created, fmt.Sprintf("workspace %s (%s)", p.job, place.WorkspaceID))
-		} else {
-			place, err = CreateTab(h, workspaces[0], p.tabLabel, worktree, id)
-			if err != nil {
-				return 0, err
-			}
-			created = append(created, fmt.Sprintf("tab %s (%s)", p.tabLabel, place.TabID))
-		}
-		if _, err := conn.Exec("UPDATE agents SET pane_id = ?1 WHERE name = ?2 AND state != 'ended'",
-			place.PaneID, p.agent); err != nil {
-			return 0, exit.Database(err)
-		}
-		if err := StartAgent(h, p.agent, place.PaneID, args.Model, args.Effort); err != nil {
-			return 0, err
-		}
-		created = append(created, fmt.Sprintf("agent %s in pane %s", p.agent, place.PaneID))
-		code, err := Deliver(h, p.agent, text)
-		if err != nil {
-			return 0, err
-		}
-		if code != exit.NotFound {
-			if _, err := conn.Exec("UPDATE agents SET state = 'active' WHERE name = ?1 AND state = 'starting'",
-				p.agent); err != nil {
-				return 0, exit.Database(err)
-			}
-		}
-		return code, nil
-	}()
+	code, err := spawnCreate(h, conn, c, args, &created)
 
 	if err != nil || code != exit.Ok {
 		if err != nil {
@@ -755,7 +807,7 @@ func Spawn(h *herdr.Herdr, args SpawnArgs) (exit.Code, error) {
 		}
 		return code, nil
 	}
-	fmt.Fprintf(os.Stdout, "started %s in job %s (%s)\n", p.agent, p.job, worktree)
+	fmt.Fprintf(os.Stdout, "started %s in job %s (%s)\n", p.agent, p.job, c.worktree)
 	return code, nil
 }
 

@@ -132,6 +132,12 @@ comment, `///` the item's doc comment.
   only the operation (`herdr agent prompt timed out ...`), never an argument,
   which may be a message body. A `WaitDelay` that expires after herdr itself
   exited is not an error: what herdr printed is the reply.
+- Function size: `?` becomes an `if err != nil` branch each, so a long
+  source function can exceed the linter's complexity cap (gocognit 20).
+  Such a function is split at the source's own seams (the checks before
+  anything is created, a closure, a polling loop) into unexported helpers
+  in the same file; the order of operations and every message are
+  unchanged. `spawn`'s `run` is `spawnChecks`, `spawnCreate` and `Spawn`.
 - Closures: a function that takes `impl FnMut` arguments
   (`reach_input_box`) takes `func` values; the test's scripted closures are
   the same funcs.
