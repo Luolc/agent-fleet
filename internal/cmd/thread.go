@@ -190,10 +190,9 @@ func tempFile(content string) (string, func(), error) {
 // job's conclusion.
 type inboundMessage struct {
 	Thread, Text, User, TS, Context string
-	// Question is the asking agent's name; Approval asks for an approval
-	// card; Conclusion marks a job's conclusion, which needs no answer.
+	// Question is the asking agent's name; Conclusion marks a job's
+	// conclusion, which needs no answer.
 	Question   string
-	Approval   bool
 	Conclusion bool
 }
 
@@ -218,12 +217,8 @@ func (m inboundMessage) body() string {
 			"`fednet client post`; nothing is waiting for an answer.\n\n%s", m.Question, m.Thread, m.Text)
 	}
 	if m.Question != "" {
-		how := "Post it to the thread with `fednet client post`"
-		if m.Approval {
-			how = "Post it to the thread as an approval card with `fednet client request-approval`"
-		}
-		return fmt.Sprintf("Question from %s for the people in thread %s. %s; when they answer, pass the answer on "+
-			"with `fleet send %s --file <file>`.\n\n%s\n", m.Question, m.Thread, how, m.Question, m.Text)
+		return fmt.Sprintf("Question from %s for the people in thread %s. Post it to the thread with `fednet client post`; "+
+			"when they answer, pass the answer on with `fleet send %s --file <file>`.\n\n%s\n", m.Question, m.Thread, m.Question, m.Text)
 	}
 	return fmt.Sprintf("Message in thread %s from %s at %s:\n\n%s\n", m.Thread, m.User, m.TS, m.Text)
 }
@@ -547,7 +542,7 @@ func resumeThreadStart(h *herdr.Herdr, conn *sql.DB, target string, cfg *config.
 	if err := SettleAgent(h, name, pane); err != nil {
 		return 0, err
 	}
-	text, err := WithHeader(inboxSender, s.prompt())
+	text, err := WithHeader(s.msg.sender(), s.prompt())
 	if err != nil {
 		return 0, err
 	}

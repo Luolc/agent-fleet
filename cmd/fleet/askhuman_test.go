@@ -84,14 +84,14 @@ func TestAskHumanReachesTheLiveThreadAgentAndIsAnsweredByTheNextMessage(t *testi
 		t.Errorf("questions = %q", got)
 	}
 	out = w.askHuman("--file", task(w, "a.md", "May I delete the old table?\n"), "--approval")
-	if out.code != 0 || !strings.Contains(w.file("argv"), "as an approval card with `fednet client request-approval`") {
-		t.Errorf("approval: %+v, argv %q", out, w.file("argv"))
+	if out.code != 1 || !strings.Contains(out.stderr, "approval cards are not supported yet") {
+		t.Errorf("approval: %+v", out)
 	}
-	out = w.inbox(w.event("m2", "October, and yes", ""))
-	if out.code != 0 || !strings.Contains(out.stdout, "2 pending question(s) in thread "+threadKey+" answered") {
+	out = w.inbox(w.event("m2", "October", ""))
+	if out.code != 0 || !strings.Contains(out.stdout, "1 pending question(s) in thread "+threadKey+" answered") {
 		t.Errorf("answer: %+v", out)
 	}
-	if got := questions(w); got != "item-1 "+threadKey+" item-1-lead plain answered\nitem-1 "+threadKey+" item-1-lead approval answered" {
+	if got := questions(w); got != "item-1 "+threadKey+" item-1-lead plain answered" {
 		t.Errorf("questions = %q", got)
 	}
 }
@@ -129,6 +129,54 @@ func TestAskHumanStartsAThreadAgentWhenTheHomeThreadHasNone(t *testing.T) {
 		}
 	}
 	if got := questions(w); got != "item-1 "+threadKey+" item-1-lead plain pending" {
+		t.Errorf("questions = %q", got)
+	}
+}
+
+// A start from a lead's question, killed by the fake at `pane rename`, is
+// finished by the next ask-human with the question still headed by the
+// lead, not by inbox.
+func TestAskHumanFinishesAStartItsEarlierRunWasKilledIn(t *testing.T) {
+	w := threadWorld(t, "")
+	openJobWithHomeThread(w, true)
+	if out := w.inbox(w.event("m1", "start the import", "ctx")); out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	conn := w.defaultLedger()
+	if _, err := conn.Exec("UPDATE agents SET state = 'ended' WHERE role = 'thread'"); err != nil {
+		t.Fatal(err)
+	}
+	conn.Close()
+	for _, marker := range []string{"threads-workspace", "kill-at-rename"} {
+		if err := os.WriteFile(filepath.Join(w.dir, marker), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = os.Remove(filepath.Join(w.dir, "argv"))
+	out := w.askHuman("--file", task(w, "q.md", "Which month? 0xQ1\n"))
+	if out.code == 0 || w.file("argv") != "" {
+		t.Fatalf("the killed run finished: %+v, argv %q", out, w.file("argv"))
+	}
+	if got := threadAgentRow(w); got != "TH-5 starting" {
+		t.Fatalf("row after the kill = %q", got)
+	}
+	out = w.askHuman("--file", task(w, "q.md", "Which month? 0xQ1\n"))
+	if out.code != 0 || !strings.Contains(out.stderr, "still starting from an earlier run") {
+		t.Fatalf("retry: %+v", out)
+	}
+	prompt := w.file("argv")
+	for _, want := range []string{"[FROM: item-1-lead]\nYou are a thread agent", "Question from item-1-lead for the people in thread " + threadKey, "0xQ1"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("retry prompt = %q, want %q in it", prompt, want)
+		}
+	}
+	if strings.HasPrefix(prompt, "agent\nprompt\nthread-c0123-1700000000-123\n[FROM: inbox]") {
+		t.Errorf("retry prompt headed by inbox: %q", prompt)
+	}
+	if got := threadAgentRow(w); got != "TH-5 active" {
+		t.Errorf("row after the retry = %q", got)
+	}
+	if got := questions(w); got != "item-1 "+threadKey+" item-1-lead plain pending\nitem-1 "+threadKey+" item-1-lead plain pending" {
 		t.Errorf("questions = %q", got)
 	}
 }

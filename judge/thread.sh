@@ -288,12 +288,12 @@ check "ask-human: pending in the ledger" "item-8|$K|item-8-lead|0|pending " \
 settled "$A"
 out=$(PATH=/home/agent/fake-thread:$PATH env "${P}AGENT=item-8-lead" "${P}ROLE=lead" "${P}PARENT=$A" "${P}TARGET=default" \
   "${P}JOB=item-8" "${P}ISSUE=" "$T" --session judge ask-human --file /home/agent/tasks/q1.md --approval 2>&1); rc=$?
-check "ask-human --approval: exit 0" 0 "$rc"
-has "ask-human --approval: the agent is told to post an approval card" "$(screen "$A")" "request-approval"
-settled "$A"
+check "ask-human --approval: exit 1, not supported yet" 1 "$rc"
+has "ask-human --approval: says so" "$out" "approval cards are not supported yet"
+check "ask-human --approval: nothing recorded" "1 " "$(tledger "SELECT count(*) FROM questions")"
 out=$(inbox "$(event m5 "$K" 'September 0xMSG5')" 2>&1); rc=$?
 check "inbox: a reply in the thread, exit 0" 0 "$rc"
-has "inbox: the reply marks the questions answered" "$out" "2 pending question(s) in thread $K answered"
+has "inbox: the reply marks the question answered" "$out" "1 pending question(s) in thread $K answered"
 check "inbox: no question pending" "0 " "$(tledger "SELECT count(*) FROM questions WHERE state = 'pending'")"
 has "inbox: the reply on the thread agent's screen" "$(screen "$A")" "0xMSG5"
 out=$(as item-1-a worker item-1-lead item-1 -- ask-human --file /home/agent/tasks/q1.md 2>&1); rc=$?

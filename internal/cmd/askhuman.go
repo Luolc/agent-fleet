@@ -19,22 +19,23 @@ import (
 
 // AskHumanAbout and AskHumanLongAbout are the help texts of `ask-human`.
 const (
-	AskHumanAbout     = "Ask the people in your job's home thread a question, or for an approval (leads and thread agents)"
-	AskHumanLongAbout = "Ask the people in your job's home thread a question, or for an approval (leads and thread agents).\n\n" +
+	AskHumanAbout     = "Ask the people in your job's home thread a question (leads and thread agents)"
+	AskHumanLongAbout = "Ask the people in your job's home thread a question (leads and thread agents).\n\n" +
 		"A lead has no other way to talk to people. The question is read from --file; it is " +
 		"recorded as pending in the ledger (table `questions`), then delivered to the job's " +
 		"home thread (`jobs.home_thread`, the thread of the thread agent that started the " +
 		"job) as `fleet inbox` delivers a message: to the thread's live agent, headed `[FROM: " +
 		"<you>]`, or to a thread agent started for the thread (its ticket claimed again, the " +
 		"question as the session's first message). The thread agent posts the question " +
-		"(`fednet client post`; with --approval, as an approval card with `fednet client " +
-		"request-approval`) and, when a person answers in the thread, passes the answer on " +
-		"with `fleet send`. A person's message in the thread marks the thread's pending " +
+		"(`fednet client post`) and, when a person answers in the thread, passes the answer " +
+		"on with `fleet send`. A person's message in the thread marks the thread's pending " +
 		"questions answered.\n\n" +
+		"Approval cards (fednet's request-approval) are not supported yet: --approval is " +
+		"refused. Ask for a go-ahead in plain text (\"reply yes to go ahead\").\n\n" +
 		"A thread agent asking records the question on its own thread and posts it itself; " +
 		"nothing is delivered.\n\n" +
 		"Exit: 0 when the thread agent has the question (or, for a thread agent, once it is " +
-		"recorded); 1 when the caller is a worker, the file is unreadable or empty, the job " +
+		"recorded); 1 with --approval, when the caller is a worker, the file is unreadable or empty, the job " +
 		"is not open, or the job has no home thread (it was started by a caller without " +
 		"FLEET_THREAD); 2/3/4 as `send` for the delivery; 3 when a new thread agent stops " +
 		"at an unknown screen; 5 when herdr, atb or the database fails. Linear unavailable " +
@@ -46,7 +47,7 @@ const (
 type AskHumanArgs struct {
 	// File holds the question.
 	File string
-	// Approval asks for an approval card instead of a plain question.
+	// Approval asks for an approval card; not supported yet, refused.
 	Approval bool
 }
 
@@ -55,6 +56,9 @@ func AskHuman(h *herdr.Herdr, args AskHumanArgs) (exit.Code, error) {
 	me, err := identity.FromEnv()
 	if err != nil {
 		return 0, err
+	}
+	if args.Approval {
+		return 0, exit.Refusedf("approval cards are not supported yet; ask in plain text (\"reply yes to go ahead\") without --approval")
 	}
 	if me.Role == identity.Worker {
 		return 0, exit.Refusedf("a worker does not ask people; tell your lead with `fleet send %s`", me.Parent)
@@ -93,7 +97,7 @@ func AskHuman(h *herdr.Herdr, args AskHumanArgs) (exit.Code, error) {
 		return 0, exit.Refusedf("FLEET_THREAD is not set: a thread agent asks in its own thread")
 	}
 	if _, err := conn.Exec("INSERT INTO questions (job, thread, asked_by, text, approval, state, asked_at) "+
-		"VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6)", job, thread, me.Agent, text, args.Approval, db.Now()); err != nil {
+		"VALUES (?1, ?2, ?3, ?4, 0, 'pending', ?5)", job, thread, me.Agent, text, db.Now()); err != nil {
 		return 0, exit.Database(err)
 	}
 	if me.Role == identity.Thread {
@@ -104,7 +108,7 @@ func AskHuman(h *herdr.Herdr, args AskHumanArgs) (exit.Code, error) {
 	if err != nil {
 		return 0, err
 	}
-	msg := inboundMessage{Thread: thread, Text: text, Question: me.Agent, Approval: args.Approval}
+	msg := inboundMessage{Thread: thread, Text: text, Question: me.Agent}
 	return toThread(h, conn, me.Target, cfg, msg)
 }
 

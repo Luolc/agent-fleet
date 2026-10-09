@@ -142,7 +142,7 @@ var askHumanHelp = cmd.AskHumanLongAbout + "\n\n" + askHumanUsage + `
 
 Options:
       --file <PATH>     The question, delivered to the home thread's agent to post
-      --approval        Ask for an approval card (fednet's request-approval) instead of a plain question
+      --approval        Ask for an approval card; not supported yet, refused with exit 1
       --session <NAME>  ` + sessionHelp + `
   -h, --help            Print help
 `
@@ -504,7 +504,7 @@ func runAskHuman(args []string, session *cliargs.OptString) (exit.Code, error) {
 	file := cliargs.OptString{Name: "file", Placeholder: "PATH"}
 	approval := cliargs.Bool{Name: "approval"}
 	fs.Var(&file, "file", "The question")
-	fs.Var(&approval, "approval", "Ask for an approval card")
+	fs.Var(&approval, "approval", "Ask for an approval card (not supported yet)")
 	_, helped, err := parse(fs, args, askHumanHelp, askHumanUsage, nil, &file)
 	if err != nil || helped {
 		return exit.Ok, err
