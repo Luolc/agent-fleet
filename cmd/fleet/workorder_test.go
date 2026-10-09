@@ -213,6 +213,7 @@ func TestSpawnChecksTheConfigAndTheParentIssueBeforeAnythingIsCreated(t *testing
 		{"lead row without a parent issue", withLinear, "", "item-1-lead", "lead", "item-1", []string{"a"}, "no parent issue in the ledger"},
 		{"a title-less task", withLinear, "EX-10", "item-1-lead", "lead", "item-1", []string{"a", "--task-file", "HASHES"}, "gives no title"},
 		{"an invalid config", `{"linear": {"team": "EX"}}`, "EX-10", "item-1-lead", "lead", "item-1", []string{"a"}, "config.json: linear.project"},
+		{"a null linear", `{"linear": null}`, "", "orchestra", "orchestra", "", []string{"item-2"}, "linear: must not be null"},
 		{"the job cap", `{"max_agents_per_job": 1}`, "EX-10", "item-1-lead", "lead", "item-1", []string{"a"}, "the cap is 1"},
 	}
 	for _, c := range cases {

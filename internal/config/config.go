@@ -79,6 +79,17 @@ func Parse(data []byte) (*Config, error) {
 	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
 		return nil, errors.New("not a valid config: more than one JSON value")
 	}
+	// A null would decode as an absent key, and an absent key means the
+	// default; `"linear": null` must not turn Linear off.
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil || raw == nil {
+		return nil, errors.New("not a valid config: not a JSON object")
+	}
+	for _, key := range []string{"max_agents_per_job", "resource_check", "linear"} {
+		if value, ok := raw[key]; ok && string(value) == "null" {
+			return nil, errors.New(key + ": must not be null; leave the key out for the default")
+		}
+	}
 	c := &Config{MaxAgentsPerJob: 4, ResourceCheck: true}
 	if f.MaxAgentsPerJob != nil {
 		if *f.MaxAgentsPerJob < 1 {

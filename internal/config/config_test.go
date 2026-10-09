@@ -42,6 +42,11 @@ func TestAnInvalidFileIsRefusedNamingTheKey(t *testing.T) {
 		`{"linear": {"team": 7, "project": ""}}`: "linear.team",
 		`{"max_agent_per_job": 4}`:               `"max_agent_per_job"`,
 		`{"resource_check": true`:                "not a valid config",
+		`{"max_agents_per_job": null}`:           "max_agents_per_job: must not be null",
+		`{"resource_check": null}`:               "resource_check: must not be null",
+		`{"linear": null}`:                       "linear: must not be null",
+		"{\"linear\" :\n  null }":                "linear: must not be null",
+		`null`:                                   "not a JSON object",
 		`{} {}`:                                  "more than one JSON value",
 	} {
 		if _, err := Parse([]byte(body)); err == nil || !strings.Contains(err.Error(), says) {
