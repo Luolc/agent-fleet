@@ -17,7 +17,7 @@ import (
 	"github.com/Luolc/agent-fleet/internal/exit"
 )
 
-const schemaVersion = 6
+const schemaVersion = 7
 
 // Version 1: the `agents` table. Ended rows are kept as history, so `name`
 // is unique only among rows that have not ended.
@@ -118,8 +118,42 @@ CREATE TABLE steps (
 );
 `
 
+// Version 7: thread agents. `agents.thread` is the thread key of a thread
+// agent's row (empty for the other roles), and a thread has at most one
+// live thread agent. `threads` is one row per thread this target has
+// seen: its slug (the agent is `thread-<slug>`), the channel's context
+// as it came with the first message, the thread ticket (empty with
+// Linear off) and how many sessions were started on it. `inbox` is one
+// row per fednet message by its `msg_id`: `reserved` once `fleet inbox`
+// took it, `delivered` once the thread agent has it, `dropped` when it
+// was given up (Linear unavailable); a rerun of the same message does
+// nothing lasting.
+const schemaV7 = `
+ALTER TABLE agents ADD COLUMN thread TEXT NOT NULL DEFAULT '';
+CREATE UNIQUE INDEX agents_live_thread ON agents (thread)
+    WHERE role = 'thread' AND state != 'ended' AND thread != '';
+CREATE TABLE threads (
+    id         INTEGER PRIMARY KEY,
+    thread     TEXT    NOT NULL UNIQUE,
+    slug       TEXT    NOT NULL,
+    channel    TEXT    NOT NULL DEFAULT '',
+    context    TEXT    NOT NULL DEFAULT '',
+    ticket     TEXT    NOT NULL DEFAULT '',
+    ticket_url TEXT    NOT NULL DEFAULT '',
+    sessions   INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL
+);
+CREATE TABLE inbox (
+    id          INTEGER PRIMARY KEY,
+    msg_id      TEXT    NOT NULL UNIQUE,
+    thread      TEXT    NOT NULL DEFAULT '',
+    state       TEXT    NOT NULL CHECK (state IN ('reserved', 'delivered', 'dropped')),
+    received_at INTEGER NOT NULL
+);
+`
+
 // migrations[v] upgrades a ledger at version v to v+1.
-var migrations = [schemaVersion]string{schema, schemaV2, schemaV3, schemaV4, schemaV5, schemaV6}
+var migrations = [schemaVersion]string{schema, schemaV2, schemaV3, schemaV4, schemaV5, schemaV6, schemaV7}
 
 // Path is where the ledger of `target` lives:
 // `$XDG_STATE_HOME/fleet/<target>/fleet.db`, with `~/.local/state` when

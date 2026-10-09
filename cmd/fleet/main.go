@@ -46,6 +46,8 @@ const topUsage = "Usage: fleet [OPTIONS] <COMMAND>"
 var topHelp = longAbout + "\n\n" + topUsage + `
 
 Commands:
+  inbox     ` + cmd.InboxAbout + `
+  thread    ` + cmd.ThreadAbout + `
   job       ` + cmd.JobAbout + `
   spawn     ` + cmd.SpawnAbout + `
   send      ` + cmd.SendAbout + `
@@ -72,6 +74,65 @@ Options:
       --file <PATH>     Read the body from this file instead of stdin
       --session <NAME>  ` + sessionHelp + `
   -h, --help            Print help
+`
+
+const inboxUsage = "Usage: fleet inbox [OPTIONS] <EVENT-FILE>"
+
+var inboxHelp = cmd.InboxLongAbout + "\n\n" + inboxUsage + `
+
+Arguments:
+  <EVENT-FILE>  The event file the fednet client wrote: one JSON object with msg_id and payload
+
+Options:
+      --session <NAME>  ` + sessionHelp + `; the hook runs outside herdr, so without it the
+                        target's name is used
+  -h, --help            Print help
+`
+
+const threadUsage = "Usage: fleet thread <COMMAND>"
+
+var threadHelp = cmd.ThreadAbout + ".\n\n" + threadUsage + `
+
+Commands:
+  end          ` + cmd.ThreadEndAbout + `
+  set-project  ` + cmd.ThreadSetProjectAbout + `
+  relate       ` + cmd.ThreadRelateAbout + `
+
+Options:
+  -h, --help  Print help
+`
+
+const threadEndUsage = "Usage: fleet thread end [OPTIONS] --summary-file <PATH>"
+
+var threadEndHelp = cmd.ThreadEndLongAbout + "\n\n" + threadEndUsage + `
+
+Options:
+      --summary-file <PATH>  The session's summary, written to the thread ticket and given to the next session
+      --force                Finish the local cleanup even when a Linear step keeps failing; the steps left are printed
+      --session <NAME>       ` + sessionHelp + `
+  -h, --help                 Print help
+`
+
+const threadSetProjectUsage = "Usage: fleet thread set-project <PROJECT>"
+
+var threadSetProjectHelp = cmd.ThreadSetProjectLongAbout + "\n\n" + threadSetProjectUsage + `
+
+Arguments:
+  <PROJECT>  Project name, matched exactly against the ticket's team
+
+Options:
+  -h, --help  Print help
+`
+
+const threadRelateUsage = "Usage: fleet thread relate <ISSUE>"
+
+var threadRelateHelp = cmd.ThreadRelateLongAbout + "\n\n" + threadRelateUsage + `
+
+Arguments:
+  <ISSUE>  The issue to relate the ticket to, such as ABC-12
+
+Options:
+  -h, --help  Print help
 `
 
 const jobUsage = "Usage: fleet job <COMMAND>"
@@ -268,6 +329,10 @@ func dispatch(args []string) (exit.Code, error) {
 	switch rest[0] {
 	case "help":
 		return help(rest[1:])
+	case "inbox":
+		return runInbox(rest[1:], &session)
+	case "thread":
+		return runThread(rest[1:], &session)
 	case "job":
 		return runJob(rest[1:], &session)
 	case "send":
@@ -289,7 +354,7 @@ func dispatch(args []string) (exit.Code, error) {
 
 // help is clap's implicit `help [COMMAND]` subcommand.
 func help(args []string) (exit.Code, error) {
-	helps := map[string]string{"job": jobHelp, "send": sendHelp, "spawn": spawnHelp, "done": doneHelp,
+	helps := map[string]string{"inbox": inboxHelp, "thread": threadHelp, "job": jobHelp, "send": sendHelp, "spawn": spawnHelp, "done": doneHelp,
 		"status": statusHelp, "watch": watchHelp, "worktree": worktreeHelp, "help": topHelp}
 	if len(args) == 0 {
 		fmt.Fprint(os.Stdout, topHelp)
@@ -305,6 +370,12 @@ func help(args []string) (exit.Code, error) {
 			return exit.Ok, nil
 		case "end":
 			fmt.Fprint(os.Stdout, jobEndHelp)
+			return exit.Ok, nil
+		}
+	}
+	if args[0] == "thread" && len(args) > 1 {
+		if text, ok := threadHelps[args[1]]; ok {
+			fmt.Fprint(os.Stdout, text)
 			return exit.Ok, nil
 		}
 	}
@@ -362,6 +433,56 @@ func runSend(args []string, session *cliargs.OptString) (exit.Code, error) {
 		return exit.Ok, err
 	}
 	return cmd.Send(herdr.New(session.Ptr()), cmd.SendArgs{To: got[0], File: file.Ptr()})
+}
+
+func runInbox(args []string, session *cliargs.OptString) (exit.Code, error) {
+	fs := flagSet("inbox", session)
+	got, helped, err := parse(fs, args, inboxHelp, inboxUsage, []string{"EVENT-FILE"})
+	if err != nil || helped {
+		return exit.Ok, err
+	}
+	return cmd.Inbox(herdr.New(session.Ptr()), cmd.InboxArgs{File: got[0]})
+}
+
+var threadHelps = map[string]string{"end": threadEndHelp, "set-project": threadSetProjectHelp, "relate": threadRelateHelp}
+
+// runThread dispatches `fleet thread <COMMAND>`.
+func runThread(args []string, session *cliargs.OptString) (exit.Code, error) {
+	if len(args) == 0 {
+		return 0, &usageError{"'fleet thread' requires a subcommand but one was not provided", threadUsage}
+	}
+	switch args[0] {
+	case "-h", "--help", "help":
+		fmt.Fprint(os.Stdout, threadHelp)
+		return exit.Ok, nil
+	case "end":
+		fs := flagSet("thread end", session)
+		summary := cliargs.OptString{Name: "summary-file", Placeholder: "PATH"}
+		force := cliargs.Bool{Name: "force"}
+		fs.Var(&summary, "summary-file", "The session's summary")
+		fs.Var(&force, "force", "Finish the local cleanup even when a Linear step keeps failing")
+		_, helped, err := parse(fs, args[1:], threadEndHelp, threadEndUsage, nil, &summary)
+		if err != nil || helped {
+			return exit.Ok, err
+		}
+		return cmd.ThreadEnd(herdr.New(session.Ptr()), cmd.ThreadEndArgs{SummaryFile: summary.Value, Force: force.Value})
+	case "set-project":
+		got, helped, err := parse(flagSet("thread set-project", session), args[1:], threadSetProjectHelp,
+			threadSetProjectUsage, []string{"PROJECT"})
+		if err != nil || helped {
+			return exit.Ok, err
+		}
+		return cmd.ThreadSetProject(got[0])
+	case "relate":
+		got, helped, err := parse(flagSet("thread relate", session), args[1:], threadRelateHelp,
+			threadRelateUsage, []string{"ISSUE"})
+		if err != nil || helped {
+			return exit.Ok, err
+		}
+		return cmd.ThreadRelate(got[0])
+	default:
+		return 0, &usageError{fmt.Sprintf("unrecognized subcommand '%s'", args[0]), threadUsage}
+	}
 }
 
 // runJob dispatches `fleet job <COMMAND>`.

@@ -144,11 +144,17 @@ func StartAgent(h *herdr.Herdr, name, paneID string, model, effort *string) erro
 		return exit.Environmentf("agent %s did not start: herdr: %s: %s\npane %s:\n%s",
 			name, reply.Error.Code, reply.Error.Message, paneID, pane)
 	}
+	return SettleAgent(h, name, paneID)
+}
+
+// SettleAgent renames the pane after the started agent `name` and gets it
+// to its input box, as StartAgent does after the start; also what a retry
+// of an interrupted start runs.
+func SettleAgent(h *herdr.Herdr, name, paneID string) error {
 	if _, err := h.CallOK("pane", "rename", paneID, name); err != nil {
 		return err
 	}
-
-	err = reachInputBox(
+	err := reachInputBox(
 		func() (string, error) { return h.Screen(name) },
 		func() (string, error) {
 			agent, err := h.CallOK("agent", "get", name)
@@ -670,9 +676,9 @@ func reserve(conn *sql.DB, checks func(q querier) error, inserts func(q querier)
 // insertStarting writes the new agent's row as `starting`.
 func insertStarting(conn querier, id *identity.Identity, cwd, task, parentIssue string) error {
 	if _, err := conn.Exec(
-		"INSERT INTO agents (name, role, job, cwd, parent, report_to, task, state, started_at, issue, parent_issue) "+
-			"VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?6, 'starting', ?7, ?8, ?9)",
-		id.Agent, id.Role.String(), id.Job, cwd, id.Parent, task, db.Now(), id.Issue, parentIssue); err != nil {
+		"INSERT INTO agents (name, role, job, cwd, parent, report_to, task, state, started_at, issue, parent_issue, thread) "+
+			"VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?6, 'starting', ?7, ?8, ?9, ?10)",
+		id.Agent, id.Role.String(), id.Job, cwd, id.Parent, task, db.Now(), id.Issue, parentIssue, id.Thread); err != nil {
 		return exit.Database(err)
 	}
 	return nil
@@ -688,12 +694,12 @@ func setIssue(conn querier, agent, issue string) error {
 }
 
 // startAndDeliver starts the agent in `place`, delivers the task with the
-// header and the work order's URL, and marks the row active. Every step
-// appends what it made to `created`. The row is marked active only when
-// herdr reported the task delivered, so a row still `starting` means the
-// agent may not have its task.
+// header (`sender`) and the work order's URL, and marks the row active.
+// Every step appends what it made to `created`. The row is marked active
+// only when herdr reported the task delivered, so a row still `starting`
+// means the agent may not have its task.
 func startAndDeliver(h *herdr.Herdr, conn *sql.DB, id *identity.Identity, place Place, model, effort *string,
-	body, url string, created *[]string) (exit.Code, error) {
+	sender, body, url string, created *[]string) (exit.Code, error) {
 	if _, err := conn.Exec("UPDATE agents SET pane_id = ?1 WHERE name = ?2 AND state != 'ended'",
 		place.PaneID, id.Agent); err != nil {
 		return 0, exit.Database(err)
@@ -705,7 +711,7 @@ func startAndDeliver(h *herdr.Herdr, conn *sql.DB, id *identity.Identity, place 
 	if url != "" {
 		body = "Work order: " + url + "\n\n" + body
 	}
-	text, err := WithHeader(id.Parent, body)
+	text, err := WithHeader(sender, body)
 	if err != nil {
 		return 0, err
 	}

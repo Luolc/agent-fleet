@@ -51,8 +51,10 @@ func (r Role) String() string {
 const DefaultTarget = "default"
 
 // Identity is who is calling. `Parent` and `Job` are empty for a thread
-// agent; `Issue`, the agent's Linear work order, is empty when it has none;
-// `Target` names the ledger and is never empty.
+// agent; `Issue`, the agent's Linear work order (a thread agent's thread
+// ticket), is empty when it has none; `Target` names the ledger and is
+// never empty; `Thread` is the thread key of a thread agent, empty for the
+// other roles.
 type Identity struct {
 	Agent  string
 	Role   Role
@@ -60,9 +62,10 @@ type Identity struct {
 	Target string
 	Job    string
 	Issue  string
+	Thread string
 }
 
-const hint = "this pane was not started by fleet; agents get these variables from `fleet job start` or `fleet spawn`"
+const hint = "this pane was not started by fleet; agents get these variables from `fleet inbox`, `fleet job start` or `fleet spawn`"
 
 // AgentName is the caller's name alone: all that `send` needs. Fails with
 // exit code 1 when `FLEET_AGENT` is unset.
@@ -121,13 +124,16 @@ func FromEnv() (*Identity, error) {
 		Target: target,
 		Job:    os.Getenv("FLEET_JOB"),
 		Issue:  os.Getenv("FLEET_ISSUE"),
+		Thread: os.Getenv("FLEET_THREAD"),
 	}, nil
 }
 
 // EnvPairs are the variables to inject into a pane for an agent with this
-// identity.
-func (id *Identity) EnvPairs() [6][2]string {
-	return [6][2]string{
+// identity. `FLEET_THREAD` is set only in a thread agent's pane: the other
+// roles have no thread of their own (a job's home thread is in the
+// ledger).
+func (id *Identity) EnvPairs() [][2]string {
+	pairs := [][2]string{
 		{"FLEET_AGENT", id.Agent},
 		{"FLEET_ROLE", id.Role.String()},
 		{"FLEET_PARENT", id.Parent},
@@ -135,4 +141,8 @@ func (id *Identity) EnvPairs() [6][2]string {
 		{"FLEET_JOB", id.Job},
 		{"FLEET_ISSUE", id.Issue},
 	}
+	if id.Role == Thread {
+		pairs = append(pairs, [2]string{"FLEET_THREAD", id.Thread})
+	}
+	return pairs
 }
