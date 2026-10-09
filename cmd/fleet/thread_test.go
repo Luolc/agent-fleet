@@ -48,6 +48,12 @@ case "$1 $2" in
     if [ -e "$dir/kill-at-rename" ]; then rm "$dir/kill-at-rename"; kill -9 $PPID; sleep 1; fi
     echo '{"result":{}}' ;;
   "tab rename") echo '{"result":{}}' ;;
+  "pane get")
+    if [ -e "$dir/pane-gone" ]; then echo '{"error":{"code":"pane_not_found","message":"pane '"$3"' not found"}}'; else
+      echo '{"result":{"pane":{"pane_id":"'"$3"'","tab_id":"t9","workspace_id":"w7"}}}'; fi ;;
+  "tab get")
+    if [ -e "$dir/closed-tab" ]; then echo '{"error":{"code":"tab_not_found","message":"tab '"$3"' not found"}}'; else
+      echo '{"result":{"tab":{"tab_id":"'"$3"'"}}}'; fi ;;
   "tab close")
     if [ -e "$dir/tab-close-fails" ]; then rm "$dir/tab-close-fails"; echo '{"error":{"code":"internal","message":"tab busy"}}'; exit 1; fi
     echo "$3" > "$dir/closed-tab"; echo '{"result":{}}' ;;
@@ -486,7 +492,7 @@ func TestThreadEndWritesTheSummaryReleasesEndsTheRowAndClosesTheTabLast(t *testi
 	got[0] = strings.SplitN(got[0], " --body-file", 2)[0]
 	want := []string{"atb linear comment TH-5",
 		"atb linear release TH-5 --agent thread-c0123-1700000000-123 --reason done --done key=set",
-		"herdr agent get", "herdr tab close"}
+		"herdr pane get", "herdr tab close", "herdr tab get"}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Errorf("calls = %q, want %q", got, want)
 	}
@@ -548,7 +554,7 @@ func TestThreadEndRefusalsAndAtbFailureChangeNothing(t *testing.T) {
 	if out := w2.asThreadAgent("", "thread", "end", "--summary-file", task(w2, "s.md", "bye\n")); out.code != 0 {
 		t.Fatalf("%+v", out)
 	}
-	if got := strings.TrimSpace(w2.calls()); got != "herdr agent get\nherdr tab close" {
+	if got := strings.TrimSpace(w2.calls()); got != "herdr pane get\nherdr tab close\nherdr tab get" {
 		t.Errorf("calls = %q", got)
 	}
 }
@@ -786,7 +792,7 @@ func TestThreadEndResumesAfterAPartialReleaseAndForceFinishesLocally(t *testing.
 		strings.Contains(out.stdout, "comment") {
 		t.Errorf("force stdout = %q", out.stdout)
 	}
-	if got := strings.TrimSpace(w.calls()); !strings.HasPrefix(got, "atb linear release TH-5") || !strings.HasSuffix(got, "herdr agent get\nherdr tab close") {
+	if got := strings.TrimSpace(w.calls()); !strings.HasPrefix(got, "atb linear release TH-5") || !strings.HasSuffix(got, "herdr pane get\nherdr tab close\nherdr tab get") {
 		t.Errorf("force calls = %q", got)
 	}
 	if got := threadAgentRow(w); got != "TH-5 ended" {
@@ -826,15 +832,66 @@ func TestThreadEndRetriesAFailedTabCloseAfterTheRowEnded(t *testing.T) {
 	if out.code != 0 {
 		t.Fatalf("retry: %+v", out)
 	}
-	if got := strings.TrimSpace(w.calls()); got != "herdr agent get\nherdr tab close" {
+	if got := strings.TrimSpace(w.calls()); got != "herdr pane get\nherdr tab close\nherdr tab get" {
 		t.Errorf("retry calls = %q", got)
 	}
 	if got := strings.TrimSpace(w.file("closed-tab")); got != "t9" {
 		t.Errorf("closed tab = %q", got)
 	}
-	// Once the tab is gone there is nothing left to do.
+}
+
+func TestThreadEndClosesTheRecordedTabWhenTheAgentIsGone(t *testing.T) {
+	w := threadWorld(t, "")
+	if out := w.inbox(w.event("m1", "first", "")); out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	summary := task(w, "summary.md", "bye\n")
+	// The agent exited to its pane's shell: herdr has no agent, but the
+	// pane and its tab are there. The tab is closed through the recorded
+	// pane, and checked gone.
 	_ = os.Remove(filepath.Join(w.dir, "has-thread-c0123-1700000000-123"))
-	if out := w.asThreadAgent("TH-5", "thread", "end", "--summary-file", summary); out.code != 0 {
-		t.Errorf("after the tab closed: %+v", out)
+	_ = os.Remove(filepath.Join(w.dir, "calls"))
+	out := w.asThreadAgent("TH-5", "thread", "end", "--summary-file", summary)
+	if out.code != 0 {
+		t.Fatalf("agent gone, tab open: %+v", out)
+	}
+	if got := strings.TrimSpace(w.calls()); !strings.HasSuffix(got, "herdr pane get\nherdr tab close\nherdr tab get") ||
+		strings.Contains(got, "agent get") {
+		t.Errorf("calls = %q", got)
+	}
+	if got := strings.TrimSpace(w.file("closed-tab")); got != "t9" {
+		t.Errorf("closed tab = %q", got)
+	}
+	// A tab that stays after the close is a failure, not success.
+	w2 := threadWorld(t, "")
+	if out := w2.inbox(w2.event("m1", "first", "")); out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	if err := os.WriteFile(filepath.Join(w2.dir, "fake-herdr", "herdr"),
+		[]byte(strings.Replace(threadHerdr, `echo "$3" > "$dir/closed-tab"; echo '{"result":{}}'`, `echo '{"result":{}}'`, 1)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out = w2.asThreadAgent("TH-5", "thread", "end", "--summary-file", task(w2, "s.md", "bye\n"))
+	if out.code != 5 || !strings.Contains(out.stderr, "still there after") {
+		t.Errorf("tab stays: %+v", out)
+	}
+	// Agent gone and pane gone: the tab is gone with it, nothing to close.
+	w3 := threadWorld(t, "")
+	if out := w3.inbox(w3.event("m1", "first", "")); out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	for _, f := range []string{"pane-gone", "closed-tab"} {
+		if err := os.WriteFile(filepath.Join(w3.dir, f), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = os.Remove(filepath.Join(w3.dir, "has-thread-c0123-1700000000-123"))
+	_ = os.Remove(filepath.Join(w3.dir, "calls"))
+	out = w3.asThreadAgent("TH-5", "thread", "end", "--summary-file", task(w3, "s.md", "bye\n"))
+	if out.code != 0 || !strings.HasSuffix(strings.TrimSpace(w3.calls()), "herdr pane get") {
+		t.Errorf("pane gone: %+v, calls %q", out, w3.calls())
+	}
+	if got := threadAgentRow(w3); got != "TH-5 ended" {
+		t.Errorf("row = %q", got)
 	}
 }

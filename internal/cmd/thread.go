@@ -43,7 +43,9 @@ const (
 		"ends your own pane.\n\n" +
 		"Each step done is recorded in the ledger (table `steps`), so running it again after " +
 		"a failure skips the steps done and continues with the rest; an atb exit 4 (no " +
-		"holder) on the retry is a failure, never taken as the step having been done. With " +
+		"holder) on the retry is a failure, never taken as the step having been done. The tab " +
+		"is found from the pane your row recorded, so it is closed even when herdr no longer " +
+		"has the agent (it exited to the pane's shell), and checked gone afterwards. With " +
 		"--force a Linear step that fails is skipped and listed at the end, with the command " +
 		"to finish it by hand, and the local cleanup (row, tab) is done anyway.\n\n" +
 		"Exit: 0 when the session ended (you will not see it: the tab closes); 1 when the " +
@@ -601,7 +603,7 @@ func ThreadEnd(h *herdr.Herdr, args ThreadEndArgs) (exit.Code, error) {
 			fmt.Fprintf(os.Stdout, "  - %s\n", m)
 		}
 	}
-	return exit.Ok, closeOwnTab(h, me.Agent)
+	return exit.Ok, closeOwnTab(h, conn, me.Agent)
 }
 
 // threadEnding is one `thread end`: its step key, and with --force the
@@ -625,26 +627,43 @@ func (e *threadEnding) linear(step string, do func() error, byHand string) error
 	return nil
 }
 
-// closeOwnTab closes the tab the agent `name` runs in; an agent herdr no
-// longer has needs nothing closed.
-func closeOwnTab(h *herdr.Herdr, name string) error {
-	reply, err := h.Call("agent", "get", name)
+// closeOwnTab closes the tab the thread agent's row recorded (its pane's
+// tab), whether or not herdr still has the agent: an agent that exited
+// leaves its tab. A pane herdr no longer has means the tab is gone. The
+// close is checked: the tab must be gone afterwards.
+func closeOwnTab(h *herdr.Herdr, conn querier, name string) error {
+	var pane string
+	if err := conn.QueryRow("SELECT pane_id FROM agents WHERE name = ?1 ORDER BY id DESC LIMIT 1", name).Scan(&pane); err != nil {
+		return exit.Database(err)
+	}
+	if pane == "" {
+		return exit.Environmentf("the ledger recorded no pane for %s; close its tab by hand", name)
+	}
+	reply, err := h.Call("pane", "get", pane)
 	if err != nil {
 		return err
 	}
-	if reply.Error != nil && reply.Error.Code == "agent_not_found" {
+	if reply.Error != nil && reply.Error.Code == "pane_not_found" {
 		return nil
 	}
 	if reply.Error != nil {
 		return exit.Environmentf("herdr: %s: %s", reply.Error.Code, reply.Error.Message)
 	}
-	inner, _ := herdr.Lookup(reply.Result, "agent").(map[string]any)
+	inner, _ := herdr.Lookup(reply.Result, "pane").(map[string]any)
 	tab, _ := inner["tab_id"].(string)
 	if tab == "" {
-		return exit.Environmentf("herdr agent get %s has no tab_id", name)
+		return exit.Environmentf("herdr pane get %s has no tab_id", pane)
 	}
-	_, err = h.CallOK("tab", "close", tab)
-	return err
+	if _, err := h.CallOK("tab", "close", tab); err != nil {
+		return err
+	}
+	if reply, err = h.Call("tab", "get", tab); err != nil {
+		return err
+	}
+	if reply.Error == nil {
+		return exit.Environmentf("tab %s of %s is still there after `herdr tab close`; close it by hand", tab, name)
+	}
+	return nil
 }
 
 // ticketCaller is threadCaller with a thread ticket.

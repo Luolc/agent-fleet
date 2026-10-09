@@ -238,6 +238,33 @@ out=$(thra "$K" TH-5 -- thread end --summary-file /home/agent/summary.md 2>&1); 
 check "thread end: retry exit 0" 0 "$rc"
 check "thread end: retry called no atb and closed the tab" " agent_not_found" "$(cat /home/agent/atb.log) $(agent_field "$A" agent_status)"
 
+# The agent exited to its pane's shell (herdr has no agent, the tab is
+# there): thread end closes the recorded tab anyway, and checks it gone.
+inbox "$(event m7 "$K" 'again 0xMSG7')" >/dev/null 2>&1; rc=$?
+check "inbox: session 5 for the gone-agent arm, exit 0" 0 "$rc"
+settled "$A"
+tpane5=$(agent_field "$A" pane_id)
+ttab5=$("${S[@]}" pane get "$tpane5" | jq -r .result.pane.tab_id)
+kill "$("${S[@]}" pane process-info --pane "$tpane5" | jq -r '.result.process_info.foreground_processes[0].pid')"
+for _ in $(seq 1 50); do [ "$(agent_field "$A" agent_status)" = agent_not_found ] && break; sleep 0.2; done
+check "thread end: the agent is gone, its tab is there" "agent_not_found $ttab5" \
+  "$(agent_field "$A" agent_status) $("${S[@]}" tab get "$ttab5" 2>&1 | jq -r '.result.tab.tab_id // .error.code')"
+: > /home/agent/atb.log
+out=$(thra "$K" TH-5 -- thread end --summary-file /home/agent/summary.md 2>&1); rc=$?
+check "thread end: exit 0 with the agent gone" 0 "$rc"
+[ "$rc" = 0 ] || printf '%s\n' "$out"
+check "thread end: the recorded tab is closed" tab_not_found "$("${S[@]}" tab get "$ttab5" 2>&1 | jq -r '.result.tab.tab_id // .error.code')"
+check "thread end: row ended" "ended " "$(tledger "SELECT state FROM agents WHERE name = '$A' ORDER BY id DESC LIMIT 1")"
+# Agent and tab both gone already: nothing to close, exit 0.
+inbox "$(event m8 "$K" 'again 0xMSG8')" >/dev/null 2>&1; rc=$?
+check "inbox: session 6 for the gone-tab arm, exit 0" 0 "$rc"
+settled "$A"
+"${S[@]}" tab close "$(agent_field "$A" tab_id)" >/dev/null
+for _ in $(seq 1 50); do [ "$(agent_field "$A" agent_status)" = agent_not_found ] && break; sleep 0.2; done
+out=$(thra "$K" TH-5 -- thread end --summary-file /home/agent/summary.md 2>&1); rc=$?
+check "thread end: exit 0 with the agent and its tab gone" 0 "$rc"
+check "thread end: row ended with nothing to close" "ended " "$(tledger "SELECT state FROM agents WHERE name = '$A' ORDER BY id DESC LIMIT 1")"
+
 # A job started from a thread agent has that thread as its home thread.
 out=$(thra "$K" TH-5 -- job start item-8 --repo "$R" --task-file "$(task item-8 'home thread job')" 2>&1); rc=$?
 check "job start from a thread agent: exit 0" 0 "$rc"
