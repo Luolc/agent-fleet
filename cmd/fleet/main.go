@@ -40,13 +40,14 @@ const topUsage = "Usage: fleet [OPTIONS] <COMMAND>"
 var topHelp = longAbout + "\n\n" + topUsage + `
 
 Commands:
-  send    ` + cmd.SendAbout + `
-  spawn   ` + cmd.SpawnAbout + `
-  done    ` + cmd.DoneAbout + `
-  status  ` + cmd.StatusAbout + `
-  watch   ` + cmd.WatchAbout + `
-  close   ` + cmd.CloseAbout + `
-  help    Print this message or the help of the given subcommand(s)
+  send      ` + cmd.SendAbout + `
+  spawn     ` + cmd.SpawnAbout + `
+  done      ` + cmd.DoneAbout + `
+  status    ` + cmd.StatusAbout + `
+  watch     ` + cmd.WatchAbout + `
+  close     ` + cmd.CloseAbout + `
+  worktree  ` + cmd.WorktreeAbout + `
+  help      Print this message or the help of the given subcommand(s)
 
 Options:
       --session <NAME>  ` + sessionHelp + `
@@ -134,6 +135,20 @@ Options:
   -h, --help            Print help
 `
 
+const worktreeUsage = "Usage: fleet worktree [OPTIONS] <REPO>"
+
+var worktreeHelp = cmd.WorktreeLongAbout + "\n\n" + worktreeUsage + `
+
+Arguments:
+  <REPO>  Directory name of the checkout under ~/dev
+
+Options:
+      --name <NAME>     Another worktree of the job in this repo: ~/wt/<repo>/<job>-<name>. Only [a-z0-9-]
+      --branch <NAME>   Branch to create. Default: <job>, or <job>-<name> with --name
+      --session <NAME>  ` + sessionHelp + `
+  -h, --help            Print help
+`
+
 func main() {
 	os.Exit(run(os.Args[1:]))
 }
@@ -214,6 +229,8 @@ func dispatch(args []string) (exit.Code, error) {
 		return runWatch(rest[1:], &session)
 	case "close":
 		return runClose(rest[1:], &session)
+	case "worktree":
+		return runWorktree(rest[1:], &session)
 	default:
 		return 0, &usageError{fmt.Sprintf("unrecognized subcommand '%s'", rest[0]), topUsage}
 	}
@@ -221,7 +238,7 @@ func dispatch(args []string) (exit.Code, error) {
 
 // help is clap's implicit `help [COMMAND]` subcommand.
 func help(args []string) (exit.Code, error) {
-	helps := map[string]string{"send": sendHelp, "spawn": spawnHelp, "done": doneHelp, "status": statusHelp, "watch": watchHelp, "close": closeHelp, "help": topHelp}
+	helps := map[string]string{"send": sendHelp, "spawn": spawnHelp, "done": doneHelp, "status": statusHelp, "watch": watchHelp, "close": closeHelp, "worktree": worktreeHelp, "help": topHelp}
 	if len(args) == 0 {
 		fmt.Fprint(os.Stdout, topHelp)
 		return exit.Ok, nil
@@ -347,4 +364,17 @@ func runClose(args []string, session *cliargs.OptString) (exit.Code, error) {
 		return exit.Ok, err
 	}
 	return cmd.Close(herdr.New(session.Ptr()), cmd.CloseArgs{Job: got[0], Force: force.Value})
+}
+
+func runWorktree(args []string, session *cliargs.OptString) (exit.Code, error) {
+	fs := flagSet("worktree", session)
+	name := cliargs.OptString{Name: "name", Placeholder: "NAME"}
+	branch := cliargs.OptString{Name: "branch", Placeholder: "NAME"}
+	fs.Var(&name, "name", "Another worktree of the job in this repo")
+	fs.Var(&branch, "branch", "Branch to create")
+	got, helped, err := parse(fs, args, worktreeHelp, worktreeUsage, []string{"REPO"})
+	if err != nil || helped {
+		return exit.Ok, err
+	}
+	return cmd.Worktree(cmd.WorktreeArgs{Repo: got[0], Name: name.Ptr(), Branch: branch.Ptr()})
 }

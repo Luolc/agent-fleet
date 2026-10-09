@@ -4,7 +4,7 @@
 check "version: exit 0" 0 "$rc"
 "$T" --help >/dev/null 2>&1; rc=$?
 check "help: exit 0" 0 "$rc"
-for c in spawn send done status watch close; do
+for c in spawn send done status watch close worktree; do
   out=$("$T" "$c" --help 2>&1); rc=$?
   case "$out" in *Exit*) states=yes ;; *) states=no ;; esac
   check "$c --help: exit 0 and states its exit codes" "0 yes" "$rc $states"
