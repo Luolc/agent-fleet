@@ -140,7 +140,7 @@ func (w *world) send(reply, body string) (result, string) {
 
 func TestEverySubcommandHasHelp(t *testing.T) {
 	w := newWorld(t)
-	for _, name := range []string{"send", "spawn", "status"} {
+	for _, name := range []string{"send", "spawn", "done", "status", "close"} {
 		out := w.run("", []string{name, "--help"})
 		if out.code != 0 {
 			t.Errorf("%s --help failed: %+v", name, out)

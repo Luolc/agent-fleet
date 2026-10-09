@@ -41,7 +41,9 @@ var topHelp = longAbout + "\n\n" + topUsage + `
 Commands:
   send    ` + cmd.SendAbout + `
   spawn   ` + cmd.SpawnAbout + `
+  done    ` + cmd.DoneAbout + `
   status  ` + cmd.StatusAbout + `
+  close   ` + cmd.CloseAbout + `
   help    Print this message or the help of the given subcommand(s)
 
 Options:
@@ -79,6 +81,16 @@ Options:
   -h, --help              Print help
 `
 
+const doneUsage = "Usage: fleet done [OPTIONS]"
+
+var doneHelp = cmd.DoneLongAbout + "\n\n" + doneUsage + `
+
+Options:
+      --result-file <PATH>  File with the result, named in the report so the parent can read it
+      --session <NAME>      ` + sessionHelp + `
+  -h, --help                Print help
+`
+
 const statusUsage = "Usage: fleet status [OPTIONS]"
 
 var statusHelp = cmd.StatusLongAbout + "\n\n" + statusUsage + `
@@ -88,6 +100,19 @@ Options:
       --json            Machine-readable output: a JSON array, one object per agent
       --repo <REPO>     Dataset repo whose ledger to read (` + "`owner/name` or `name`" + `); the ledger is
                         ~/scratch/<name>/fleet.db. Defaults to FLEET_REPO, which every agent has
+      --session <NAME>  ` + sessionHelp + `
+  -h, --help            Print help
+`
+
+const closeUsage = "Usage: fleet close [OPTIONS] <JOB>"
+
+var closeHelp = cmd.CloseLongAbout + "\n\n" + closeUsage + `
+
+Arguments:
+  <JOB>  Job id, as given to ` + "`fleet spawn`" + `
+
+Options:
+      --force           Close even if agents are still recorded as live (the cleanup after a failed spawn)
       --session <NAME>  ` + sessionHelp + `
   -h, --help            Print help
 `
@@ -164,8 +189,12 @@ func dispatch(args []string) (exit.Code, error) {
 		return runSend(rest[1:], &session)
 	case "spawn":
 		return runSpawn(rest[1:], &session)
+	case "done":
+		return runDone(rest[1:], &session)
 	case "status":
 		return runStatus(rest[1:], &session)
+	case "close":
+		return runClose(rest[1:], &session)
 	default:
 		return 0, &usageError{fmt.Sprintf("unrecognized subcommand '%s'", rest[0]), topUsage}
 	}
@@ -173,7 +202,7 @@ func dispatch(args []string) (exit.Code, error) {
 
 // help is clap's implicit `help [COMMAND]` subcommand.
 func help(args []string) (exit.Code, error) {
-	helps := map[string]string{"send": sendHelp, "spawn": spawnHelp, "status": statusHelp, "help": topHelp}
+	helps := map[string]string{"send": sendHelp, "spawn": spawnHelp, "done": doneHelp, "status": statusHelp, "close": closeHelp, "help": topHelp}
 	if len(args) == 0 {
 		fmt.Fprint(os.Stdout, topHelp)
 		return exit.Ok, nil
@@ -250,6 +279,17 @@ func runSpawn(args []string, session *cliargs.OptString) (exit.Code, error) {
 		Name: got[0], TaskFile: taskFile.Value, Branch: branch.Ptr(), Model: model.Ptr(), Effort: effort.Ptr()})
 }
 
+func runDone(args []string, session *cliargs.OptString) (exit.Code, error) {
+	fs := flagSet("done", session)
+	resultFile := cliargs.OptString{Name: "result-file", Placeholder: "PATH"}
+	fs.Var(&resultFile, "result-file", "File with the result")
+	_, helped, err := parse(fs, args, doneHelp, doneUsage, nil)
+	if err != nil || helped {
+		return exit.Ok, err
+	}
+	return cmd.Done(herdr.New(session.Ptr()), cmd.DoneArgs{ResultFile: resultFile.Ptr()})
+}
+
 func runStatus(args []string, session *cliargs.OptString) (exit.Code, error) {
 	fs := flagSet("status", session)
 	job := cliargs.OptString{Name: "job", Placeholder: "JOB"}
@@ -263,4 +303,15 @@ func runStatus(args []string, session *cliargs.OptString) (exit.Code, error) {
 		return exit.Ok, err
 	}
 	return cmd.Status(herdr.New(session.Ptr()), cmd.StatusArgs{Job: job.Ptr(), JSON: asJSON.Value, Repo: repo.Ptr()})
+}
+
+func runClose(args []string, session *cliargs.OptString) (exit.Code, error) {
+	fs := flagSet("close", session)
+	force := cliargs.Bool{Name: "force"}
+	fs.Var(&force, "force", "Close even if agents are still recorded as live")
+	got, helped, err := parse(fs, args, closeHelp, closeUsage, []string{"JOB"})
+	if err != nil || helped {
+		return exit.Ok, err
+	}
+	return cmd.Close(herdr.New(session.Ptr()), cmd.CloseArgs{Job: got[0], Force: force.Value})
 }

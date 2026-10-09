@@ -121,7 +121,9 @@ comment, `///` the item's doc comment.
   and `_txlock=immediate`, so every `BeginTx` is `BEGIN IMMEDIATE` (the source
   opens its only transaction with `TransactionBehavior::Immediate`).
   `?1`-style parameters are kept; SQLite binds them by index. NULL-able
-  columns scan into `sql.Null*`.
+  columns scan into `sql.Null*`. `.optional()` on a query is `sql.ErrNoRows`
+  read as `None`; the count `execute` returns is `RowsAffected`, its error
+  `exit.Database` as any other.
 - `std::process::Command` to `os/exec`: `exec.CommandContext` with a 60 s
   deadline per herdr call, `WaitDelay` 5 s, `Setpgid`, and an explicit `Env`
   built from an allow-list of the caller's environment (`PATH`, `HOME`,
@@ -137,7 +139,11 @@ comment, `///` the item's doc comment.
   Such a function is split at the source's own seams (the checks before
   anything is created, a closure, a polling loop) into unexported helpers
   in the same file; the order of operations and every message are
-  unchanged. `spawn`'s `run` is `spawnChecks`, `spawnCreate` and `Spawn`.
+  unchanged. `spawn`'s `run` is `spawnChecks`, `spawnCreate` and `Spawn`;
+  `close`'s is `closeChecks` and `closeWorktree` (the checks and the
+  worktree lookup), `removeWorktree` (the worktree and branch) and `Close`.
+- `Result::ok()`, which discards the error, discards the Go error the same
+  way (`close` reading the worktree's branch).
 - Closures: a function that takes `impl FnMut` arguments
   (`reach_input_box`) takes `func` values; the test's scripted closures are
   the same funcs.
@@ -149,7 +155,9 @@ comment, `///` the item's doc comment.
   the same deadline, environment and process-group kill.
 - Paths and the machine: `fs::canonicalize` is `filepath.EvalSymlinks` then
   `filepath.Abs`; `Path::exists` is `os.Stat` without an error (false on any
-  error, as the source); `thread::available_parallelism` is
+  error, as the source); `Path::starts_with` compares components, so it is
+  `pathStartsWith` in `close`, not `strings.HasPrefix` (`/w/item-10` does not
+  start with `/w/item-1`); `thread::available_parallelism` is
   `runtime.NumCPU` (marked `TODO(port)`: the source also honors a cgroup
   CPU quota). An `f64` printed with `{}` is `strconv.FormatFloat(x, 'f',
   -1, 64)`: no exponent, no trailing zeros, `2` for `2.0`.
