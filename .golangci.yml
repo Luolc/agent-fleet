@@ -1,0 +1,25 @@
+version: "2"
+
+run:
+  # One worker so a local run does not take every core on a shared machine.
+  concurrency: 1
+
+linters:
+  default: standard
+  enable:
+    - gocognit
+    - revive
+  settings:
+    gocognit:
+      min-complexity: 20
+    revive:
+      rules:
+        - name: exported
+        - name: package-comments
+  exclusions:
+    presets:
+      - std-error-handling
+    rules:
+      - path: _test\.go
+        linters:
+          - gocognit
