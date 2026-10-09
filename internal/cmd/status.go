@@ -24,7 +24,7 @@ import (
 const (
 	StatusAbout     = "Show the open jobs, who is running and who owes work (read-only)"
 	StatusLongAbout = "Show the open jobs, who is running and who owes work (read-only).\n\n" +
-		"First the target's open jobs as `fleet job list` prints them, then the agents: the " +
+		"First the scope's open jobs as `fleet job list --all` prints them, then the agents: the " +
 		"ledger's live rows (state starting or active) joined with `herdr agent list`. For each " +
 		"agent: role, job, parent, age, herdr status, and time since `fleet watch` last saw its " +
 		"status, state_change_seq or screen change (`-` before watch has looked at it). Flags:\n" +
@@ -32,7 +32,7 @@ const (
 		"  blocked    herdr reports it blocked by an interactive prompt\n" +
 		"  missing    in the ledger but gone from herdr\n" +
 		"  suspect    `fleet watch` currently counts it as stuck\n\n" +
-		"Exit: 0; 1 when the target is not a directory name; 5 when herdr or the database fails, " +
+		"Exit: 0; 1 when the scope is not a scope name; 5 when herdr or the database fails, " +
 		"or the ledger does not exist."
 )
 
@@ -42,9 +42,6 @@ type StatusArgs struct {
 	Job *string
 	// JSON asks for machine-readable output: {"jobs": [...], "agents": [...]}.
 	JSON bool
-	// Target, when set, replaces FLEET_TARGET: the ledger is
-	// ~/.local/state/fleet/<target>/fleet.db (db.Path).
-	Target *string
 }
 
 // Live is a ledger row that has not ended, with the columns `status` and
@@ -83,17 +80,11 @@ type line struct {
 	Flags           []string `json:"flags"`
 }
 
-// OpenLedger opens the existing ledger of `target` (or FLEET_TARGET, or
-// the default). A missing ledger is an error, not an empty one: it usually
-// means a wrong target name.
-func OpenLedger(target *string) (*sql.DB, error) {
-	var name string
-	var err error
-	if target != nil {
-		name, err = identity.CheckTarget(*target)
-	} else {
-		name, err = identity.Target()
-	}
+// OpenLedger opens the existing ledger of the caller's scope (FLEET_SCOPE,
+// which --scope sets, or the default). A missing ledger is an error, not
+// an empty one: it usually means a wrong scope name.
+func OpenLedger() (*sql.DB, error) {
+	name, err := identity.Scope()
 	if err != nil {
 		return nil, err
 	}
@@ -103,7 +94,7 @@ func OpenLedger(target *string) (*sql.DB, error) {
 	}
 	if _, err := os.Stat(path); err != nil {
 		return nil, exit.Environmentf(
-			"no ledger at %s; is the target name right, and has the ledger been created?", path)
+			"no ledger at %s; is the scope name right, and has the ledger been created?", path)
 	}
 	return db.OpenAt(path)
 }
@@ -185,12 +176,12 @@ type report struct {
 
 // Status runs `status`.
 func Status(h *herdr.Herdr, args StatusArgs) (exit.Code, error) {
-	conn, err := OpenLedger(args.Target)
+	conn, err := OpenLedger()
 	if err != nil {
 		return 0, err
 	}
 	defer conn.Close()
-	jobs, err := jobLines(conn)
+	jobs, err := jobLines(conn, "")
 	if err != nil {
 		return 0, err
 	}

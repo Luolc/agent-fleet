@@ -71,28 +71,28 @@ func TestLoadRefusesWithTheFileAndExit1(t *testing.T) {
 	}
 }
 
-func TestTargetConfigIsOptionalAndStrict(t *testing.T) {
-	got, err := ParseTarget([]byte(`{"linear": {"team": "EX"}, "fednet": {"socket": "/run/fednet.sock"}}`))
+func TestScopeConfigIsOptionalAndStrict(t *testing.T) {
+	got, err := ParseScope([]byte(`{"linear": {"team": "EX"}, "fednet": {"socket": "/run/fednet.sock"}}`))
 	if err != nil || got.LinearTeam != "EX" || got.FednetSocket != "/run/fednet.sock" {
 		t.Errorf("%+v, %v", got, err)
 	}
-	got, err = ParseTarget([]byte(`{}`))
+	got, err = ParseScope([]byte(`{}`))
 	if err != nil || got.LinearTeam != "" || got.FednetSocket != "" {
 		t.Errorf("empty object: %+v, %v", got, err)
 	}
 	for _, bad := range []string{`{"linear": {}}`, `{"fednet": {"socket": ""}}`, `{"team": "EX"}`, `[]`, `{"linear": {"team": 1}}`} {
-		if _, err := ParseTarget([]byte(bad)); err == nil {
+		if _, err := ParseScope([]byte(bad)); err == nil {
 			t.Errorf("%s accepted", bad)
 		}
 	}
 	t.Setenv("XDG_CONFIG_HOME", "")
 	t.Setenv("HOME", t.TempDir())
-	target, err := LoadTarget("default")
-	if err != nil || target.LinearTeam != "" {
-		t.Errorf("missing file: %+v, %v", target, err)
+	scope, err := LoadScope("main")
+	if err != nil || scope.LinearTeam != "" {
+		t.Errorf("missing file: %+v, %v", scope, err)
 	}
-	path, err := TargetPath("default")
-	if err != nil || !strings.HasSuffix(path, "/.config/fleet/default.json") {
+	path, err := ScopePath("main")
+	if err != nil || !strings.HasSuffix(path, "/.config/fleet/main.json") {
 		t.Errorf("path = %q, %v", path, err)
 	}
 }

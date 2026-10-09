@@ -23,6 +23,7 @@ import (
 // create`, `tab create` and `agent prompt` keep their argv in
 // <dir>/workspace-argv, <dir>/tab-argv and <dir>/argv.
 const startHerdr = `#!/bin/sh
+if [ "$1" = --session ]; then shift 2; fi
 dir="$(dirname "$0")/.."
 echo "herdr $1 $2" >> "$dir/calls"
 case "$1 $2" in
@@ -146,14 +147,14 @@ func jobRow(w *world, job string) string {
 func (w *world) spawnWorker(args ...string) result {
 	w.t.Helper()
 	return w.run("", append([]string{"spawn", "a"}, args...),
-		"FLEET_AGENT=item-1-lead", "FLEET_ROLE=lead", "FLEET_PARENT=thread-1", "FLEET_TARGET="+target,
+		"FLEET_AGENT=item-1-lead", "FLEET_ROLE=lead", "FLEET_PARENT=thread-1", "FLEET_SCOPE="+scope,
 		"FLEET_JOB=item-1", linearKey)
 }
 
 func (w *world) startJob(args ...string) result {
 	w.t.Helper()
 	return w.run("", append([]string{"job", "start"}, args...),
-		"FLEET_AGENT=thread-1", "FLEET_ROLE=thread", "FLEET_TARGET="+target, linearKey)
+		"FLEET_AGENT=thread-1", "FLEET_ROLE=thread", "FLEET_SCOPE="+scope, linearKey)
 }
 
 func TestSpawnCreatesAndClaimsTheWorkOrderBeforeAnythingElse(t *testing.T) {
@@ -193,7 +194,7 @@ func TestSpawnCreatesAndClaimsTheWorkOrderBeforeAnythingElse(t *testing.T) {
 	tabArgv, _ := os.ReadFile(filepath.Join(w.dir, "tab-argv"))
 	for _, want := range []string{"--workspace\nw1\n", "--label\na\n", "--cwd\n" + cwd + "\n",
 		"--env\nFLEET_AGENT=item-1-a\n", "--env\nFLEET_ROLE=worker\n", "--env\nFLEET_PARENT=item-1-lead\n",
-		"--env\nFLEET_TARGET=" + target + "\n", "--env\nFLEET_JOB=item-1\n", "--env\nFLEET_ISSUE=EX-12\n"} {
+		"--env\nFLEET_SCOPE=" + scope + "\n", "--env\nFLEET_JOB=item-1\n", "--env\nFLEET_ISSUE=EX-12\n"} {
 		if !strings.Contains(string(tabArgv), want) {
 			t.Errorf("tab create argv = %q, want %q in it", tabArgv, want)
 		}
@@ -338,7 +339,7 @@ func TestJobStartCreatesTheParentClaimsItAndMakesTheWorkOrderFirst(t *testing.T)
 	wsArgv, _ := os.ReadFile(filepath.Join(w.dir, "workspace-argv"))
 	for _, want := range []string{"--label\nitem-2\n", "--cwd\n" + checkout + "\n",
 		"--env\nFLEET_AGENT=item-2-lead\n", "--env\nFLEET_ROLE=lead\n", "--env\nFLEET_PARENT=thread-1\n",
-		"--env\nFLEET_TARGET=" + target + "\n", "--env\nFLEET_JOB=item-2\n", "--env\nFLEET_ISSUE=EX-12\n"} {
+		"--env\nFLEET_SCOPE=" + scope + "\n", "--env\nFLEET_JOB=item-2\n", "--env\nFLEET_ISSUE=EX-12\n"} {
 		if !strings.Contains(string(wsArgv), want) {
 			t.Errorf("workspace create argv = %q, want %q in it", wsArgv, want)
 		}
@@ -356,8 +357,8 @@ func TestJobStartCreatesTheParentClaimsItAndMakesTheWorkOrderFirst(t *testing.T)
 	if !strings.Contains(out.stdout, "started item-2-lead in job item-2 ("+checkout+")") {
 		t.Errorf("stdout = %q", out.stdout)
 	}
-	if _, err := os.Stat(filepath.Join(w.dir, "home", "cross-repo")); err == nil {
-		t.Error("a single-repo job made the cross-repo directory")
+	if _, err := os.Stat(filepath.Join(w.dir, "home", "x-repo")); err == nil {
+		t.Error("a single-repo job made a cross-repo directory")
 	}
 	// The same key, parent or name again: refused before herdr or atb.
 	w.herdr("unused", "", false)
@@ -390,7 +391,8 @@ func TestJobStartOfACrossRepoJobReadsTheParentsTeamAndProject(t *testing.T) {
 	w.useStartHerdr()
 	w.fakeAtbCreating("")
 	taskFile := task(w, "task.md", "Wire the two repos\n")
-	crossRepo := filepath.Join(w.dir, "home", "cross-repo", "wire")
+	dir(w, filepath.Join("home", "x-repo", "general"))
+	crossRepo := filepath.Join(w.dir, "home", "x-repo", "general", "wire")
 	// No config anywhere: the defaults, with the resource check on, so the
 	// machine's load decides between 0 and a refusal.
 	out := w.startJob("wire", "--parent-issue", "EX-10", "--task-file", taskFile)
@@ -442,7 +444,7 @@ func TestJobStartOfACrossRepoJobReadsTheParentsTeamAndProject(t *testing.T) {
 	}
 	cwd := dir(w, "wt")
 	out = w.run("", []string{"spawn", "a", "--task-file", taskFile, "--cwd", cwd},
-		"FLEET_AGENT=wire-lead", "FLEET_ROLE=lead", "FLEET_PARENT=thread-1", "FLEET_TARGET="+target,
+		"FLEET_AGENT=wire-lead", "FLEET_ROLE=lead", "FLEET_PARENT=thread-1", "FLEET_SCOPE="+scope,
 		"FLEET_JOB=wire", linearKey)
 	if out.code != 0 {
 		t.Fatalf("%+v", out)
@@ -478,7 +480,17 @@ func TestJobStartOfACrossRepoJobWithoutAParentRunsWithLinearOff(t *testing.T) {
 	w := newWorld(t)
 	w.useStartHerdr()
 	w.fakeAtbCreating("")
+	// The lead's directory goes into the checkout of x-repo-general, which
+	// fleet does not make.
 	out := w.startJob("wire", "--task-file", task(w, "task.md", "Wire\n"))
+	if out.code != 1 || !strings.Contains(out.stderr, "no checkout at "+filepath.Join(w.dir, "home", "x-repo", "general")) {
+		t.Errorf("no checkout: %+v", out)
+	}
+	if dirExists(filepath.Join(w.dir, "home", "x-repo")) || w.calls() != "" {
+		t.Errorf("a refused start made something: calls %q", w.calls())
+	}
+	dir(w, filepath.Join("home", "x-repo", "general"))
+	out = w.startJob("wire", "--task-file", task(w, "task.md", "Wire\n"))
 	if out.code != 0 {
 		if strings.Contains(out.stderr, "try again later") {
 			t.Skip("the machine is loaded; the resource check refused")
@@ -584,7 +596,7 @@ func concurrentStarts(t *testing.T, newParent bool) {
 	taskFile := task(w, "task.md", "import\n")
 	start := func(job string, flags ...string) *exec.Cmd {
 		args := append([]string{"job", "start", job, "--repo", "example-dataset", "--task-file", taskFile}, flags...)
-		return w.bin(args, "FLEET_AGENT=thread-1", "FLEET_ROLE=thread", "FLEET_TARGET="+target, linearKey)
+		return w.bin(args, "FLEET_AGENT=thread-1", "FLEET_ROLE=thread", "FLEET_SCOPE="+scope, linearKey)
 	}
 	onParent := []string{"--parent-issue", parent}
 	alphaFlags := onParent
@@ -752,7 +764,7 @@ func TestJobListPrintsTheOpenJobs(t *testing.T) {
 		}
 	}
 	conn.Close()
-	out := w.run("", []string{"job", "list", "--target", target})
+	out := w.run("", []string{"job", "list", "--scope", scope})
 	if out.code != 0 {
 		t.Fatalf("%+v", out)
 	}
@@ -761,7 +773,7 @@ func TestJobListPrintsTheOpenJobs(t *testing.T) {
 	if out.stdout != want {
 		t.Errorf("stdout = %q, want %q", out.stdout, want)
 	}
-	out = w.run("", []string{"job", "list", "--json"}, "FLEET_TARGET="+target)
+	out = w.run("", []string{"job", "list", "--json"}, "FLEET_SCOPE="+scope)
 	if out.code != 0 {
 		t.Fatalf("%+v", out)
 	}
@@ -782,12 +794,52 @@ func TestJobListPrintsTheOpenJobs(t *testing.T) {
 		t.Fatal(err)
 	}
 	conn.Close()
-	out = w.run("", []string{"job", "list", "--target", target})
+	out = w.run("", []string{"job", "list", "--scope", scope})
 	if out.code != 0 || out.stdout != "" {
 		t.Errorf("%+v", out)
 	}
-	out = w.run("", []string{"job", "list", "--target", "no-such-target"})
+	out = w.run("", []string{"job", "list", "--scope", "no-such-scope"})
 	if out.code != 5 || !strings.Contains(out.stderr, "no ledger at") {
 		t.Errorf("%+v", out)
+	}
+}
+
+func TestJobListShowsTheJobsOfTheCallersChannelUnlessAll(t *testing.T) {
+	w := newWorld(t)
+	conn := w.ledger()
+	for _, stmt := range []string{
+		"INSERT INTO threads (thread, slug, mapping, cwd, created_at) VALUES " +
+			"('C1/1.1', 'c1-1-1', 'repo-example-dataset', '/d', 0), ('C2/2.2', 'c2-2-2', 'x-repo-example-init', '/x', 0)",
+		"INSERT INTO jobs (job, lead_cwd, home_thread, state, started_at) VALUES " +
+			"('in-repo', '/a', 'C1/1.1', 'open', 1), ('in-x-repo', '/b', 'C2/2.2', 'open', 2), ('homeless', '/c', '', 'open', 3)",
+	} {
+		if _, err := conn.Exec(stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	conn.Close()
+	jobs := func(out result) string {
+		var names []string
+		for _, line := range strings.Split(strings.TrimSpace(out.stdout), "\n") {
+			name, _, _ := strings.Cut(line, "\t")
+			names = append(names, name)
+		}
+		return strings.Join(names, " ")
+	}
+	for _, c := range []struct {
+		label string
+		args  []string
+		env   []string
+		want  string
+	}{
+		{"a thread agent of the repo", nil, []string{"FLEET_THREAD=C1/1.1"}, "in-repo"},
+		{"a lead whose job's home thread is the initiative's", nil, []string{"FLEET_JOB=in-x-repo"}, "in-x-repo"},
+		{"--all", []string{"--all"}, []string{"FLEET_THREAD=C1/1.1"}, "in-repo in-x-repo homeless"},
+		{"a plain shell", nil, nil, "in-repo in-x-repo homeless"},
+	} {
+		out := w.run("", append([]string{"job", "list"}, c.args...), append([]string{"FLEET_SCOPE=" + scope}, c.env...)...)
+		if out.code != 0 || jobs(out) != c.want {
+			t.Errorf("%s: %+v, want %q", c.label, out, c.want)
+		}
 	}
 }

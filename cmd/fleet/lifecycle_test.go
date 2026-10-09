@@ -8,6 +8,7 @@ package main
 import (
 	"database/sql"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -20,7 +21,7 @@ import (
 func (w *world) asAgent(agent, role, parent, job string, args ...string) result {
 	w.t.Helper()
 	return w.run("", args,
-		"FLEET_AGENT="+agent, "FLEET_ROLE="+role, "FLEET_PARENT="+parent, "FLEET_TARGET="+target, "FLEET_JOB="+job)
+		"FLEET_AGENT="+agent, "FLEET_ROLE="+role, "FLEET_PARENT="+parent, "FLEET_SCOPE="+scope, "FLEET_JOB="+job)
 }
 
 // asThread runs the binary as the thread agent `thread-1`.
@@ -32,7 +33,7 @@ func (w *world) asThread(args ...string) result {
 // ledger opens the world's ledger.
 func (w *world) ledger() *sql.DB {
 	w.t.Helper()
-	path, err := db.PathUnder(filepath.Join(w.dir, "home", ".local", "state"), target)
+	path, err := db.PathUnder(filepath.Join(w.dir, "home", ".local", "state"), scope)
 	if err != nil {
 		w.t.Fatal(err)
 	}
@@ -250,8 +251,8 @@ func TestJobStartRefusalsHappenBeforeHerdrIsCalled(t *testing.T) {
 	if got := jobState(w, "item-2"); got != "none" {
 		t.Errorf("a refused start wrote a job row: %s", got)
 	}
-	if _, err := os.Stat(filepath.Join(w.dir, "home", "cross-repo")); err == nil {
-		t.Error("a refused start made the cross-repo directory")
+	if _, err := os.Stat(filepath.Join(w.dir, "home", "x-repo")); err == nil {
+		t.Error("a refused start made a cross-repo directory")
 	}
 	out := w.run("", []string{"job", "start", "item-2"})
 	if out.code != 1 || !strings.Contains(out.stderr, "--task-file <PATH>") {
@@ -355,7 +356,7 @@ func TestJobEndRefusesTheWrongCallerLiveWorkersAndAMissingReport(t *testing.T) {
 
 func TestJobEndForceEndsTheJobAndRemovesTheCrossRepoDirectory(t *testing.T) {
 	w := newWorld(t)
-	crossRepo := dir(w, filepath.Join("home", "cross-repo", "item-7"))
+	crossRepo := dir(w, filepath.Join("home", "x-repo", "general", "item-7"))
 	if err := os.WriteFile(filepath.Join(crossRepo, "notes.md"), []byte("scratch\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -378,7 +379,26 @@ func TestJobEndForceEndsTheJobAndRemovesTheCrossRepoDirectory(t *testing.T) {
 	if !dirExists(crossRepo) {
 		t.Error("the directory was removed while in use")
 	}
+	// A git checkout inside it with uncommitted changes blocks the removal
+	// too, and the job stays open until it is clean.
 	w.closeHerdr("")
+	nested := dir(w, filepath.Join("home", "x-repo", "general", "item-7", "clone"))
+	if out, err := exec.Command("git", "init", "-q", nested).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v %s", err, out)
+	}
+	if err := os.WriteFile(filepath.Join(nested, "draft.md"), []byte("unsaved\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out = w.asThread("job", "end", "item-7", "--force")
+	if out.code != 5 || !strings.Contains(out.stderr, "uncommitted changes in "+nested) {
+		t.Errorf("dirty checkout: %+v", out)
+	}
+	if !fileExists(filepath.Join(nested, "draft.md")) || jobState(w, "item-7") != "open" {
+		t.Errorf("dirty checkout: draft kept %v, job %s", fileExists(filepath.Join(nested, "draft.md")), jobState(w, "item-7"))
+	}
+	if err := os.Remove(filepath.Join(nested, "draft.md")); err != nil {
+		t.Fatal(err)
+	}
 	out = w.asThread("job", "end", "item-7", "--force")
 	if out.code != 0 || !strings.Contains(out.stdout, "removed directory "+crossRepo) || !strings.Contains(out.stdout, "1 rows ended") {
 		t.Errorf("%+v", out)
@@ -393,7 +413,7 @@ func TestJobEndForceEndsTheJobAndRemovesTheCrossRepoDirectory(t *testing.T) {
 		t.Errorf("job state = %s", got)
 	}
 	// Again, from a shell with no identity: nothing to do, nothing to end.
-	out = w.run("", []string{"job", "end", "item-7", "--force"}, "FLEET_TARGET="+target)
+	out = w.run("", []string{"job", "end", "item-7", "--force"}, "FLEET_SCOPE="+scope)
 	if out.code != 0 || !strings.Contains(out.stdout, "0 rows ended") {
 		t.Errorf("again: %+v", out)
 	}
@@ -408,6 +428,7 @@ func TestJobEndForceEndsTheJobAndRemovesTheCrossRepoDirectory(t *testing.T) {
 func (w *world) jobEndHerdr(failing ...string) {
 	w.t.Helper()
 	script := `#!/bin/sh
+if [ "$1" = --session ]; then shift 2; fi
 dir="$(dirname "$0")/.."
 case "$1 $2" in
   "` + strings.Join(failing, `"|"`) + `") echo "fake herdr: $1 $2 failing" >&2; exit 2 ;;
@@ -433,7 +454,7 @@ esac
 func (w *world) endJob(args ...string) result {
 	w.t.Helper()
 	return w.run("", append([]string{"job", "end"}, args...),
-		"FLEET_AGENT=item-1-lead", "FLEET_ROLE=lead", "FLEET_PARENT=thread-1", "FLEET_TARGET="+target,
+		"FLEET_AGENT=item-1-lead", "FLEET_ROLE=lead", "FLEET_PARENT=thread-1", "FLEET_SCOPE="+scope,
 		"FLEET_JOB=item-1", "FLEET_ISSUE=EX-12", linearKey)
 }
 
@@ -728,7 +749,7 @@ const linearKey = "LINEAR_API_KEY=lin_api_fake0xK3Y"
 func (w *world) doneWithIssue(issue string, args ...string) result {
 	w.t.Helper()
 	return w.run("", append([]string{"done"}, args...),
-		"FLEET_AGENT=item-1-a", "FLEET_ROLE=worker", "FLEET_PARENT=item-1-lead", "FLEET_TARGET="+target,
+		"FLEET_AGENT=item-1-a", "FLEET_ROLE=worker", "FLEET_PARENT=item-1-lead", "FLEET_SCOPE="+scope,
 		"FLEET_JOB=item-1", "FLEET_ISSUE="+issue, linearKey)
 }
 

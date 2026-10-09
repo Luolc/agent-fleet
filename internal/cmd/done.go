@@ -99,7 +99,7 @@ func Done(h *herdr.Herdr, args DoneArgs) (exit.Code, error) {
 	if err != nil {
 		return 0, err
 	}
-	conn, err := db.Open(me.Target)
+	conn, err := db.Open(me.Scope)
 	if err != nil {
 		return 0, err
 	}

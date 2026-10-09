@@ -12,7 +12,7 @@ import (
 	"github.com/Luolc/agent-fleet/internal/db"
 )
 
-const target = "example-dataset"
+const scope = "example"
 
 // statusReport is the shape of `status --json`.
 type statusReport struct {
@@ -25,7 +25,7 @@ type statusReport struct {
 func statusWorld(t *testing.T) *world {
 	t.Helper()
 	w := newWorld(t)
-	path, err := db.PathUnder(filepath.Join(w.dir, "home", ".local", "state"), target)
+	path, err := db.PathUnder(filepath.Join(w.dir, "home", ".local", "state"), scope)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +71,7 @@ func statusWorld(t *testing.T) *world {
 
 func TestStatusFlagsIdleDebtorsBlockedAndMissingAgents(t *testing.T) {
 	w := statusWorld(t)
-	out := w.run("", []string{"status", "--target", target, "--json"})
+	out := w.run("", []string{"status", "--scope", scope, "--json"})
 	if out.code != 0 {
 		t.Fatalf("%+v", out)
 	}
@@ -123,7 +123,7 @@ func TestStatusFlagsIdleDebtorsBlockedAndMissingAgents(t *testing.T) {
 
 func TestStatusFiltersByJobAndPrintsATable(t *testing.T) {
 	w := statusWorld(t)
-	out := w.run("", []string{"status", "--job", "x"}, "FLEET_TARGET="+target)
+	out := w.run("", []string{"status", "--job", "x"}, "FLEET_SCOPE="+scope)
 	if out.code != 0 {
 		t.Fatalf("%+v", out)
 	}
@@ -144,26 +144,31 @@ func TestStatusFiltersByJobAndPrintsATable(t *testing.T) {
 	}
 }
 
-func TestStatusReadsTheDefaultTargetAndNeedsAnExistingLedger(t *testing.T) {
+func TestStatusReadsTheMainScopeAndNeedsAnExistingLedger(t *testing.T) {
 	w := statusWorld(t)
-	// No FLEET_TARGET and no --target: the default target, whose ledger
-	// does not exist here.
+	// No FLEET_SCOPE and no --scope: the scope `main`, whose ledger does
+	// not exist here.
 	out := w.run("", []string{"status"})
-	if out.code != 5 || !strings.Contains(out.stderr, "/fleet/default/fleet.db") {
+	if out.code != 5 || !strings.Contains(out.stderr, "/fleet/main.db") {
 		t.Errorf("%+v", out)
 	}
-	out = w.run("", []string{"status", "--target", "no-such-target"})
+	out = w.run("", []string{"status", "--scope", "no-such-scope"})
 	if out.code != 5 || !strings.Contains(out.stderr, "no ledger at") {
 		t.Errorf("%+v", out)
 	}
-	for _, bad := range []string{"a/b", "..", "."} {
-		out = w.run("", []string{"status", "--target", bad})
-		if out.code != 1 || !strings.Contains(out.stderr, "directory name") {
-			t.Errorf("--target %q: %+v", bad, out)
+	for _, bad := range []string{"a/b", "..", "Main"} {
+		out = w.run("", []string{"status", "--scope", bad})
+		if out.code != 1 || !strings.Contains(out.stderr, "only [a-z0-9-]") {
+			t.Errorf("--scope %q: %+v", bad, out)
 		}
 	}
-	out = w.run("", []string{"status", "--json"}, "FLEET_TARGET=")
-	if out.code != 5 || !strings.Contains(out.stderr, "/fleet/default/fleet.db") {
-		t.Errorf("empty FLEET_TARGET: %+v", out)
+	// --scope before the command works as after it.
+	out = w.run("", []string{"--scope", scope, "status", "--json"})
+	if out.code != 0 {
+		t.Errorf("global --scope: %+v", out)
+	}
+	out = w.run("", []string{"status", "--json"}, "FLEET_SCOPE=")
+	if out.code != 5 || !strings.Contains(out.stderr, "/fleet/main.db") {
+		t.Errorf("empty FLEET_SCOPE: %+v", out)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -37,9 +38,10 @@ const (
 		"conclusion and the workspace close at the end.\n\n" +
 		"Then the cleanup: every other agent in the job's workspace is closed; no agent but you " +
 		"may have its cwd inside one of the job's directories (the worktrees `fleet worktree` " +
-		"recorded for it and, for a cross-repo job, ~/cross-repo/<job>/); each worktree is " +
+		"recorded for it and, for a cross-repo job, its directory ~/x-repo/<I>/<job>/); each worktree is " +
 		"removed with `git worktree remove` (which refuses uncommitted changes) and its local " +
-		"branch deleted, and the cross-repo directory is removed. When something is left it is " +
+		"branch deleted, and the cross-repo directory is removed unless a git checkout inside it " +
+		"has uncommitted changes. When something is left it is " +
 		"listed and `job end` exits 5 without ending the job. Otherwise the job is marked ended " +
 		"with its outcome, your row ended, the worktrees removed, the conclusion is printed " +
 		"(the line the job's home thread will receive once threads exist), and last the " +
@@ -52,7 +54,7 @@ const (
 		"printed for a person to finish. Parts already gone are skipped, so it can be run " +
 		"again.\n\n" +
 		"Exit: 0 when the job ended; 1 when a check refuses (live workers, the caller, the " +
-		"report file, the flags); 5 when atb, git, herdr or the database fails, the target has " +
+		"report file, the flags); 5 when atb, git, herdr or the database fails, the scope has " +
 		"no ledger, or something is left (listed)."
 )
 
@@ -154,7 +156,8 @@ func jobDirs(conn *sql.DB, job *jobRow, name, home string) ([]jobDir, error) {
 	if err != nil {
 		return nil, err
 	}
-	if job != nil && job.Repo == "" && job.LeadCwd == filepath.Join(home, "cross-repo", name) {
+	if job != nil && job.Repo == "" && filepath.Base(job.LeadCwd) == name &&
+		filepath.Dir(filepath.Dir(job.LeadCwd)) == filepath.Join(home, "x-repo") {
 		dirs = append(dirs, jobDir{path: job.LeadCwd})
 	}
 	return dirs, nil
@@ -234,6 +237,11 @@ func removeDirs(h *herdr.Herdr, workspaces []string, dirs []jobDir, except strin
 	if err != nil {
 		return err
 	}
+	if len(blocking) == 0 {
+		if blocking, err = dirtyCheckouts(dirs); err != nil {
+			return err
+		}
+	}
 	if len(blocking) > 0 {
 		paths := make([]string, len(dirs))
 		for i, d := range dirs {
@@ -243,7 +251,7 @@ func removeDirs(h *herdr.Herdr, workspaces []string, dirs []jobDir, except strin
 		if len(paths) == 0 {
 			what = "not ending the job"
 		}
-		return exit.Environmentf("%s: still in use by %s", what, strings.Join(blocking, ", "))
+		return exit.Environmentf("%s: in the way: %s", what, strings.Join(blocking, ", "))
 	}
 	for _, d := range dirs {
 		if !exists(d.path) {
@@ -261,6 +269,39 @@ func removeDirs(h *herdr.Herdr, workspaces []string, dirs []jobDir, except strin
 		fmt.Fprintf(os.Stdout, "removed directory %s\n", d.path)
 	}
 	return nil
+}
+
+// dirtyCheckouts are the git checkouts with uncommitted changes inside the
+// directories that are removed whole (a cross-repo job's), which removing
+// would lose; a worktree is refused by `git worktree remove` itself.
+func dirtyCheckouts(dirs []jobDir) ([]string, error) {
+	var dirty []string
+	for _, d := range dirs {
+		if d.checkout != "" || !exists(d.path) {
+			continue
+		}
+		err := filepath.WalkDir(d.path, func(path string, entry fs.DirEntry, err error) error {
+			if err != nil || entry.Name() != ".git" {
+				return err
+			}
+			checkout := filepath.Dir(path)
+			status, err := Git("-C", checkout, "status", "--porcelain")
+			if err != nil {
+				return err
+			}
+			if strings.TrimSpace(status) != "" {
+				dirty = append(dirty, "uncommitted changes in "+checkout)
+			}
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+	return dirty, nil
 }
 
 // whatIsLeft is what is left of `job`: agents (other than `except`) in its
@@ -371,12 +412,12 @@ func concluded(h *herdr.Herdr, conn *sql.DB, me *identity.Identity, job *jobRow,
 	if job.HomeThread == "" {
 		return nil
 	}
-	cfg, err := config.LoadTarget(me.Target)
+	cfg, err := config.LoadScope(me.Scope)
 	if err != nil {
 		return err
 	}
 	msg := inboundMessage{Thread: job.HomeThread, Text: text, Question: me.Agent, Conclusion: true}
-	code, err := toThread(h, conn, me.Target, cfg, msg)
+	code, err := toThread(h, conn, me.Scope, cfg, msg)
 	if err != nil {
 		return err
 	}
@@ -406,7 +447,7 @@ func jobEndForced(h *herdr.Herdr, args JobEndArgs) (exit.Code, error) {
 	if err != nil {
 		return 0, err
 	}
-	conn, err := OpenLedger(nil)
+	conn, err := OpenLedger()
 	if err != nil {
 		return 0, err
 	}
@@ -548,7 +589,7 @@ func (e *leadEnding) ledgerChecks(conn *sql.DB) error {
 		return err
 	}
 	if job == nil || (job.State != "open" && !unfinished(conn, job)) {
-		return exit.Refusedf("job %s is not open in target %s", e.me.Job, e.me.Target)
+		return exit.Refusedf("job %s is not open in scope %s", e.me.Job, e.me.Scope)
 	}
 	workers, err := liveRowsOf(conn, e.me.Job, "worker")
 	if err != nil {
@@ -637,7 +678,7 @@ func jobEndByLead(h *herdr.Herdr, args JobEndArgs) (exit.Code, error) {
 	if err != nil {
 		return 0, err
 	}
-	conn, err := OpenLedger(nil)
+	conn, err := OpenLedger()
 	if err != nil {
 		return 0, err
 	}

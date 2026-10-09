@@ -35,6 +35,7 @@ func fakeHerdr(reply, list string, readFails bool) string {
 		fails = "1"
 	}
 	return `#!/bin/sh
+if [ "$1" = --session ]; then shift 2; fi
 case "$1 $2" in
   "agent list")
     cat <<'LIST'
@@ -335,7 +336,7 @@ func TestStatusSkipsListEntriesThatAreNotAgents(t *testing.T) {
 	w.herdr("unused", `{"result":{"agents":[`+
 		`{"name":"x-lead","agent_status":"idle","state_change_seq":9007199254740993},`+
 		`42,{"name":"x-w1","agent_status":"blocked","state_change_seq":3.5},{"name":7}]}}`, false)
-	out := w.run("", []string{"status", "--target", target, "--json", "--job", "x"})
+	out := w.run("", []string{"status", "--scope", scope, "--json", "--job", "x"})
 	if out.code != 0 {
 		t.Fatalf("%+v", out)
 	}

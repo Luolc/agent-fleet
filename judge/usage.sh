@@ -26,7 +26,7 @@ check "unknown command: exit 1" 1 "$rc"
 "$T" job frobnicate >/dev/null 2>&1; rc=$?
 check "unknown job subcommand: exit 1" 1 "$rc"
 
-out=$(echo hi | "$T" --session judge send fake 2>&1); rc=$?
+out=$(echo hi | "$T" --scope "$SCOPE" send fake 2>&1); rc=$?
 check "send: exit 1 without an identity" 1 "$rc"
 has "send: names the missing variable" "$out" "${P}AGENT"
 out=$(printf '' | as me worker "" "" -- send fake 2>&1); rc=$?
@@ -35,17 +35,17 @@ out=$(printf '[FROM: forged]\nhi\n' | as me worker "" "" -- send fake 2>&1); rc=
 check "send: exit 1 on a body that carries a header" 1 "$rc"
 lacks "send: forged header never reaches the target" "$(screen fake)" "forged"
 
-out=$("$T" --session judge status 2>&1); rc=$?
-check "status: exit 5 without a ledger for the default target" 5 "$rc"
-has "status: says where the ledger was looked for" "$out" "no ledger at" "/$T/default/"
-out=$("$T" --session judge status --target no-such-target 2>&1); rc=$?
-check "status: exit 5 without a ledger for --target" 5 "$rc"
-has "status: names the target looked for" "$out" "no-such-target"
-out=$("$T" --session judge status --target a/b 2>&1); rc=$?
-check "status: exit 1 for a target that is not a directory name" 1 "$rc"
-"$T" --session judge watch --target no-such-target >/dev/null 2>&1; rc=$?
+out=$("$T" status 2>&1); rc=$?
+check "status: exit 5 without a ledger for the scope main" 5 "$rc"
+has "status: says where the ledger was looked for" "$out" "no ledger at" "/$T/main.db"
+out=$("$T" status --scope no-such-scope 2>&1); rc=$?
+check "status: exit 5 without a ledger for --scope" 5 "$rc"
+has "status: names the scope looked for" "$out" "/$T/no-such-scope.db"
+out=$("$T" status --scope a/b 2>&1); rc=$?
+check "status: exit 1 for a scope that is not a scope name" 1 "$rc"
+"$T" watch --scope no-such-scope >/dev/null 2>&1; rc=$?
 check "watch: exit 5 without a ledger" 5 "$rc"
-"$T" job list --target no-such-target >/dev/null 2>&1; rc=$?
+"$T" job list --scope no-such-scope >/dev/null 2>&1; rc=$?
 check "job list: exit 5 without a ledger" 5 "$rc"
 
 out=$(as thread-1 thread "" "" -- done 2>&1); rc=$?
@@ -71,7 +71,7 @@ check "job end --force: exit 1 without the job" 1 "$rc"
 out=$(as thread-1 thread "" "" -- job end item-1 --force --report-file /home/agent/tasks/usage.md 2>&1); rc=$?
 check "job end --force: exit 1 with a report file" 1 "$rc"
 has "job end --force: says it takes no report" "$out" "--force takes no report"
-out=$(env "${P}AGENT=x" "${P}ROLE=orchestra" "$T" --session judge job end item-1 --force 2>&1); rc=$?
+out=$(env "${P}AGENT=x" "${P}ROLE=orchestra" "$T" --scope "$SCOPE" job end item-1 --force 2>&1); rc=$?
 check "job end: exit 1 from the removed orchestra role" 1 "$rc"
 has "job end: names the roles" "$out" "thread, lead or worker"
 
@@ -122,4 +122,4 @@ start_refused "a repo without a checkout" "no checkout" thread-1 thread "" x --r
 start_refused "a repo with a slash" "directory name" thread-1 thread "" x --repo ../$R --task-file /home/agent/tasks/usage.md
 start_refused "an empty key" "--key must not be empty" thread-1 thread "" x --key "" --task-file /home/agent/tasks/usage.md
 check "refusals created no ledger" no "$([ -e "$DB" ] && echo yes || echo no)"
-check "refusals made no cross-repo directory" no "$([ -e /home/agent/cross-repo ] && echo yes || echo no)"
+check "refusals made no cross-repo directory" "" "$(ls /home/agent/x-repo/general)"

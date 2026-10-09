@@ -1,13 +1,13 @@
 # Sourced by inside.sh after worktree.sh: `inbox`, `thread end`, `thread
 # set-project` and `thread relate` against the real herdr, with a fake atb
-# and a fake fednet that log their arguments. Threads use the default
-# target (ledger and herdr session `default` when the hook runs from
-# fednet; here --session judge), whose thread agents run in
-# ~/cross-repo/threads.
-TDB=/home/agent/.local/state/$T/default/$LEDGER
+# and a fake fednet that log their arguments. Threads use the scope `main`
+# (a message without a scope): its ledger and the herdr session fleet-main.
+# A thread of the channel repo-$R runs in ~/dev/$R.
+S=(herdr --session fleet-main)
+TDB=/home/agent/.local/state/$T/main.db
 tledger() { sqlite3 "$TDB" "$1" | tr '\n' ' '; }
 mkdir -p /home/agent/.config/$T /home/agent/fake-thread /home/agent/events
-echo '{"linear": {"team": "TH"}, "fednet": {"socket": "/home/agent/fednet.sock"}}' > "/home/agent/.config/$T/default.json"
+echo '{"linear": {"team": "TH"}, "fednet": {"socket": "/home/agent/fednet.sock"}}' > "/home/agent/.config/$T/main.json"
 # The fake atb fails every call while /home/agent/linear-down exists;
 # `create` prints TH-5, `query` prints one earlier summary.
 cat > /home/agent/fake-thread/atb <<'ATB'
@@ -45,19 +45,20 @@ fi
 exec /usr/local/bin/herdr "$@"
 SHIM
 chmod +x /home/agent/fake-thread/atb /home/agent/fake-thread/fednet /home/agent/fake-thread/herdr
-event() { # <msg_id> <thread> <text> [context]: prints the event file
-  printf '{"msg_id":"%s","payload":{"type":"message","thread":"%s","text":"%s","user":"U0ABC","ts":"1700000001.000","context":"%s"}}\n' \
-    "$1" "$2" "$3" "${4:-}" > "/home/agent/events/$1.json"
+event() { # <msg_id> <thread> <text> [context] [channel fields]: prints the event file
+  local fields=${5-'"channel_name":"repo-'$R'"'}
+  printf '{"msg_id":"%s","payload":{"type":"message","thread":"%s","text":"%s","user":"U0ABC","ts":"1700000001.000","context":"%s"%s}}\n' \
+    "$1" "$2" "$3" "${4:-}" "${fields:+,$fields}" > "/home/agent/events/$1.json"
   echo "/home/agent/events/$1.json"
 }
-inbox() { PATH=/home/agent/fake-thread:$PATH "$T" --session judge inbox "$@"; }
-# A thread agent of the default target, as its pane would have it.
+inbox() { PATH=/home/agent/fake-thread:$PATH "$T" inbox "$@"; }
+# A thread agent of the scope main, as its pane would have it.
 thra() { # <thread> <issue> -- <arguments...>
   local thread=$1 issue=$2
   shift 3
   PATH=/home/agent/fake-thread:$PATH env "${P}AGENT=thread-$(echo "$thread" | tr '/.' '--' | tr '[:upper:]' '[:lower:]')" \
-    "${P}ROLE=thread" "${P}PARENT=" "${P}TARGET=default" "${P}JOB=" "${P}ISSUE=$issue" "${P}THREAD=$thread" \
-    "$T" --session judge "$@"
+    "${P}ROLE=thread" "${P}PARENT=" "${P}SCOPE=main" "${P}JOB=" "${P}ISSUE=$issue" "${P}THREAD=$thread" \
+    "$T" "$@"
 }
 K=C0123/1700000000.123
 A=thread-c0123-1700000000-123
@@ -74,18 +75,18 @@ check "inbox: exit 1 when the event file cannot be read" 1 "$rc"
 out=$(inbox "$(event m1 "$K" 'import the A table 0xMSG1' 'The data channel 0xCTX')" 2>&1); rc=$?
 check "inbox: new thread, exit 0" 0 "$rc"
 [ "$rc" = 0 ] || printf '%s\n' "$out"
-has "inbox: reports what started" "$out" "started $A for thread $K (session 1, /home/agent/cross-repo/threads)"
+has "inbox: reports what started" "$out" "started $A for thread $K (session 1, /home/agent/dev/$R)"
 check "inbox: ticket created with the thread label and claimed for the agent, in that order" \
-  "linear create --team TH --label thread --title import the A table 0xMSG1 --description-file DESC --json|linear claim TH-5 --agent $A --source $K --scope default: thread $K|" \
+  "linear create --team TH --label thread --title import the A table 0xMSG1 --description-file DESC --json|linear claim TH-5 --agent $A --source $K --scope repo-$R: thread $K|" \
   "$(sed 's/--description-file [^ ]*/--description-file DESC/' /home/agent/atb.log | tr '\n' '|')"
 check "inbox: agent started in herdr" "$A" "$(agent_field "$A" name)"
-check "inbox: agent cwd is the threads directory" /home/agent/cross-repo/threads "$(agent_field "$A" cwd)"
+check "inbox: agent cwd is the repo's checkout" "/home/agent/dev/$R" "$(agent_field "$A" cwd)"
 tws=$(agent_field "$A" workspace_id)
 check "inbox: workspace labelled threads" threads "$("${S[@]}" workspace get "$tws" | jq -r .result.workspace.label)"
 check "inbox: tab labelled after the thread" c0123-1700000000-123 \
   "$("${S[@]}" tab get "$(agent_field "$A" tab_id)" | jq -r .result.tab.label)"
 check "inbox: identity variables in its process, the thread included" \
-  "${P}AGENT=$A ${P}ISSUE=TH-5 ${P}JOB= ${P}PARENT= ${P}ROLE=thread ${P}TARGET=default ${P}THREAD=$K " \
+  "${P}AGENT=$A ${P}ISSUE=TH-5 ${P}JOB= ${P}PARENT= ${P}ROLE=thread ${P}SCOPE=main ${P}THREAD=$K " \
   "$(proc_env "$A")"
 # The fake Claude shows the last 20 lines; the prompt's head is above them.
 has "inbox: prompt end, context and message on screen" "$(screen "$A")" "fleet thread end" "## Channel context" "0xCTX" "## The message" "0xMSG1"
@@ -153,7 +154,7 @@ check "inbox: reopen, exit 0" 0 "$rc"
 [ "$rc" = 0 ] || printf '%s\n' "$out"
 has "inbox: reopen reports session 2" "$out" "started $A for thread $K (session 2"
 check "inbox: reopen claims the ticket, comments, reads the summaries" \
-  "linear claim TH-5 --agent $A --source $K --scope default: thread $K|linear comment TH-5 --body-file BODY|linear query QUERY|" \
+  "linear claim TH-5 --agent $A --source $K --scope repo-$R: thread $K|linear comment TH-5 --body-file BODY|linear query QUERY|" \
   "$(sed -e 's/--body-file [^ ]*/--body-file BODY/' -e 's/query .*/query QUERY/' /home/agent/atb.log | tr '\n' '|')"
 has "inbox: reopen comment names the session" "$(cat /home/agent/comment-TH-5.md)" "Session 2 started"
 check "inbox: reopen in a workspace labelled threads" threads \
@@ -275,8 +276,8 @@ check "job start: the lead's process has no thread variable" "" "$(proc_env item
 # The lead of item-8 asks the people in its home thread: the question
 # reaches the live thread agent; the next message in the thread answers it.
 printf 'Which month should the import cover? 0xQ1\n' > /home/agent/tasks/q1.md
-out=$(PATH=/home/agent/fake-thread:$PATH env "${P}AGENT=item-8-lead" "${P}ROLE=lead" "${P}PARENT=$A" "${P}TARGET=default" \
-  "${P}JOB=item-8" "${P}ISSUE=" "$T" --session judge ask-human --file /home/agent/tasks/q1.md 2>&1); rc=$?
+out=$(PATH=/home/agent/fake-thread:$PATH env "${P}AGENT=item-8-lead" "${P}ROLE=lead" "${P}PARENT=$A" "${P}SCOPE=main" \
+  "${P}JOB=item-8" "${P}ISSUE=" "$T" ask-human --file /home/agent/tasks/q1.md 2>&1); rc=$?
 check "ask-human: exit 0 from the lead" 0 "$rc"
 [ "$rc" = 0 ] || printf '%s\n' "$out"
 has "ask-human: delivered to the home thread's agent" "$out" "delivered to $A"
@@ -286,8 +287,8 @@ has "ask-human: question on the thread agent's screen" "$(screen "$A")" "Questio
 check "ask-human: pending in the ledger" "item-8|$K|item-8-lead|0|pending " \
   "$(tledger "SELECT job, thread, asked_by, approval, state FROM questions")"
 settled "$A"
-out=$(PATH=/home/agent/fake-thread:$PATH env "${P}AGENT=item-8-lead" "${P}ROLE=lead" "${P}PARENT=$A" "${P}TARGET=default" \
-  "${P}JOB=item-8" "${P}ISSUE=" "$T" --session judge ask-human --file /home/agent/tasks/q1.md --approval 2>&1); rc=$?
+out=$(PATH=/home/agent/fake-thread:$PATH env "${P}AGENT=item-8-lead" "${P}ROLE=lead" "${P}PARENT=$A" "${P}SCOPE=main" \
+  "${P}JOB=item-8" "${P}ISSUE=" "$T" ask-human --file /home/agent/tasks/q1.md --approval 2>&1); rc=$?
 check "ask-human --approval: exit 1, not supported yet" 1 "$rc"
 has "ask-human --approval: says so" "$out" "approval cards are not supported yet"
 check "ask-human --approval: nothing recorded" "1 " "$(tledger "SELECT count(*) FROM questions")"
@@ -298,17 +299,81 @@ check "inbox: no question pending" "0 " "$(tledger "SELECT count(*) FROM questio
 has "inbox: the reply on the thread agent's screen" "$(screen "$A")" "0xMSG5"
 out=$(as item-1-a worker item-1-lead item-1 -- ask-human --file /home/agent/tasks/q1.md 2>&1); rc=$?
 check "ask-human: exit 1 from a worker" 1 "$rc"
-out=$(PATH=/home/agent/fake-thread:$PATH env "${P}AGENT=item-1-lead" "${P}ROLE=lead" "${P}PARENT=thread-1" "${P}TARGET=$TARGET" \
-  "${P}JOB=item-1" "$T" --session judge ask-human --file /home/agent/tasks/q1.md 2>&1); rc=$?
+out=$(PATH=/home/agent/fake-thread:$PATH env "${P}AGENT=item-1-lead" "${P}ROLE=lead" "${P}PARENT=thread-1" "${P}SCOPE=$SCOPE" \
+  "${P}JOB=item-1" "$T" ask-human --file /home/agent/tasks/q1.md 2>&1); rc=$?
 check "ask-human: exit 1 from a lead whose job has no home thread" 1 "$rc"
 
 # The job's conclusion reaches its home thread the same way, here to the
 # thread agent ask-human started.
 printf 'Imported everything. 0xREPORT8\n' > /home/agent/tasks/report8.md
-out=$(PATH=/home/agent/fake-thread:$PATH env "${P}AGENT=item-8-lead" "${P}ROLE=lead" "${P}PARENT=$A" "${P}TARGET=default" \
-  "${P}JOB=item-8" "${P}ISSUE=" "$T" --session judge job end --report-file /home/agent/tasks/report8.md 2>&1); rc=$?
+out=$(PATH=/home/agent/fake-thread:$PATH env "${P}AGENT=item-8-lead" "${P}ROLE=lead" "${P}PARENT=$A" "${P}SCOPE=main" \
+  "${P}JOB=item-8" "${P}ISSUE=" "$T" job end --report-file /home/agent/tasks/report8.md 2>&1); rc=$?
 check "job end: exit 0 with a home thread" 0 "$rc"
 [ "$rc" = 0 ] || printf '%s\n' "$out"
 has "job end: conclusion printed and delivered to the live thread agent" "$out" "Job item-8 ended: done." "delivered to $A"
 has "job end: conclusion on the thread agent's screen" "$(screen "$A")" "[FROM: item-8-lead]" "Conclusion of a job from item-8-lead" "Job item-8 ended: done." "Report: /home/agent/tasks/report8.md"
 check "job end: the job is ended" "ended|done " "$(tledger "SELECT state, outcome FROM jobs WHERE job = 'item-8'")"
+
+# Channel kinds: an initiative's channel runs in the checkout of its repo,
+# a direct message in x-repo-general's; any other channel is ignored.
+X=C0X01/1700000002.000
+AX=thread-c0x01-1700000002-000
+out=$(inbox "$(event m10 "$X" 'cross work 0xMSG10' '' '"channel_name":"x-repo-example-init"')" 2>&1); rc=$?
+check "inbox: x-repo channel, exit 0" 0 "$rc"
+[ "$rc" = 0 ] || printf '%s\n' "$out"
+check "inbox: x-repo channel runs in the initiative's checkout" /home/agent/x-repo/example-init "$(agent_field "$AX" cwd)"
+check "inbox: the thread is recorded with its channel and directory" "x-repo-example-init|/home/agent/x-repo/example-init " \
+  "$(tledger "SELECT mapping, cwd FROM threads WHERE thread = '$X'")"
+has "inbox: the x-repo thread agent got the message" "$(screen "$AX")" "0xMSG10"
+settled "$AX"
+D=D0DM1/1700000003.000
+out=$(inbox "$(event m11 "$D" 'hi 0xMSG11' '' '"trigger":"dm"')" 2>&1); rc=$?
+check "inbox: direct message, exit 0" 0 "$rc"
+check "inbox: a direct message runs in x-repo-general's checkout" /home/agent/x-repo/general \
+  "$(agent_field thread-d0dm1-1700000003-000 cwd)"
+: > /home/agent/fednet.log
+for fields in '"channel_name":"fednet-dev"' ''; do
+  out=$(inbox "$(event m12 C0OTHER/1.1 'x' '' "$fields")" 2>&1); rc=$?
+  check "inbox: channel [$fields] ignored, exit 0" 0 "$rc"
+  has "inbox: says the message [$fields] was ignored" "$out" "ignored m12"
+done
+check "inbox: an ignored channel gets no reply, no message row, no thread row" "|0 0 " \
+  "$(cat /home/agent/fednet.log)|$(tledger "SELECT count(*) FROM inbox WHERE msg_id = 'm12'")$(tledger "SELECT count(*) FROM threads WHERE thread = 'C0OTHER/1.1'")"
+
+# A repo not checked out on this machine: the thread is told, nothing starts.
+out=$(inbox "$(event m13 C0NONE/1.1 'x' '' '"channel_name":"repo-no-such"')" 2>&1); rc=$?
+check "inbox: a repo not checked out here, exit 0" 0 "$rc"
+check "inbox: tells the thread the repo is not here" \
+  "client post -socket /home/agent/fednet.sock -thread C0NONE/1.1 -- The repo no-such is not checked out on this machine (/home/agent/dev/no-such), so no agent was started for this thread.|" \
+  "$(tr '\n' '|' < /home/agent/fednet.log)"
+check "inbox: no agent, the message dropped" "agent_not_found dropped " \
+  "$(agent_field thread-c0none-1-1 agent_status) $(tledger "SELECT state FROM inbox WHERE msg_id = 'm13'")"
+
+# The payload's scope picks the fleet: its herdr session and its ledger.
+out=$(inbox "$(event m14 C0SC/1.1 'x 0xMSG14' '' '"channel_name":"repo-'"$R"'","scope":"'"$SCOPE"'"')" 2>&1); rc=$?
+check "inbox: scope from the payload, exit 0" 0 "$rc"
+[ "$rc" = 0 ] || printf '%s\n' "$out"
+check "inbox: the agent runs in that scope's session" "thread-c0sc-1-1 agent_not_found" \
+  "$(herdr --session "fleet-$SCOPE" agent get thread-c0sc-1-1 | jq -r .result.agent.name) $(agent_field thread-c0sc-1-1 agent_status)"
+check "inbox: the thread is in that scope's ledger only" "1 0 " \
+  "$(sqlite3 "$DB" "SELECT count(*) FROM threads WHERE thread = 'C0SC/1.1'") $(tledger "SELECT count(*) FROM threads WHERE thread = 'C0SC/1.1'")"
+
+# A cross-repo job of the initiative's thread runs in the initiative's
+# checkout; job list shows each thread its own channel's jobs.
+out=$(thra "$K" TH-5 -- job start item-9 --repo "$R" --task-file "$(task item-9 'repo job 0xITEM9')" 2>&1); rc=$?
+check "job start from the repo thread: exit 0" 0 "$rc"
+[ "$rc" = 0 ] || printf '%s\n' "$out"
+out=$(thra "$X" "" -- job start wire-x --task-file "$(task wirex 'cross job 0xWIREX')" 2>&1); rc=$?
+check "job start from the x-repo thread: exit 0" 0 "$rc"
+[ "$rc" = 0 ] || printf '%s\n' "$out"
+check "job start: the cross-repo lead runs in the initiative's checkout" /home/agent/x-repo/example-init/wire-x \
+  "$(agent_field wire-x-lead cwd)"
+check "job list: the repo thread sees its channel's job" "item-9" "$(thra "$K" TH-5 -- job list | cut -f1 | tr '\n' ' ' | sed 's/ $//')"
+check "job list: the x-repo thread sees its channel's job" "wire-x" "$(thra "$X" "" -- job list | cut -f1 | tr '\n' ' ' | sed 's/ $//')"
+check "job list --all: every job of the scope" "item-9 wire-x" "$(thra "$K" TH-5 -- job list --all | cut -f1 | tr '\n' ' ' | sed 's/ $//')"
+out=$(thra "$X" "" -- job end wire-x --force 2>&1); rc=$?
+check "job end --force of the x-repo job: exit 0" 0 "$rc"
+check "job end --force: the job's directory removed, the checkout kept" "no yes" \
+  "$([ -e /home/agent/x-repo/example-init/wire-x ] && echo yes || echo no) $([ -d /home/agent/x-repo/example-init ] && echo yes || echo no)"
+thra "$K" TH-5 -- job end item-9 --force >/dev/null 2>&1; rc=$?
+check "job end --force of the repo job: exit 0" 0 "$rc"

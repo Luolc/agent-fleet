@@ -11,9 +11,6 @@
 #                     its messages are expected to use it (default: fleet)
 #   JUDGE_ENV_PREFIX  prefix of the identity variables (default: FLEET_,
 #                     that is, JUDGE_NAME upper-cased plus an underscore)
-#   JUDGE_LEDGER      file name of the ledger under
-#                     ~/.local/state/<JUDGE_NAME>/<target>/
-#                     (default: <JUDGE_NAME>.db)
 #   JUDGE_IMAGE       use an image built elsewhere (CI) instead of building
 #
 # Another implementation of the same CLI runs under its own name:
@@ -27,7 +24,6 @@ bin=${1:-}
 bin=$(cd "$(dirname "$bin")" && pwd)/$(basename "$bin")
 name=${JUDGE_NAME:-fleet}
 prefix=${JUDGE_ENV_PREFIX:-$(printf %s "$name" | tr '[:lower:]' '[:upper:]')_}
-ledger=${JUDGE_LEDGER:-$name.db}
 image=${JUDGE_IMAGE:-}
 if [[ -z "$image" ]]; then
 	# One tag per checkout, so worktrees running at the same time on one
@@ -36,6 +32,6 @@ if [[ -z "$image" ]]; then
 	docker build -q -t "$image" "$here" >/dev/null
 fi
 docker run --rm \
-	-e "JUDGE_NAME=$name" -e "JUDGE_ENV_PREFIX=$prefix" -e "JUDGE_LEDGER=$ledger" \
+	-e "JUDGE_NAME=$name" -e "JUDGE_ENV_PREFIX=$prefix" \
 	-v "$bin:/home/agent/bin/$name:ro" -v "$here:/home/agent/judge:ro" \
 	"$image" bash /home/agent/judge/inside.sh

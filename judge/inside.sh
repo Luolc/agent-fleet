@@ -1,18 +1,19 @@
 #!/bin/bash
-# Runs inside the judge container: a headless herdr session, fake Claudes,
-# and the binary under test driven from a plain shell (so --session is
-# needed, as from cron). Every arm asserts an exit code and the visible
+# Runs inside the judge container: two headless herdr sessions, one per
+# scope (fleet-example for the jobs, fleet-main for the threads), fake
+# Claudes, and the binary under test driven from a plain shell (so the
+# scope comes from --scope or the identity variables, as from cron). Every arm asserts an exit code and the visible
 # effect that distinguishes it from the others: stdout/stderr, the ledger
 # (read with sqlite3), herdr's state and the fake agents' screens.
 #
-# Parameters come from run.sh: JUDGE_NAME (the command), JUDGE_ENV_PREFIX
-# (the identity variables) and JUDGE_LEDGER (the ledger file name).
+# Parameters come from run.sh: JUDGE_NAME (the command) and JUDGE_ENV_PREFIX
+# (the identity variables).
 set -u
 export PATH=/home/agent/bin:$PATH
 T=${JUDGE_NAME:?}
 P=${JUDGE_ENV_PREFIX:?}
-LEDGER=${JUDGE_LEDGER:?}
-S=(herdr --session judge)
+SCOPE=example
+S=(herdr --session fleet-$SCOPE)
 here=$(cd "$(dirname "$0")" && pwd)
 passed=0
 fail=0
@@ -62,23 +63,26 @@ start_fake() {
 }
 # as <agent> <role> <parent> <job> -- <arguments...>: the binary with the
 # caller's identity variables set, as its pane would have them. The work
-# order comes from ISSUE, empty by default. The target is TARGET, which is
-# not the repo's name: the ledger is per target, a job's repo is a job
+# order comes from ISSUE, empty by default. The scope is SCOPE, which is
+# not the repo's name: the ledger is per scope, a job's repo is a job
 # attribute.
 as() {
   local agent=$1 role=$2 parent=$3 job=$4
   shift 5
-  env "${P}AGENT=$agent" "${P}ROLE=$role" "${P}PARENT=$parent" "${P}TARGET=$TARGET" "${P}JOB=$job" \
-    "${P}ISSUE=${ISSUE:-}" "$T" --session judge "$@"
+  env "${P}AGENT=$agent" "${P}ROLE=$role" "${P}PARENT=$parent" "${P}SCOPE=$SCOPE" "${P}JOB=$job" \
+    "${P}ISSUE=${ISSUE:-}" "$T" "$@"
 }
 R=example-dataset
-TARGET=example-target
-DB=/home/agent/.local/state/$T/$TARGET/$LEDGER
+DB=/home/agent/.local/state/$T/$SCOPE.db
+# The checkouts of the initiatives' repos: fleet never makes them.
+mkdir -p /home/agent/x-repo/general /home/agent/x-repo/example-init
 ledger() { sqlite3 "$DB" "$1" | tr '\n' ' '; }
 
-herdr --session judge server >/home/agent/server.log 2>&1 &
-for _ in $(seq 1 100); do "${S[@]}" status server >/dev/null 2>&1 && break; sleep 0.2; done
-"${S[@]}" status server >/dev/null || { echo "FAIL herdr server did not start"; cat /home/agent/server.log; exit 1; }
+for session in fleet-$SCOPE fleet-main; do
+  herdr --session "$session" server >"/home/agent/server-$session.log" 2>&1 &
+  for _ in $(seq 1 100); do herdr --session "$session" status server >/dev/null 2>&1 && break; sleep 0.2; done
+  herdr --session "$session" status server >/dev/null || { echo "FAIL herdr server $session did not start"; cat "/home/agent/server-$session.log"; exit 1; }
+done
 check "fake claude starts idle" idle "$(start_fake fake)"
 
 . "$here/usage.sh"
@@ -87,6 +91,6 @@ check "fake claude starts idle" idle "$(start_fake fake)"
 . "$here/watch.sh"
 . "$here/worktree.sh"
 . "$here/thread.sh"
-"${S[@]}" server stop >/dev/null
+for session in fleet-$SCOPE fleet-main; do herdr --session "$session" server stop >/dev/null; done
 echo "judge: $passed ok, $( [ "$fail" = 0 ] && echo "0 failed" || echo "some failed")"
 exit $fail

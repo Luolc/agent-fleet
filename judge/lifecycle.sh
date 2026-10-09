@@ -66,7 +66,7 @@ check "job start: Claude's fixed arguments" \
   "$(proc_args item-1-lead)"
 has "job start: header and task on screen" "$(screen item-1-lead)" "[FROM: thread-1]" "0xLEAD1"
 check "job start: identity variables in its process" \
-  "${P}AGENT=item-1-lead ${P}ISSUE= ${P}JOB=item-1 ${P}PARENT=thread-1 ${P}ROLE=lead ${P}TARGET=$TARGET " \
+  "${P}AGENT=item-1-lead ${P}ISSUE= ${P}JOB=item-1 ${P}PARENT=thread-1 ${P}ROLE=lead ${P}SCOPE=$SCOPE " \
   "$(proc_env item-1-lead)"
 check "job start: ledger row active with its places" \
   "lead|item-1|thread-1|thread-1|active|$DEV|/home/agent/tasks/lead.md|$(agent_field item-1-lead pane_id) " \
@@ -92,7 +92,7 @@ check "spawn worker: pane renamed" item-1-a \
   "$("${S[@]}" pane get "$(agent_field item-1-a pane_id)" | jq -r .result.pane.label)"
 has "spawn worker: header and task on screen" "$(screen item-1-a)" "[FROM: item-1-lead]" "0xWORKA"
 check "spawn worker: identity variables in its process" \
-  "${P}AGENT=item-1-a ${P}ISSUE= ${P}JOB=item-1 ${P}PARENT=item-1-lead ${P}ROLE=worker ${P}TARGET=$TARGET " \
+  "${P}AGENT=item-1-a ${P}ISSUE= ${P}JOB=item-1 ${P}PARENT=item-1-lead ${P}ROLE=worker ${P}SCOPE=$SCOPE " \
   "$(proc_env item-1-a)"
 check "spawn worker: ledger row active in the job with its cwd" "worker|item-1|item-1-lead|active|$WT/item-1 " \
   "$(ledger "SELECT role, job, parent, state, cwd FROM agents WHERE name = 'item-1-a'")"
@@ -140,14 +140,14 @@ check "status: live agents in start order with the owes-work flag" \
 check "status: --job on the only live job lists the same set" "$(status_flags)" "$(status_flags --job item-1)"
 check "status: the open job with its lead and workers" "item-1:item-1-lead:item-1-a,item-1-b,item-1-c" "$(status_jobs)"
 out=$(thr status 2>&1); rc=$?
-check "status: table exit 0 with the target from the environment" 0 "$rc"
+check "status: table exit 0 with the scope from the environment" 0 "$rc"
 case "$out" in JOB*) head=yes ;; *) head=no ;; esac
 check "status: table starts with the jobs header" yes "$head"
 has "status: table lists the job, the agents and their flags" "$out" "item-1-lead" "item-1-c" "lead" "worker" "owes-work" "
 NAME "
 fields=$(thr status --json | jq -r '.agents[] | select(.name == "item-1-a") | "\(.role) \(.job) \(.parent) \(.state) \(.herdr_status) \(.since_change_secs)"')
 check "status: json fields of a worker" "worker item-1 item-1-lead active idle null" "${fields/ done / idle }"
-check "status: --target from a plain shell" 4 "$("$T" --session judge status --target "$TARGET" --json | jq '.agents | length')"
+check "status: --scope from a plain shell" 4 "$("$T" --scope "$SCOPE" status --json | jq '.agents | length')"
 
 # The lead cannot end the job while workers are live, and nobody else ends
 # it without --force.
@@ -228,7 +228,7 @@ check "job list: nothing open after the job ended" "" "$(thr job list)"
 
 # A cross-repo job with a parent issue: Linear on through the parent's
 # team and project, read with a fake atb that answers the query; the lead
-# runs in ~/cross-repo/<job>/.
+# runs in ~/x-repo/general/<job>/ (the thread is of no channel).
 : > /home/agent/atb.log
 cat > /home/agent/fake-atb/atb <<'ATB'
 #!/bin/sh
@@ -241,16 +241,16 @@ ATB
 out=$(PATH=/home/agent/fake-atb:$PATH thr job start wire --parent-issue QT-10 --task-file "$(task wire 'Wire the repos 0xWIRE')" 2>&1); rc=$?
 check "job start cross-repo: exit 0" 0 "$rc"
 [ "$rc" = 0 ] || printf '%s\n' "$out"
-has "job start cross-repo: reports the cross-repo directory" "$out" "started wire-lead in job wire (/home/agent/cross-repo/wire)"
+has "job start cross-repo: reports the cross-repo directory" "$out" "started wire-lead in job wire (/home/agent/x-repo/general/wire)"
 check "job start cross-repo: the parent is read last, claimed, then the work order created and claimed" \
   "linear query { issue(id: \"QT-10\") { team { key } project { name } } }|linear claim QT-10 --agent wire-lead --source thread-1 --scope cross-repo: job wire|linear create --team QT --project Queried project --parent QT-10 --title Wire the repos 0xWIRE --description-file /home/agent/tasks/wire.md --json|linear claim QT-12 --agent wire-lead --source thread-1 --scope cross-repo: job wire|" \
   "$(tr '\n' '|' < /home/agent/atb.log)"
-check "job start cross-repo: agent cwd is the cross-repo directory" /home/agent/cross-repo/wire "$(agent_field wire-lead cwd)"
+check "job start cross-repo: agent cwd is the cross-repo directory" /home/agent/x-repo/general/wire "$(agent_field wire-lead cwd)"
 check "job start cross-repo: identity variables carry the work order" \
-  "${P}AGENT=wire-lead ${P}ISSUE=QT-12 ${P}JOB=wire ${P}PARENT=thread-1 ${P}ROLE=lead ${P}TARGET=$TARGET " \
+  "${P}AGENT=wire-lead ${P}ISSUE=QT-12 ${P}JOB=wire ${P}PARENT=thread-1 ${P}ROLE=lead ${P}SCOPE=$SCOPE " \
   "$(proc_env wire-lead)"
 has "job start cross-repo: the work order's URL heads the task" "$(screen wire-lead)" "Work order: https://linear.example.test/QT-12" "0xWIRE"
-check "job start cross-repo: job row with the parent and no repo" "QT-10|||/home/agent/cross-repo/wire|open| " "$(job_row wire)"
+check "job start cross-repo: job row with the parent and no repo" "QT-10|||/home/agent/x-repo/general/wire|open| " "$(job_row wire)"
 check "job list: the cross-repo job" "wire	QT-10	-	-	wire-lead	-" "$(thr job list)"
 # Without the fake atb on PATH: the refusal comes from the ledger, before
 # Linear is needed.
@@ -260,7 +260,7 @@ has "job start: the refusal names the lead to talk to" "$out" "wire-lead is live
 # A worker of the cross-repo job gets its work order where the parent says.
 : > /home/agent/atb.log
 settled wire-lead
-out=$(PATH=/home/agent/fake-atb:$PATH as wire-lead lead thread-1 wire -- spawn a --cwd /home/agent/cross-repo/wire --task-file "$(task wirea 'wire worker')" 2>&1); rc=$?
+out=$(PATH=/home/agent/fake-atb:$PATH as wire-lead lead thread-1 wire -- spawn a --cwd /home/agent/x-repo/general/wire --task-file "$(task wirea 'wire worker')" 2>&1); rc=$?
 check "spawn in a cross-repo job: exit 0" 0 "$rc"
 [ "$rc" = 0 ] || printf '%s\n' "$out"
 check "spawn in a cross-repo job: the parent is queried, the work order created under it and claimed" \
@@ -302,7 +302,7 @@ check "job end cross-repo: the conclusion written to the parent" \
   "$(tr '\n' '|' < /home/agent/atb-bodies.log)"
 rm /home/agent/atb-fail
 has "job end cross-repo: the conclusion printed" "$out" "Job wire ended: abandoned."
-check "job end cross-repo: directory removed" no "$([ -e /home/agent/cross-repo/wire ] && echo yes || echo no)"
+check "job end cross-repo: directory removed" no "$([ -e /home/agent/x-repo/general/wire ] && echo yes || echo no)"
 check "job end cross-repo: job ended as abandoned with its rows" "ended|abandoned ended ended " \
   "$(ledger "SELECT state, outcome FROM jobs WHERE job = 'wire'")$(ledger "SELECT state FROM agents WHERE job = 'wire' ORDER BY id")"
 check "job end cross-repo: workspace and agents gone" "0 0" \
@@ -336,17 +336,17 @@ check "job end --force: lead's row ended, job abandoned" "ended ended|abandoned 
   "$(ledger "SELECT state FROM agents WHERE name = 'item-4-lead'")$(ledger "SELECT state, outcome FROM jobs WHERE job = 'item-4'")"
 out=$(thr job start item-5 --repo "$R" --key PR-4 --task-file "$(task item-5 'key free again')" 2>&1); rc=$?
 check "job start: the key is free once the job ended" 0 "$rc"
-env "${P}TARGET=$TARGET" "$T" --session judge job end item-5 --force >/dev/null 2>&1; rc=$?
+env "${P}SCOPE=$SCOPE" "$T" job end item-5 --force >/dev/null 2>&1; rc=$?
 check "job end --force: from a shell with no identity, exit 0" 0 "$rc"
 
 # A directory left over from an earlier cross-repo job blocks a new job
 # of that name.
-mkdir -p /home/agent/cross-repo/item-6
+mkdir -p /home/agent/x-repo/general/item-6
 out=$(thr job start item-6 --task-file "$(task item-6 'never started')" 2>&1); rc=$?
 check "job start: job with a leftover directory refused with exit 1" 1 "$rc"
 has "job start: leftover refusal names the cleanup" "$out" "$T job end item-6 --force"
 check "job start: leftover refusal wrote no row" "0 " "$(ledger "SELECT count(*) FROM agents WHERE name = 'item-6-lead'")"
-rmdir /home/agent/cross-repo/item-6
+rmdir /home/agent/x-repo/general/item-6
 
 # An unknown start-up screen stops the start with exit 3 and the screen.
 touch "$fake/unknown-screen"
@@ -373,6 +373,6 @@ has "job start: gateway refusal printed with the cleanup command" "$out" \
   "machine example-1 is at its limit" "$T job end item-3 --force"
 thr job end item-3 --force >/dev/null 2>&1; rc=$?
 check "job end --force: after a failed start, exit 0" 0 "$rc"
-check "job end --force: its cross-repo directory removed" no "$([ -e /home/agent/cross-repo/item-3 ] && echo yes || echo no)"
+check "job end --force: its cross-repo directory removed" no "$([ -e /home/agent/x-repo/general/item-3 ] && echo yes || echo no)"
 check "job end: nothing left running" "thread-1 fake " \
   "$("${S[@]}" agent list | jq -r '[.result.agents[].name] | sort | reverse | join(" ")') "

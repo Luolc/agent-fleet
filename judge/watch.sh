@@ -25,7 +25,7 @@ for arm in w-tick:TICK w-hang:HANG; do
     "$("${S[@]}" agent get "${arm%%:*}" | jq -r '.result.agent.agent_status')"
 done
 
-watch() { env "${P}WATCH_STALE_SECS=5" "$T" --session judge watch --target "$TARGET"; }
+watch() { env "${P}WATCH_STALE_SECS=5" "$T" --scope "$SCOPE" watch; }
 suspects() { sqlite3 "$DB" "SELECT group_concat(name, ' ') FROM (SELECT name FROM agents WHERE suspect = 1 ORDER BY name)"; }
 
 watch >/home/agent/watch1.out 2>&1; rc=$?
@@ -70,7 +70,7 @@ INSERT INTO agents (name, role, job, parent, state, started_at) VALUES
     ('fake', 'worker', 'v', 'v-lead', 'active', $now);
 SQL
 status_all() { # name=herdr_status:flags for every agent status lists
-  "$T" --session judge status --target "$TARGET" --json "$@" |
+  "$T" --scope "$SCOPE" status --json "$@" |
     jq -r '[.agents[] | "\(.name)=\(.herdr_status // "-"):\(.flags | join(","))"] | join(" ")'
 }
 # After a turn herdr reports `done` until the pane is looked at; w-lead
@@ -82,7 +82,7 @@ check "status: --job keeps exactly that job's agents" \
   "w-lead=done:owes-work w-tick=working: w-hang=working:suspect w-gone=-:missing,suspect" "$(status_all --job w)"
 check "status: --job on the other job" "v-lead=-:missing fake=blocked:blocked" "$(status_all --job v)"
 check "status: since_change_secs is set once watch has looked" true \
-  "$("$T" --session judge status --target "$TARGET" --json | jq '[.agents[] | select(.name == "w-hang") | .since_change_secs >= 7] | first')"
+  "$("$T" --scope "$SCOPE" status --json | jq '[.agents[] | select(.name == "w-hang") | .since_change_secs >= 7] | first')"
 for out in /home/agent/watch1.out /home/agent/watch2.out /home/agent/watch3.out; do
   [ "$fail" = 0 ] || { echo "--- $out"; cat "$out"; }
 done

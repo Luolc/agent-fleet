@@ -33,7 +33,7 @@ func openJobWithHomeThread(w *world, home bool) {
 func (w *world) askHuman(args ...string) result {
 	w.t.Helper()
 	return w.run("", append([]string{"ask-human"}, args...),
-		"FLEET_AGENT=item-1-lead", "FLEET_ROLE=lead", "FLEET_PARENT=thread-x", "FLEET_TARGET=default", "FLEET_JOB=item-1", linearKey)
+		"FLEET_AGENT=item-1-lead", "FLEET_ROLE=lead", "FLEET_PARENT=thread-x", "FLEET_SCOPE=main", "FLEET_JOB=item-1", linearKey)
 }
 
 // questions are the rows of the questions table: job, thread, asked_by,
@@ -224,8 +224,9 @@ func TestAskHumanRefusalsAndLinearDown(t *testing.T) {
 	w2 := threadWorld(t, "claim")
 	openJobWithHomeThread(w2, true)
 	conn := w2.defaultLedger()
-	if _, err := conn.Exec("INSERT INTO threads (thread, slug, channel, ticket, ticket_url, sessions, created_at) "+
-		"VALUES (?1, 'c0123-1700000000-123', 'C0123', 'TH-5', 'https://linear.example.test/TH-5', 1, 0)", threadKey); err != nil {
+	if _, err := conn.Exec("INSERT INTO threads (thread, slug, channel, ticket, ticket_url, mapping, cwd, sessions, created_at) "+
+		"VALUES (?1, 'c0123-1700000000-123', 'C0123', 'TH-5', 'https://linear.example.test/TH-5', 'repo-example-dataset', ?2, 1, 0)",
+		threadKey, filepath.Join(w2.dir, "home", "dev", "example-dataset")); err != nil {
 		t.Fatal(err)
 	}
 	conn.Close()
@@ -253,7 +254,7 @@ func TestJobEndTakesTheConclusionToTheHomeThread(t *testing.T) {
 	_ = os.Remove(filepath.Join(w.dir, "calls"))
 	report := task(w, "report.md", "All rows imported.\n")
 	out := w.run("", []string{"job", "end", "--report-file", report},
-		"FLEET_AGENT=item-1-lead", "FLEET_ROLE=lead", "FLEET_PARENT=thread-x", "FLEET_TARGET=default", "FLEET_JOB=item-1")
+		"FLEET_AGENT=item-1-lead", "FLEET_ROLE=lead", "FLEET_PARENT=thread-x", "FLEET_SCOPE=main", "FLEET_JOB=item-1")
 	if out.code != 0 {
 		t.Fatalf("%+v", out)
 	}
@@ -276,7 +277,7 @@ func TestJobEndTakesTheConclusionToTheHomeThread(t *testing.T) {
 	w2 := threadWorld(t, "")
 	openJobWithHomeThread(w2, false)
 	out = w2.run("", []string{"job", "end", "--report-file", task(w2, "r.md", "done\n")},
-		"FLEET_AGENT=item-1-lead", "FLEET_ROLE=lead", "FLEET_PARENT=thread-x", "FLEET_TARGET=default", "FLEET_JOB=item-1")
+		"FLEET_AGENT=item-1-lead", "FLEET_ROLE=lead", "FLEET_PARENT=thread-x", "FLEET_SCOPE=main", "FLEET_JOB=item-1")
 	if out.code != 0 || !strings.Contains(out.stdout, "Job item-1 ended: done.") || strings.Contains(w2.calls(), "agent prompt") {
 		t.Errorf("no home thread: %+v, calls %q", out, w2.calls())
 	}
