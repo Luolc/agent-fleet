@@ -81,6 +81,7 @@ check "fake claude starts idle" idle "$(start_fake fake)"
 . "$here/send.sh"
 . "$here/lifecycle.sh"
 . "$here/watch.sh"
+. "$here/worktree.sh"
 "${S[@]}" server stop >/dev/null
 echo "judge: $passed ok, $( [ "$fail" = 0 ] && echo "0 failed" || echo "some failed")"
 exit $fail

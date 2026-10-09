@@ -17,7 +17,7 @@ import (
 	"github.com/Luolc/agent-fleet/internal/exit"
 )
 
-const schemaVersion = 2
+const schemaVersion = 3
 
 // One table, `agents`. Ended rows are kept as history, so `name` is unique
 // only among rows that have not ended.
@@ -54,6 +54,26 @@ CREATE TABLE dataset (
     session TEXT    NOT NULL
 );
 `
+
+// Version 3: the worktrees `fleet worktree` made, each owned by a job, so
+// `close` can remove them. A row is live until removed_at is set; a path
+// has at most one live row.
+const schemaV3 = `
+CREATE TABLE worktrees (
+    id         INTEGER PRIMARY KEY,
+    path       TEXT    NOT NULL,
+    repo       TEXT    NOT NULL,
+    branch     TEXT    NOT NULL,
+    job        TEXT    NOT NULL,
+    created_by TEXT    NOT NULL,
+    created_at INTEGER NOT NULL,
+    removed_at INTEGER
+);
+CREATE UNIQUE INDEX worktrees_live_path ON worktrees (path) WHERE removed_at IS NULL;
+`
+
+// migrations[v] upgrades a ledger at version v to v+1.
+var migrations = [schemaVersion]string{schema, schemaV2, schemaV3}
 
 // Path is where the database of a dataset repo lives:
 // `~/scratch/<name>/fleet.db`. `repo` may be `owner/name` or just `name`;
@@ -125,29 +145,21 @@ func migrate(conn *sql.DB) error {
 	if err := tx.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		return exit.Database(err)
 	}
-	switch version {
-	case 0:
-		if _, err := tx.Exec(schema); err != nil {
-			return exit.Database(err)
-		}
-		if _, err := tx.Exec(schemaV2); err != nil {
-			return exit.Database(err)
-		}
-		if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version = %d", schemaVersion)); err != nil {
-			return exit.Database(err)
-		}
-	case 1:
-		if _, err := tx.Exec(schemaV2); err != nil {
-			return exit.Database(err)
-		}
-		if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version = %d", schemaVersion)); err != nil {
-			return exit.Database(err)
-		}
-	case schemaVersion:
-	default:
+	if version > schemaVersion {
 		return exit.Environmentf(
 			"database schema version %d is newer than this binary supports (%d)",
 			version, schemaVersion)
+	}
+	if version == schemaVersion {
+		return nil
+	}
+	for _, step := range migrations[version:] {
+		if _, err := tx.Exec(step); err != nil {
+			return exit.Database(err)
+		}
+	}
+	if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version = %d", schemaVersion)); err != nil {
+		return exit.Database(err)
 	}
 	if err := tx.Commit(); err != nil {
 		return exit.Database(err)
