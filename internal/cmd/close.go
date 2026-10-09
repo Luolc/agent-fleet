@@ -112,8 +112,8 @@ func agentsLeft(h *herdr.Herdr, workspaces []string, worktree string) ([]string,
 
 // closeChecks refuses a caller that is not the orchestra, a bad job name
 // and live rows without --force, and finds the job's worktree: the last
-// one recorded, else `~/wt/<repo>/<job>`. Returns the ledger, the
-// worktree and `~/dev/<repo>`.
+// one recorded, else `$HOME/wt/<repo>/<job>`. Returns the ledger, the
+// worktree and `$HOME/dev/<repo>`.
 func closeChecks(args CloseArgs) (conn *sql.DB, worktree, checkout string, err error) {
 	me, err := identity.FromEnv()
 	if err != nil {
