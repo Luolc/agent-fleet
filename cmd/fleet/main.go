@@ -43,6 +43,7 @@ Commands:
   spawn   ` + cmd.SpawnAbout + `
   done    ` + cmd.DoneAbout + `
   status  ` + cmd.StatusAbout + `
+  watch   ` + cmd.WatchAbout + `
   close   ` + cmd.CloseAbout + `
   help    Print this message or the help of the given subcommand(s)
 
@@ -100,6 +101,17 @@ Options:
       --json            Machine-readable output: a JSON array, one object per agent
       --repo <REPO>     Dataset repo whose ledger to read (` + "`owner/name` or `name`" + `); the ledger is
                         ~/scratch/<name>/fleet.db. Defaults to FLEET_REPO, which every agent has
+      --session <NAME>  ` + sessionHelp + `
+  -h, --help            Print help
+`
+
+const watchUsage = "Usage: fleet watch [OPTIONS]"
+
+var watchHelp = cmd.WatchLongAbout + "\n\n" + watchUsage + `
+
+Options:
+      --repo <REPO>     Dataset repo whose ledger to read (` + "`owner/name` or `name`" + `); the ledger is
+                        ~/scratch/<name>/fleet.db. Defaults to FLEET_REPO; cron must pass it
       --session <NAME>  ` + sessionHelp + `
   -h, --help            Print help
 `
@@ -193,6 +205,8 @@ func dispatch(args []string) (exit.Code, error) {
 		return runDone(rest[1:], &session)
 	case "status":
 		return runStatus(rest[1:], &session)
+	case "watch":
+		return runWatch(rest[1:], &session)
 	case "close":
 		return runClose(rest[1:], &session)
 	default:
@@ -202,7 +216,7 @@ func dispatch(args []string) (exit.Code, error) {
 
 // help is clap's implicit `help [COMMAND]` subcommand.
 func help(args []string) (exit.Code, error) {
-	helps := map[string]string{"send": sendHelp, "spawn": spawnHelp, "done": doneHelp, "status": statusHelp, "close": closeHelp, "help": topHelp}
+	helps := map[string]string{"send": sendHelp, "spawn": spawnHelp, "done": doneHelp, "status": statusHelp, "watch": watchHelp, "close": closeHelp, "help": topHelp}
 	if len(args) == 0 {
 		fmt.Fprint(os.Stdout, topHelp)
 		return exit.Ok, nil
@@ -303,6 +317,17 @@ func runStatus(args []string, session *cliargs.OptString) (exit.Code, error) {
 		return exit.Ok, err
 	}
 	return cmd.Status(herdr.New(session.Ptr()), cmd.StatusArgs{Job: job.Ptr(), JSON: asJSON.Value, Repo: repo.Ptr()})
+}
+
+func runWatch(args []string, session *cliargs.OptString) (exit.Code, error) {
+	fs := flagSet("watch", session)
+	repo := cliargs.OptString{Name: "repo", Placeholder: "REPO"}
+	fs.Var(&repo, "repo", "Dataset repo whose ledger to read")
+	_, helped, err := parse(fs, args, watchHelp, watchUsage, nil)
+	if err != nil || helped {
+		return exit.Ok, err
+	}
+	return cmd.Watch(herdr.New(session.Ptr()), cmd.WatchArgs{Repo: repo.Ptr()})
 }
 
 func runClose(args []string, session *cliargs.OptString) (exit.Code, error) {
