@@ -64,7 +64,7 @@ func newWatchWorld(t *testing.T) *watchWorld {
 		t.Fatal(err)
 	}
 	w.reply(`{"result":{"type":"agent_prompted"}}`)
-	path, err := db.PathUnder(filepath.Join(w.dir, "home"), repo)
+	path, err := db.PathUnder(filepath.Join(w.dir, "home", ".local", "state"), repo)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -2,7 +2,7 @@
 // fake `herdr` (the exit-code mapping and the exact argv), and the ledger.
 // Hermetic: `bin()` re-runs this test binary as `fleet` with a HOME and
 // PATH under the test's temp dir, so nothing here can reach the real herdr
-// or the real ~/scratch. The real herdr is exercised only by the judge.
+// or the real ledger. The real herdr is exercised only by the judge.
 package main
 
 import (

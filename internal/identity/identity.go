@@ -50,7 +50,8 @@ func (r Role) String() string {
 }
 
 // Identity is who is calling. `Parent` and `Job` are empty for `orchestra`
-// and `human-interface`.
+// and `human-interface`; `Issue`, the agent's Linear work order, is empty
+// when it has none.
 type Identity struct {
 	Agent  string
 	Role   Role

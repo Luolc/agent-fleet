@@ -61,15 +61,16 @@ start_fake() {
   "${S[@]}" agent start "$1" --kind claude --pane "$pane" --timeout 20000 | jq -r '.result.agent.agent_status // .error.code'
 }
 # as <agent> <role> <parent> <job> -- <arguments...>: the binary with the
-# caller's identity variables set, as its pane would have them.
+# caller's identity variables set, as its pane would have them. The work
+# order comes from ISSUE, empty by default.
 as() {
   local agent=$1 role=$2 parent=$3 job=$4
   shift 5
   env "${P}AGENT=$agent" "${P}ROLE=$role" "${P}PARENT=$parent" "${P}REPO=acme/$R" "${P}JOB=$job" \
-    "$T" --session judge "$@"
+    "${P}ISSUE=${ISSUE:-}" "$T" --session judge "$@"
 }
 R=example-dataset
-DB=/home/agent/scratch/$R/$LEDGER
+DB=/home/agent/.local/state/$T/$R/$LEDGER
 ledger() { sqlite3 "$DB" "$1" | tr '\n' ' '; }
 
 herdr --session judge server >/home/agent/server.log 2>&1 &

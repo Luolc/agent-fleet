@@ -55,7 +55,7 @@ func (w *world) worktree(job string, args ...string) result {
 // worktreeRows are the ledger's worktree rows, one string per row.
 func (w *world) worktreeRows() []string {
 	w.t.Helper()
-	path, err := db.PathUnder(filepath.Join(w.dir, "home"), repo)
+	path, err := db.PathUnder(filepath.Join(w.dir, "home", ".local", "state"), repo)
 	if err != nil {
 		w.t.Fatal(err)
 	}

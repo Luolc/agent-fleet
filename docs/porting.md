@@ -19,14 +19,15 @@ here in the same PR. The page is deleted when the port is complete.
 - `init` is not ported. What only `init` used is dropped: the `dataset`
   table's reader and writer (the table itself stays, so the schema and its
   version marker are identical), and the ledger-path helper that takes an
-  explicit home directory is kept only because the tests use it. Text that
+  explicit directory is kept only because the tests use it. Text that
   mentioned `init` drops the mention.
 
 ## Names
 
 - The command is `fleet`; the identity variables are `FLEET_AGENT`,
-  `FLEET_ROLE`, `FLEET_PARENT`, `FLEET_REPO`, `FLEET_JOB`; the ledger is
-  `~/scratch/<repo name>/fleet.db`; watch's override is
+  `FLEET_ROLE`, `FLEET_PARENT`, `FLEET_REPO`, `FLEET_JOB` and `FLEET_ISSUE`
+  (the work order, empty when the agent has none); the ledger file is
+  `fleet.db` (its directory is in design.md); watch's override is
   `FLEET_WATCH_STALE_SECS`. Every message, help text and error that named the
   earlier tool or its variables uses these names instead; nothing else in the
   wording changes.

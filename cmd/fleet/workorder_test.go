@@ -72,7 +72,7 @@ exit 0
 // the given parent issue.
 func liveLead(w *world, parentIssue string) {
 	w.t.Helper()
-	path, err := db.PathUnder(filepath.Join(w.dir, "home"), repo)
+	path, err := db.PathUnder(filepath.Join(w.dir, "home", ".local", "state"), repo)
 	if err != nil {
 		w.t.Fatal(err)
 	}
@@ -93,7 +93,7 @@ func liveLead(w *world, parentIssue string) {
 // or "none".
 func row(w *world, name string) string {
 	w.t.Helper()
-	path, err := db.PathUnder(filepath.Join(w.dir, "home"), repo)
+	path, err := db.PathUnder(filepath.Join(w.dir, "home", ".local", "state"), repo)
 	if err != nil {
 		w.t.Fatal(err)
 	}
