@@ -30,7 +30,7 @@ const longAbout = "Runs and coordinates coding agents on a dataset machine throu
 	"  2  herdr gave no clear signal (timeout, stalled): the outcome is unknown, do not resend blindly\n" +
 	"  3  target blocked (its screen is printed), or spawn stopped at an unknown screen\n" +
 	"  4  target not found\n" +
-	"  5  environment error (herdr, git or the database failed)"
+	"  5  environment error (herdr, atb, git or the database failed)"
 
 const sessionHelp = "herdr session to talk to. Inside a herdr pane this is not needed: herdr " +
 	"finds the pane's own session. Use it from cron or a plain shell"
@@ -78,6 +78,9 @@ Arguments:
 Options:
       --task-file <PATH>  File with the task, delivered as the agent's first message (with the header)
       --branch <NAME>     Branch for the job's worktree (lead only). Default: data/<job>
+      --parent-issue <ISSUE>
+                          The job's parent issue, such as ABC-12 (lead only; required when the repo
+                          uses Linear, refused when it does not)
       --model <MODEL>     Model passed to the agent as --model. Default: the agent's own
       --effort <EFFORT>   Effort passed to the agent as --effort. Default: the agent's own
       --session <NAME>    ` + sessionHelp + `
@@ -304,7 +307,9 @@ func runSpawn(args []string, session *cliargs.OptString) (exit.Code, error) {
 	model := cliargs.OptString{Name: "model", Placeholder: "MODEL"}
 	effort := cliargs.OptString{Name: "effort", Placeholder: "EFFORT"}
 	fs.Var(&taskFile, "task-file", "File with the task")
+	parentIssue := cliargs.OptString{Name: "parent-issue", Placeholder: "ISSUE"}
 	fs.Var(&branch, "branch", "Branch for the job's worktree (lead only)")
+	fs.Var(&parentIssue, "parent-issue", "The job's parent issue (lead only)")
 	fs.Var(&model, "model", "Model passed to the agent as --model")
 	fs.Var(&effort, "effort", "Effort passed to the agent as --effort")
 	got, helped, err := parse(fs, args, spawnHelp, spawnUsage, []string{"NAME"}, &taskFile)
@@ -312,7 +317,8 @@ func runSpawn(args []string, session *cliargs.OptString) (exit.Code, error) {
 		return exit.Ok, err
 	}
 	return cmd.Spawn(herdr.New(session.Ptr()), cmd.SpawnArgs{
-		Name: got[0], TaskFile: taskFile.Value, Branch: branch.Ptr(), Model: model.Ptr(), Effort: effort.Ptr()})
+		Name: got[0], TaskFile: taskFile.Value, Branch: branch.Ptr(), Model: model.Ptr(), Effort: effort.Ptr(),
+		ParentIssue: parentIssue.Ptr()})
 }
 
 func runDone(args []string, session *cliargs.OptString) (exit.Code, error) {

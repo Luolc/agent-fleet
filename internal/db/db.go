@@ -17,7 +17,7 @@ import (
 	"github.com/Luolc/agent-fleet/internal/exit"
 )
 
-const schemaVersion = 3
+const schemaVersion = 4
 
 // One table, `agents`. Ended rows are kept as history, so `name` is unique
 // only among rows that have not ended.
@@ -72,8 +72,15 @@ CREATE TABLE worktrees (
 CREATE UNIQUE INDEX worktrees_live_path ON worktrees (path) WHERE removed_at IS NULL;
 `
 
+// Version 4: the agent's work order and its job's parent issue, both
+// Linear identifiers; empty when the repo does not use Linear.
+const schemaV4 = `
+ALTER TABLE agents ADD COLUMN issue TEXT NOT NULL DEFAULT '';
+ALTER TABLE agents ADD COLUMN parent_issue TEXT NOT NULL DEFAULT '';
+`
+
 // migrations[v] upgrades a ledger at version v to v+1.
-var migrations = [schemaVersion]string{schema, schemaV2, schemaV3}
+var migrations = [schemaVersion]string{schema, schemaV2, schemaV3, schemaV4}
 
 // Path is where the ledger of a repo lives:
 // `$XDG_STATE_HOME/fleet/<name>/fleet.db`, with `~/.local/state` when

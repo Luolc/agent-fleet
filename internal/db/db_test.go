@@ -112,7 +112,37 @@ func TestAVersion2LedgerGainsTheWorktreesTableAndKeepsItsRows(t *testing.T) {
 	if err := conn.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if agents != 1 || worktrees != 0 || version != 3 {
-		t.Errorf("agents %d, worktrees %d, version %d; want 1, 0, 3", agents, worktrees, version)
+	if agents != 1 || worktrees != 0 || version != schemaVersion {
+		t.Errorf("agents %d, worktrees %d, version %d; want 1, 0, %d", agents, worktrees, version, schemaVersion)
+	}
+}
+
+func TestAVersion3LedgerGainsTheIssueColumnsAndKeepsItsRows(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fleet.db")
+	conn, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range []string{schema, schemaV2, schemaV3,
+		"INSERT INTO agents (name, role, state, started_at) VALUES ('a-lead', 'lead', 'active', 1)",
+		"PRAGMA user_version = 3"} {
+		if _, err := conn.Exec(step); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	conn, err = OpenAt(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	var name, issue, parentIssue string
+	if err := conn.QueryRow("SELECT name, issue, parent_issue FROM agents").Scan(&name, &issue, &parentIssue); err != nil {
+		t.Fatal(err)
+	}
+	if name != "a-lead" || issue != "" || parentIssue != "" {
+		t.Errorf("row = %q %q %q", name, issue, parentIssue)
 	}
 }

@@ -103,6 +103,21 @@ has "spawn: cap refusal says why" "$out" "cap is 4"
 check "spawn: refused worker was not started" agent_not_found "$(agent_field item-1-d agent_status)"
 check "spawn: refused worker has no ledger row" "0 " "$(ledger "SELECT count(*) FROM agents WHERE name = 'item-1-d'")"
 
+# Settings from .fleet/config.json in ~/dev: refusals before anything is
+# created. The file is removed again, so the rest runs on the defaults.
+cfg=/home/agent/dev/$R/.fleet/config.json
+mkdir -p "$(dirname "$cfg")"
+echo '{"max_agents_per_job": "4"}' > "$cfg"
+out=$(orch spawn item-9 --task-file "$(task lead9 'lead 9')" 2>&1); rc=$?
+check "spawn: invalid config refused with exit 1" 1 "$rc"
+has "spawn: config refusal names the key" "$out" "max_agents_per_job"
+echo '{"linear": {"team": "EX", "project": "Example project"}}' > "$cfg"
+out=$(orch spawn item-9 --task-file "$(task lead9 'lead 9')" 2>&1); rc=$?
+check "spawn: with Linear on, a lead without --parent-issue is refused with exit 1" 1 "$rc"
+has "spawn: parent-issue refusal says why" "$out" "--parent-issue"
+check "spawn: refused lead has no ledger row" "0 " "$(ledger "SELECT count(*) FROM agents WHERE name = 'item-9-lead'")"
+rm -r "$(dirname "$cfg")"
+
 # Status while the job runs: every agent idle at its input box owes work.
 for a in item-1-lead item-1-a item-1-b item-1-c; do settled "$a"; done
 check "status: live agents in start order with the owes-work flag" \

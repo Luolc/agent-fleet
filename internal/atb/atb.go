@@ -1,9 +1,12 @@
-// Package atb runs `atb linear` to write a worker report and release the
-// worker's issue.
+// Package atb runs `atb linear`: create and claim an agent's work order,
+// write its worker report and release it.
 package atb
 
 import (
+	"encoding/json"
 	"errors"
+	"regexp"
+	"strings"
 
 	"github.com/Luolc/agent-fleet/internal/exit"
 	"github.com/Luolc/agent-fleet/internal/herdr"
@@ -15,34 +18,73 @@ import (
 // environment.
 var envNames = []string{"LINEAR_API_KEY", "LINEAR_API_KEY_CMD", "LINEAR_API_URL", "ATB_HOME"}
 
+// Issue is a Linear issue as `atb linear create --json` prints it.
+type Issue struct {
+	Identifier string `json:"identifier"`
+	URL        string `json:"url"`
+}
+
+var identifierPattern = regexp.MustCompile(`^[A-Z][A-Z0-9]*-[0-9]+$`)
+
+// Create is `atb linear create --team <team> --project <project> --parent
+// <parent> --title <title> --description-file <file> --json`. Only an
+// identifier and an https URL are taken from its output; anything else
+// is a failure that does not show the output.
+func Create(team, project, parent, title, file string) (Issue, error) {
+	op := "atb linear create"
+	out, err := run(op, "linear", "create", "--team", team, "--project", project, "--parent", parent,
+		"--title", title, "--description-file", file, "--json")
+	if err != nil {
+		return Issue{}, err
+	}
+	var issue Issue
+	if json.Unmarshal(out, &issue) != nil || !identifierPattern.MatchString(issue.Identifier) ||
+		!strings.HasPrefix(issue.URL, "https://") {
+		return Issue{}, exit.Environmentf("%s printed no identifier and URL; its output is not shown", op)
+	}
+	return issue, nil
+}
+
+// Claim is `atb linear claim <issue> --agent <agent> --source <source>
+// --scope <scope>`.
+func Claim(issue, agent, source, scope string) error {
+	_, err := run("atb linear claim "+issue, "linear", "claim", issue, "--agent", agent,
+		"--source", source, "--scope", scope)
+	return err
+}
+
 // Comment is `atb linear comment <issue> --body-file <file>`.
 func Comment(issue, file string) error {
-	return run("comment", issue, "--body-file", file)
+	_, err := run("atb linear comment "+issue, "linear", "comment", issue, "--body-file", file)
+	return err
 }
 
 // Release is `atb linear release <issue> --agent <agent> --reason done
 // --done`, or `--reason abandoned --abandon` when abandoned.
 func Release(issue, agent string, abandon bool) error {
 	if abandon {
-		return run("release", issue, "--agent", agent, "--reason", "abandoned", "--abandon")
+		_, err := run("atb linear release "+issue, "linear", "release", issue, "--agent", agent,
+			"--reason", "abandoned", "--abandon")
+		return err
 	}
-	return run("release", issue, "--agent", agent, "--reason", "done", "--done")
+	_, err := run("atb linear release "+issue, "linear", "release", issue, "--agent", agent, "--reason", "done", "--done")
+	return err
 }
 
-// run runs `atb linear <sub> <issue> args...`. Any non-zero exit is an
-// environment failure naming the step and atb's status. atb's output is
-// dropped: atb holds the key, so what it prints may carry it.
-func run(sub, issue string, args ...string) error {
-	op := "atb linear " + sub + " " + issue
-	argv := append([]string{"linear", sub, issue}, args...)
-	_, _, err := herdr.Exec(op, envNames, "atb", argv...)
+// run runs atb with `argv`; `op` names the step in errors. Any non-zero
+// exit is an environment failure naming the step and atb's status. Its
+// stdout is returned for the caller to pick from and its stderr dropped,
+// and neither ever goes into an error: atb holds the key, so what it
+// prints may carry it.
+func run(op string, argv ...string) ([]byte, error) {
+	out, _, err := herdr.Exec(op, envNames, "atb", argv...)
 	var failure *exit.Failure
 	if errors.As(err, &failure) {
-		return failure
+		return nil, failure
 	}
 	if err != nil {
-		return exit.Environmentf("%s failed (%s); its output is not shown, run it yourself to see why",
+		return nil, exit.Environmentf("%s failed (%s); its output is not shown, run it yourself to see why",
 			op, herdr.Status(err))
 	}
-	return nil
+	return out, nil
 }

@@ -22,7 +22,7 @@ const (
 	Blocked Code = 3
 	// NotFound means the target was not found.
 	NotFound Code = 4
-	// Environment is an environment error: herdr, git or the database failed.
+	// Environment is an environment error: herdr, atb, git or the database failed.
 	Environment Code = 5
 )
 
