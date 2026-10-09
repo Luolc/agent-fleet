@@ -51,6 +51,9 @@ func worktreeChecks(args WorktreeArgs) (me *identity.Identity, checkout, path, b
 	if me.Job == "" {
 		return nil, "", "", "", exit.Refusedf("FLEET_JOB is not set: a worktree belongs to a job")
 	}
+	if err := CheckName(me.Job); err != nil {
+		return nil, "", "", "", err
+	}
 	if args.Repo == "" || args.Repo == "." || args.Repo == ".." || strings.Contains(args.Repo, "/") {
 		return nil, "", "", "", exit.Refusedf("<repo> %q must be a directory name under ~/dev", args.Repo)
 	}

@@ -177,6 +177,8 @@ func TestWorktreeRefusals(t *testing.T) {
 		says string
 	}{
 		{"", []string{dataset}, "FLEET_JOB"},
+		{"job/other", []string{dataset}, "[a-z0-9-]"},
+		{"..", []string{dataset}, "[a-z0-9-]"},
 		// item-1 --name a made ~/wt/<repo>/item-1-a.
 		{"item-1-a", []string{dataset}, "belongs to job item-1"},
 		{"item-2", []string{dataset}, "does not record it"},
@@ -195,8 +197,10 @@ func TestWorktreeRefusals(t *testing.T) {
 	if rows := w.worktreeRows(); len(rows) != 1 {
 		t.Errorf("a refusal wrote a row: %q", rows)
 	}
-	if _, err := os.Stat(filepath.Join(wt, "item-4")); err == nil {
-		t.Error("a refusal made a worktree")
+	for _, leaf := range []string{"item-4", "job"} {
+		if _, err := os.Stat(filepath.Join(wt, leaf)); err == nil {
+			t.Errorf("a refusal made %s", leaf)
+		}
 	}
 }
 
