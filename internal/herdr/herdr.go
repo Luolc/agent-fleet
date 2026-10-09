@@ -76,6 +76,15 @@ func env() []string {
 	return kept
 }
 
+// Run runs `herdr [--session S] args...` and returns stdout, stderr and
+// the exit error, if any: a *exit.Failure when herdr could not be run or
+// hit the deadline, an *exec.ExitError when it exited non-zero. For a
+// command that prints plain text (`pane read`); the JSON ones go through
+// Call.
+func (h *Herdr) Run(args ...string) (stdout, stderr []byte, err error) {
+	return h.run(args...)
+}
+
 // run runs `herdr [--session S] args...` and returns stdout, stderr and
 // the exit error, if any.
 func (h *Herdr) run(args ...string) (stdout, stderr []byte, err error) {
