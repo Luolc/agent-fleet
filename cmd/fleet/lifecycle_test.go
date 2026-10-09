@@ -400,8 +400,9 @@ func TestJobEndForceEndsTheJobAndRemovesTheCrossRepoDirectory(t *testing.T) {
 }
 
 // jobEndHerdr is a fake herdr for a lead ending job item-1: workspace w1
-// labelled item-1 holds the lead (pane p0) and `other` (pane p9, gone
-// from the list once closed); `pane close` and `workspace close` are
+// labelled item-1 holds the lead (pane p0) and `other` (pane p9); an
+// agent is gone from the list once its pane or workspace is closed;
+// `pane close` and `workspace close` are
 // logged to <dir>/calls, in order with atb's calls. The commands named
 // in `failing` ("pane close") exit 2 instead.
 func (w *world) jobEndHerdr(failing ...string) {
@@ -410,11 +411,14 @@ func (w *world) jobEndHerdr(failing ...string) {
 dir="$(dirname "$0")/.."
 case "$1 $2" in
   "` + strings.Join(failing, `"|"`) + `") echo "fake herdr: $1 $2 failing" >&2; exit 2 ;;
-  "workspace list") echo '{"result":{"workspaces":[{"workspace_id":"w1","label":"item-1"}]}}' ;;
+  "workspace list")
+    if [ -e "$dir/closed-w1" ]; then echo '{"result":{"workspaces":[]}}'; else echo '{"result":{"workspaces":[{"workspace_id":"w1","label":"item-1"}]}}'; fi ;;
   "agent list")
     other=',{"name":"other","pane_id":"p9","workspace_id":"w1","cwd":"/elsewhere"}'
     [ -e "$dir/closed-p9" ] && other=
-    echo '{"result":{"agents":[{"name":"item-1-lead","pane_id":"p0","workspace_id":"w1","cwd":"/c"}'"$other"']}}' ;;
+    agents='{"name":"item-1-lead","pane_id":"p0","workspace_id":"w1","cwd":"/c"}'"$other"
+    [ -e "$dir/closed-w1" ] && agents=
+    echo '{"result":{"agents":['"$agents"']}}' ;;
   "pane close"|"workspace close") echo "herdr $1 $2 $3" >> "$dir/calls"; touch "$dir/closed-$3"; echo '{"result":{}}' ;;
   *) echo "fake herdr: unexpected command: $*" >&2; exit 2 ;;
 esac
@@ -563,6 +567,97 @@ func TestJobEndResumesAfterAPartialFailure(t *testing.T) {
 	}
 	if got := state(w, "item-1-lead"); got != "ended" {
 		t.Errorf("state = %s", got)
+	}
+}
+
+func TestJobEndRetriesAfterTheWorkspaceCloseFailed(t *testing.T) {
+	w := newWorld(t)
+	openJobWithLead(w, "EX-10")
+	report := task(w, "report.md", "what the job did\n")
+	w.fakeAtb("")
+	w.jobEndHerdr("workspace close")
+	out := w.endJob("--report-file", report)
+	if out.code != 5 || !strings.Contains(out.stderr, "workspace close") || !strings.Contains(out.stdout, "Job item-1 ended: done.") {
+		t.Fatalf("first: %+v", out)
+	}
+	if got := jobState(w, "item-1"); got != "ended done" {
+		t.Errorf("job state after the first run = %s", got)
+	}
+	// The retry closes the workspace and nothing else: no atb call, rows
+	// not ended again, the conclusion not printed again, outcome kept.
+	w.fakeAtb("release")
+	w.jobEndHerdr()
+	before := w.calls()
+	out = w.endJob("--report-file", report)
+	if out.code != 0 || strings.Contains(out.stdout, "rows ended") || strings.Contains(out.stdout, "Job item-1 ended") {
+		t.Fatalf("retry: %+v", out)
+	}
+	if retry := strings.TrimPrefix(w.calls(), before); retry != "herdr workspace close w1\n" {
+		t.Errorf("retry's calls = %q", retry)
+	}
+	if got := jobState(w, "item-1"); got != "ended done" {
+		t.Errorf("job state = %s", got)
+	}
+	// A third run has nothing to resume: the job is not open.
+	if out := w.endJob("--report-file", report); out.code != 1 || !strings.Contains(out.stderr, "not open") {
+		t.Errorf("third: %+v", out)
+	}
+}
+
+func TestJobEndForceFinishesLocallyAndReportsTheLinearStepsNotDone(t *testing.T) {
+	w := newWorld(t)
+	openJobWithLead(w, "EX-10")
+	conn := w.ledger()
+	if _, err := conn.Exec("UPDATE agents SET issue = 'EX-12' WHERE name = 'item-1-lead'"); err != nil {
+		t.Fatal(err)
+	}
+	conn.Close()
+	report := task(w, "report.md", "what the job did\n")
+	// Nothing recorded yet: every Linear step is pending.
+	w.closeHerdr("")
+	out := w.asThread("job", "end", "item-1", "--force")
+	if out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	want := "reclaimed job item-1: 0 left, 1 rows ended\nLinear steps not done for job item-1; finish them by hand:\n" +
+		"  - comment the report on work order EX-12\n  - release work order EX-12 (agent item-1-lead)\n" +
+		"  - comment the conclusion on parent EX-10\n  - release parent EX-10 (agent item-1-lead)\n"
+	if !strings.HasSuffix(out.stdout, want) {
+		t.Errorf("stdout = %q, want it to end with %q", out.stdout, want)
+	}
+	// A second job: the lead's end stops at the parent's release, which
+	// keeps failing; the reclaim ends everything local and names only
+	// that step.
+	openJobWithLead(w, "EX-10")
+	w.jobEndHerdr()
+	w.fakeAtb("release EX-10")
+	for range 2 {
+		if out := w.endJob("--report-file", report); out.code != 5 {
+			t.Fatalf("lead: %+v", out)
+		}
+	}
+	out = w.asThread("job", "end", "item-1", "--force")
+	if out.code != 0 {
+		t.Fatalf("force: %+v", out)
+	}
+	want = "reclaimed job item-1: 0 left, 1 rows ended\nLinear steps not done for job item-1; finish them by hand:\n" +
+		"  - release parent EX-10 (agent item-1-lead)\n"
+	if !strings.HasSuffix(out.stdout, want) || strings.Contains(out.stdout, "EX-12") {
+		t.Errorf("stdout = %q, want it to end with %q", out.stdout, want)
+	}
+	if !strings.Contains(w.calls(), "herdr workspace close w1") {
+		t.Errorf("workspace not closed: %s", w.calls())
+	}
+	if got := jobState(w, "item-1"); got != "ended abandoned" {
+		t.Errorf("job state = %s", got)
+	}
+	if got := state(w, "item-1-lead"); got != "ended" {
+		t.Errorf("state = %s", got)
+	}
+	// Nothing left: a reclaim again has nothing to report.
+	out = w.asThread("job", "end", "item-1", "--force")
+	if out.code != 0 || strings.Contains(out.stdout, "Linear") {
+		t.Errorf("again: %+v", out)
 	}
 }
 

@@ -5,6 +5,7 @@ package cmd
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -31,7 +32,8 @@ const (
 		"the job's parent issue and the parent is released the same way. Each step done is " +
 		"recorded in the ledger; if a step fails, `job end` exits 5 naming it and nothing else " +
 		"changes, and running it again continues from the first step not recorded, so a " +
-		"release already done is not repeated.\n\n" +
+		"release already done is not repeated; the same holds for the ledger update, the " +
+		"conclusion and the workspace close at the end.\n\n" +
 		"Then the cleanup: every other agent in the job's workspace is closed; no agent but you " +
 		"may have its cwd inside one of the job's directories (the worktrees `fleet worktree` " +
 		"recorded for it and, for a cross-repo job, ~/cross-repo/<job>/); each worktree is " +
@@ -45,7 +47,9 @@ const (
 		"no FLEET_ROLE. No report, no Linear step. It closes the job's workspace, removes the " +
 		"job's directories with the same checks (no agent inside, no uncommitted changes), and " +
 		"ends every live row of the job; an open job is marked ended with the outcome " +
-		"`abandoned`. Parts already gone are skipped, so it can be run again.\n\n" +
+		"`abandoned`, and the Linear steps of its ending that are not recorded as done are " +
+		"printed for a person to finish. Parts already gone are skipped, so it can be run " +
+		"again.\n\n" +
 		"Exit: 0 when the job ended; 1 when a check refuses (live workers, the caller, the " +
 		"report file, the flags); 5 when atb, git, herdr or the database fails, the target has " +
 		"no ledger, or something is left (listed)."
@@ -373,23 +377,8 @@ func JobEnd(h *herdr.Herdr, args JobEndArgs) (exit.Code, error) {
 // jobEndForced reclaims a job from outside: a thread agent, or a shell
 // with no identity.
 func jobEndForced(h *herdr.Herdr, args JobEndArgs) (exit.Code, error) {
-	if args.Job == nil {
-		return 0, exit.Refusedf("--force needs the job: `fleet job end <JOB> --force`")
-	}
-	if args.ReportFile != nil || args.Abandon {
-		return 0, exit.Refusedf("--force takes no report and no --abandon; it reclaims the job without a conclusion")
-	}
-	if os.Getenv("FLEET_ROLE") != "" {
-		me, err := identity.FromEnv()
-		if err != nil {
-			return 0, err
-		}
-		if me.Role != identity.Thread {
-			return 0, exit.Refusedf("a %s cannot reclaim a job; only a thread agent, or a shell outside fleet, does", me.Role)
-		}
-	}
-	job := *args.Job
-	if err := CheckName(job); err != nil {
+	job, err := forcedArgs(args)
+	if err != nil {
 		return 0, err
 	}
 	home, err := Home()
@@ -423,12 +412,74 @@ func jobEndForced(h *herdr.Herdr, args JobEndArgs) (exit.Code, error) {
 	if len(left) > 0 {
 		return 0, exit.Environmentf("%d left after reclaiming %s: %s", len(left), job, strings.Join(left, ", "))
 	}
+	pending, err := linearPending(conn, open, job)
+	if err != nil {
+		return 0, err
+	}
 	ended, err := endJob(conn, job, "abandoned")
 	if err != nil {
 		return 0, err
 	}
 	fmt.Fprintf(os.Stdout, "reclaimed job %s: 0 left, %d rows ended\n", job, ended)
+	if len(pending) > 0 {
+		fmt.Fprintf(os.Stdout, "Linear steps not done for job %s; finish them by hand:\n", job)
+		for _, step := range pending {
+			fmt.Fprintf(os.Stdout, "  - %s\n", step)
+		}
+	}
 	return exit.Ok, nil
+}
+
+// linearPending are the Linear steps of the ending of `open` (the open
+// job named `name`, nil when none) that are not recorded: the lead's work
+// order commented and released, the parent commented and released.
+func linearPending(conn *sql.DB, open *jobRow, name string) ([]string, error) {
+	if open == nil {
+		return nil, nil
+	}
+	var lead, issue string
+	err := conn.QueryRow("SELECT name, issue FROM agents WHERE job = ?1 AND role = 'lead' ORDER BY id DESC LIMIT 1",
+		name).Scan(&lead, &issue)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, exit.Database(err)
+	}
+	key := endKey(open)
+	var pending []string
+	add := func(step, text string) {
+		if !stepDone(conn, key, step) {
+			pending = append(pending, text)
+		}
+	}
+	if issue != "" {
+		add("comment-work-order", fmt.Sprintf("comment the report on work order %s", issue))
+		add("release-work-order", fmt.Sprintf("release work order %s (agent %s)", issue, lead))
+	}
+	if open.ParentIssue != "" {
+		add("comment-parent", fmt.Sprintf("comment the conclusion on parent %s", open.ParentIssue))
+		add("release-parent", fmt.Sprintf("release parent %s (agent %s)", open.ParentIssue, lead))
+	}
+	return pending, nil
+}
+
+// forcedArgs refuses a reclaim without a job, with a report or --abandon,
+// or by a lead or worker; returns the job name.
+func forcedArgs(args JobEndArgs) (string, error) {
+	if args.Job == nil {
+		return "", exit.Refusedf("--force needs the job: `fleet job end <JOB> --force`")
+	}
+	if args.ReportFile != nil || args.Abandon {
+		return "", exit.Refusedf("--force takes no report and no --abandon; it reclaims the job without a conclusion")
+	}
+	if os.Getenv("FLEET_ROLE") != "" {
+		me, err := identity.FromEnv()
+		if err != nil {
+			return "", err
+		}
+		if me.Role != identity.Thread {
+			return "", exit.Refusedf("a %s cannot reclaim a job; only a thread agent, or a shell outside fleet, does", me.Role)
+		}
+	}
+	return *args.Job, CheckName(*args.Job)
 }
 
 // leadEnding is what the lead's checks established.
@@ -467,13 +518,15 @@ func leadArgs(args JobEndArgs) (*leadEnding, error) {
 	return &leadEnding{me: me, report: report}, nil
 }
 
-// ledgerChecks refuses a job that is not open and live workers.
+// ledgerChecks refuses a job that is not open, unless it is the caller's
+// ending that stopped before its last step (the workspace close), and
+// live workers.
 func (e *leadEnding) ledgerChecks(conn *sql.DB) error {
-	job, err := openJob(conn, e.me.Job)
+	job, err := latestJob(conn, e.me.Job)
 	if err != nil {
 		return err
 	}
-	if job == nil {
+	if job == nil || (job.State != "open" && !unfinished(conn, job)) {
 		return exit.Refusedf("job %s is not open in target %s", e.me.Job, e.me.Target)
 	}
 	workers, err := liveRowsOf(conn, e.me.Job, "worker")
@@ -485,6 +538,25 @@ func (e *leadEnding) ledgerChecks(conn *sql.DB) error {
 	}
 	e.job = job
 	return nil
+}
+
+// stepDone is whether `step` of the ending `key` is recorded.
+func stepDone(conn querier, key, step string) bool {
+	var done int64
+	err := conn.QueryRow("SELECT count(*) FROM steps WHERE key = ?1 AND step = ?2", key, step).Scan(&done)
+	return err == nil && done > 0
+}
+
+// unfinished is whether the ending of `job` marked it ended but stopped
+// before closing the workspace.
+func unfinished(conn querier, job *jobRow) bool {
+	key := endKey(job)
+	return stepDone(conn, key, "end-ledger") && !stepDone(conn, key, "close-workspace")
+}
+
+// endKey is the steps key of the ending of `job`.
+func endKey(job *jobRow) string {
+	return fmt.Sprintf("job-end:%d", job.ID)
 }
 
 // conclusion is the text written to the parent issue.
@@ -501,7 +573,7 @@ func conclusion(job, outcome, lead, issue, report string) string {
 // job has one. Each step done is recorded under the job's key, so a
 // retry after a failure continues where it stopped.
 func (e *leadEnding) linearEnd(conn querier, abandon bool) error {
-	key := fmt.Sprintf("job-end:%d", e.job.ID)
+	key := endKey(e.job)
 	if e.me.Issue != "" {
 		if err := runStep(conn, key, "comment-work-order", func() error { return atb.Comment(e.me.Issue, e.report) }); err != nil {
 			return err
@@ -582,16 +654,29 @@ func jobEndByLead(h *herdr.Herdr, args JobEndArgs) (exit.Code, error) {
 		return 0, exit.Environmentf("%d left while ending %s: %s", len(left), job, strings.Join(left, ", "))
 	}
 	outcome := outcomeOf(args.Abandon)
-	ended, err := endJob(conn, job, outcome)
-	if err != nil {
+	key := endKey(e.job)
+	// The last three steps are recorded too: a retry after the workspace
+	// close failed does not end rows twice or conclude twice.
+	if err := runStep(conn, key, "end-ledger", func() error {
+		ended, err := endJob(conn, job, outcome)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stdout, "ended job %s: %s, %d rows ended\n", job, outcome, ended)
+		return nil
+	}); err != nil {
 		return 0, err
 	}
-	fmt.Fprintf(os.Stdout, "ended job %s: %s, %d rows ended\n", job, outcome, ended)
-	if err := concluded(e.job, conclusion(job, outcome, e.me.Agent, e.me.Issue, e.report)); err != nil {
+	if err := runStep(conn, key, "conclude", func() error {
+		return concluded(e.job, conclusion(job, outcome, e.me.Agent, e.me.Issue, e.report))
+	}); err != nil {
 		return 0, err
 	}
 	// Last, so the lead's own pane goes with it.
-	if _, err := closeWorkspaces(h, job); err != nil {
+	if err := runStep(conn, key, "close-workspace", func() error {
+		_, err := closeWorkspaces(h, job)
+		return err
+	}); err != nil {
 		return 0, err
 	}
 	return exit.Ok, nil
