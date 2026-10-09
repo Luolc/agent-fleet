@@ -1,5 +1,6 @@
-// Integration tests for `spawn` over the binary: the refusals that happen
-// before anything is created. Hermetic, see main_test.go. The full spawn
+// Integration tests for `spawn`, `done` and `close` over the binary: the
+// refusals that happen before anything is created, and `done` against the
+// fake herdr. Hermetic, see main_test.go. The full spawn → done → close
 // chain runs against the real herdr in the judge.
 package main
 
@@ -39,6 +40,26 @@ func ledgerWith(w *world, rows []struct{ name, role, job string }) {
 			w.t.Fatal(err)
 		}
 	}
+}
+
+// state is the state of the newest row named `name`.
+func state(w *world, name string) string {
+	w.t.Helper()
+	path, err := db.PathUnder(filepath.Join(w.dir, "home"), repo)
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	conn, err := db.OpenAt(path)
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	defer conn.Close()
+	var got string
+	if err := conn.QueryRow(
+		"SELECT state FROM agents WHERE name = ?1 ORDER BY id DESC LIMIT 1", name).Scan(&got); err != nil {
+		w.t.Fatal(err)
+	}
+	return got
 }
 
 func task(w *world, name, body string) string {
@@ -131,5 +152,69 @@ func TestSpawnRequiresTheTaskFileFlag(t *testing.T) {
 	out := w.run("", []string{"spawn", "item-2"})
 	if out.code != 1 || !strings.Contains(out.stderr, "--task-file <PATH>") {
 		t.Errorf("%+v", out)
+	}
+}
+
+func TestDoneReportsToTheParentAndEndsTheRow(t *testing.T) {
+	w := newWorld(t)
+	ledgerWith(w, []struct{ name, role, job string }{{"item-1-a", "worker", "item-1"}})
+	resultFile := task(w, "result.md", "ok\n")
+	w.herdr(`{"id":"cli:agent:prompt","result":{"type":"agent_prompted"}}`, "", false)
+	out := w.asAgent("item-1-a", "worker", "item-1-lead", "item-1", "done", "--result-file", resultFile)
+	if out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	resolved, err := filepath.EvalSymlinks(resultFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	argv, _ := os.ReadFile(filepath.Join(w.dir, "argv"))
+	expected := "agent\nprompt\nitem-1-lead\n[FROM: item-1-a]\nitem-1-a is done. Result: " + resolved +
+		"\n\n--wait\n--until\nworking\n--timeout\n20000\n"
+	if string(argv) != expected {
+		t.Errorf("argv = %q, want %q", argv, expected)
+	}
+	if got := state(w, "item-1-a"); got != "ended" {
+		t.Errorf("state = %s", got)
+	}
+}
+
+func TestDoneKeepsTheRowLiveWhenDeliveryIsUnclear(t *testing.T) {
+	w := newWorld(t)
+	ledgerWith(w, []struct{ name, role, job string }{{"item-1-a", "worker", "item-1"}})
+	w.herdr(`{"error":{"code":"agent_prompt_stalled","message":"no state change"}}`, "", false)
+	out := w.asAgent("item-1-a", "worker", "item-1-lead", "item-1", "done")
+	if out.code != 2 {
+		t.Errorf("%+v", out)
+	}
+	if got := state(w, "item-1-a"); got != "active" {
+		t.Errorf("state = %s", got)
+	}
+}
+
+func TestDoneRefusesWithoutAParent(t *testing.T) {
+	w := newWorld(t)
+	out := w.asAgent("orchestra", "orchestra", "", "", "done")
+	if out.code != 1 || !strings.Contains(out.stderr, "FLEET_PARENT") {
+		t.Errorf("%+v", out)
+	}
+	if _, err := os.Stat(filepath.Join(w.dir, "argv")); err == nil {
+		t.Error("herdr was prompted")
+	}
+}
+
+func TestCloseRefusesLiveRowsWithoutForceAndNonOrchestraCallers(t *testing.T) {
+	w := newWorld(t)
+	ledgerWith(w, []struct{ name, role, job string }{{"item-1-lead", "lead", "item-1"}})
+	out := w.asAgent("orchestra", "orchestra", "", "", "close", "item-1")
+	if out.code != 1 || !strings.Contains(out.stderr, "item-1-lead") {
+		t.Errorf("%+v", out)
+	}
+	out = w.asAgent("item-1-lead", "lead", "orchestra", "item-1", "close", "item-1", "--force")
+	if out.code != 1 {
+		t.Errorf("%+v", out)
+	}
+	if got := state(w, "item-1-lead"); got != "active" {
+		t.Errorf("state = %s", got)
 	}
 }

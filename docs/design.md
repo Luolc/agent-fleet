@@ -9,7 +9,7 @@ A CLI that runs and coordinates coding agents in herdr; not an agent itself, not
 Ported so far (the rest is added as it lands; the port follows `porting.md`):
 
 - `cmd/fleet`: parses the command line (standard `flag`, one `FlagSet` per command, `--session` global) and dispatches to `internal/cmd`; turns a failure into `fleet: <message>` on stderr and the exit code.
-- `internal/cmd`: one file per command. `send` reads the body, adds the `[FROM: <agent>]` header and delivers it through `herdr.Prompt`; `status` joins the ledger's live rows with `herdr agent list`; `spawn` runs the checks, writes the `starting` row, makes the worktree (lead) and the workspace or tab, starts Claude Code through `herdr agent start`, gets it past the folder-trust prompt to its input box, delivers the task and marks the row `active`. Its helpers (`Home`, `RepoName`, `Git`, `WorkspacesLabelled`, `HerdrAgentList`) are what `done`, `close` and `watch` will share.
+- `internal/cmd`: one file per command. `send` reads the body, adds the `[FROM: <agent>]` header and delivers it through `herdr.Prompt`; `status` joins the ledger's live rows with `herdr agent list`; `spawn` runs the checks, writes the `starting` row, makes the worktree (lead) and the workspace or tab, starts Claude Code through `herdr agent start`, gets it past the folder-trust prompt to its input box, delivers the task and marks the row `active`. Its helpers (`Home`, `RepoName`, `Git`, `WorkspacesLabelled`, `HerdrAgentList`) are shared with `close`, and `watch` will use them. `done` delivers the report through `send`'s path to `FLEET_PARENT` and ends the caller's row only when herdr reports it delivered. `close` (orchestra only, refused while the job has live rows unless `--force`) closes the job's workspace, refuses while an agent's cwd is inside the worktree, removes the worktree and deletes its branch, and ends the job's rows only when nothing is left.
 - `internal/herdr`: runs the `herdr` CLI with a bounded environment and a deadline, parses its one-object JSON reply, and maps `agent prompt` outcomes to the exit codes.
 - `internal/db`: the ledger (`modernc.org/sqlite`, WAL, 5 s busy timeout, immediate transactions) and its schema migration.
 - `internal/identity`: the caller's identity from the `FLEET_*` variables.
@@ -34,7 +34,7 @@ What the judge pins down (the CLI reference and `--json` output are added as the
 
 ## Known issues and next steps
 
-The judge is still red against the Go binary: `send`, `status` and `spawn` are ported, `done`, `watch` and `close` are not. Until `close` lands, `spawn` leaves the worktree, workspace and agents that `close` would remove, so the `close` checks that passed vacuously before `spawn` existed are red. Next: port the remaining commands until it is green, then make the judge a blocking CI check (one line in `.github/workflows/ci.yml`).
+The judge is still red against the Go binary only where `watch` is needed: `send`, `status`, `spawn`, `done` and `close` are ported. The red checks are `watch`'s own and the three `status` checks that read what `watch` records (the suspect flag and `since_change_secs`). Next: port `watch`, then make the judge a blocking CI check (one line in `.github/workflows/ci.yml`).
 
 ## Decision log
 
