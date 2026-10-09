@@ -271,3 +271,44 @@ check "job start from a thread agent: exit 0" 0 "$rc"
 [ "$rc" = 0 ] || printf '%s\n' "$out"
 check "job start: the caller's thread is the job's home thread" "$K " "$(tledger "SELECT home_thread FROM jobs WHERE job = 'item-8'")"
 check "job start: the lead's process has no thread variable" "" "$(proc_env item-8-lead | grep -o "${P}THREAD=[^ ]*")"
+
+# The lead of item-8 asks the people in its home thread: the question
+# reaches the live thread agent; the next message in the thread answers it.
+printf 'Which month should the import cover? 0xQ1\n' > /home/agent/tasks/q1.md
+out=$(PATH=/home/agent/fake-thread:$PATH env "${P}AGENT=item-8-lead" "${P}ROLE=lead" "${P}PARENT=$A" "${P}TARGET=default" \
+  "${P}JOB=item-8" "${P}ISSUE=" "$T" --session judge ask-human --file /home/agent/tasks/q1.md 2>&1); rc=$?
+check "ask-human: exit 0 from the lead" 0 "$rc"
+[ "$rc" = 0 ] || printf '%s\n' "$out"
+has "ask-human: delivered to the home thread's agent" "$out" "delivered to $A"
+# The thread's agent had ended, so one is started with the question as
+# its first message; the prompt's head is above the fake's 20 lines.
+has "ask-human: question on the thread agent's screen" "$(screen "$A")" "Question from item-8-lead" "0xQ1"
+check "ask-human: pending in the ledger" "item-8|$K|item-8-lead|0|pending " \
+  "$(tledger "SELECT job, thread, asked_by, approval, state FROM questions")"
+settled "$A"
+out=$(PATH=/home/agent/fake-thread:$PATH env "${P}AGENT=item-8-lead" "${P}ROLE=lead" "${P}PARENT=$A" "${P}TARGET=default" \
+  "${P}JOB=item-8" "${P}ISSUE=" "$T" --session judge ask-human --file /home/agent/tasks/q1.md --approval 2>&1); rc=$?
+check "ask-human --approval: exit 1, not supported yet" 1 "$rc"
+has "ask-human --approval: says so" "$out" "approval cards are not supported yet"
+check "ask-human --approval: nothing recorded" "1 " "$(tledger "SELECT count(*) FROM questions")"
+out=$(inbox "$(event m5 "$K" 'September 0xMSG5')" 2>&1); rc=$?
+check "inbox: a reply in the thread, exit 0" 0 "$rc"
+has "inbox: the reply marks the question answered" "$out" "1 pending question(s) in thread $K answered"
+check "inbox: no question pending" "0 " "$(tledger "SELECT count(*) FROM questions WHERE state = 'pending'")"
+has "inbox: the reply on the thread agent's screen" "$(screen "$A")" "0xMSG5"
+out=$(as item-1-a worker item-1-lead item-1 -- ask-human --file /home/agent/tasks/q1.md 2>&1); rc=$?
+check "ask-human: exit 1 from a worker" 1 "$rc"
+out=$(PATH=/home/agent/fake-thread:$PATH env "${P}AGENT=item-1-lead" "${P}ROLE=lead" "${P}PARENT=thread-1" "${P}TARGET=$TARGET" \
+  "${P}JOB=item-1" "$T" --session judge ask-human --file /home/agent/tasks/q1.md 2>&1); rc=$?
+check "ask-human: exit 1 from a lead whose job has no home thread" 1 "$rc"
+
+# The job's conclusion reaches its home thread the same way, here to the
+# thread agent ask-human started.
+printf 'Imported everything. 0xREPORT8\n' > /home/agent/tasks/report8.md
+out=$(PATH=/home/agent/fake-thread:$PATH env "${P}AGENT=item-8-lead" "${P}ROLE=lead" "${P}PARENT=$A" "${P}TARGET=default" \
+  "${P}JOB=item-8" "${P}ISSUE=" "$T" --session judge job end --report-file /home/agent/tasks/report8.md 2>&1); rc=$?
+check "job end: exit 0 with a home thread" 0 "$rc"
+[ "$rc" = 0 ] || printf '%s\n' "$out"
+has "job end: conclusion printed and delivered to the live thread agent" "$out" "Job item-8 ended: done." "delivered to $A"
+has "job end: conclusion on the thread agent's screen" "$(screen "$A")" "[FROM: item-8-lead]" "Conclusion of a job from item-8-lead" "Job item-8 ended: done." "Report: /home/agent/tasks/report8.md"
+check "job end: the job is ended" "ended|done " "$(tledger "SELECT state, outcome FROM jobs WHERE job = 'item-8'")"

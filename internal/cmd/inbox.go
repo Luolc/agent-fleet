@@ -184,6 +184,13 @@ func Inbox(h *herdr.Herdr, args InboxArgs) (exit.Code, error) {
 	}
 	msg := inboundMessage{Thread: e.Payload.Thread, Text: e.Payload.Text, User: e.Payload.User, TS: e.Payload.TS,
 		Context: e.Payload.Context}
+	// A person's message in the thread answers what was pending there.
+	if res, err := conn.Exec("UPDATE questions SET state = 'answered', answered_at = ?1 WHERE thread = ?2 AND state = 'pending'",
+		db.Now(), msg.Thread); err != nil {
+		return 0, exit.Database(err)
+	} else if n, _ := res.RowsAffected(); n > 0 {
+		fmt.Fprintf(os.Stdout, "%d pending question(s) in thread %s answered\n", n, msg.Thread)
+	}
 	code, dropped, err := route(h, conn, target, cfg, msg)
 	if err != nil || code != exit.Ok {
 		return code, err
@@ -198,6 +205,8 @@ func Inbox(h *herdr.Herdr, args InboxArgs) (exit.Code, error) {
 // route delivers the message to the thread's live agent, or starts one.
 // exit.Ok means the agent has the message, or (`dropped`) that no agent
 // was started because Linear is unavailable and the thread was told.
+// Shared with `ask-human` and the job's conclusion, which reach the
+// job's home thread the same way.
 func route(h *herdr.Herdr, conn *sql.DB, target string, cfg *config.Target, msg inboundMessage) (code exit.Code, dropped bool, err error) {
 	name, state, err := liveThreadAgent(conn, msg.Thread)
 	if err != nil {
@@ -213,7 +222,7 @@ func route(h *herdr.Herdr, conn *sql.DB, target string, cfg *config.Target, msg 
 			return code, false, err
 		}
 		if present {
-			text, err := WithHeader(inboxSender, msg.body())
+			text, err := WithHeader(msg.sender(), msg.body())
 			if err != nil {
 				return 0, false, err
 			}

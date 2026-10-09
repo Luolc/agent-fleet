@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/Luolc/agent-fleet/internal/atb"
+	"github.com/Luolc/agent-fleet/internal/config"
 	"github.com/Luolc/agent-fleet/internal/db"
 	"github.com/Luolc/agent-fleet/internal/exit"
 	"github.com/Luolc/agent-fleet/internal/herdr"
@@ -357,13 +358,33 @@ func outcomeOf(abandon bool) string {
 	return "done"
 }
 
-// concluded hands the conclusion of an ended job to its home thread. This
-// is the call site of the home-thread hook: once thread agents exist, the
-// text goes to the thread recorded in jobs.home_thread; until then it is
-// printed, and a job without a home thread always prints it.
-func concluded(job *jobRow, text string) error {
-	_, err := fmt.Fprint(os.Stdout, text)
-	return err
+// concluded hands the conclusion of an ended job to its home thread, as
+// `ask-human` hands a question: to the thread's live agent, or to one
+// started for it, headed with the lead's name. The text is printed as
+// well; a job without a home thread only prints it. A delivery that did
+// not succeed is a failure with its exit code, so the step is not recorded
+// and a retry delivers again.
+func concluded(h *herdr.Herdr, conn *sql.DB, me *identity.Identity, job *jobRow, text string) error {
+	if _, err := fmt.Fprint(os.Stdout, text); err != nil {
+		return err
+	}
+	if job.HomeThread == "" {
+		return nil
+	}
+	cfg, err := config.LoadTarget(me.Target)
+	if err != nil {
+		return err
+	}
+	msg := inboundMessage{Thread: job.HomeThread, Text: text, Question: me.Agent, Conclusion: true}
+	code, err := toThread(h, conn, me.Target, cfg, msg)
+	if err != nil {
+		return err
+	}
+	if code != exit.Ok {
+		return exit.New(code, fmt.Sprintf("the conclusion did not reach the home thread %s (exit %d); run `job end` again to deliver it",
+			job.HomeThread, code))
+	}
+	return nil
 }
 
 // JobEnd runs `job end`.
@@ -668,7 +689,7 @@ func jobEndByLead(h *herdr.Herdr, args JobEndArgs) (exit.Code, error) {
 		return 0, err
 	}
 	if err := runStep(conn, key, "conclude", func() error {
-		return concluded(e.job, conclusion(job, outcome, e.me.Agent, e.me.Issue, e.report))
+		return concluded(h, conn, e.me, e.job, conclusion(job, outcome, e.me.Agent, e.me.Issue, e.report))
 	}); err != nil {
 		return 0, err
 	}
