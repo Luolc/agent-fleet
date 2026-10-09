@@ -31,19 +31,19 @@ func Release(issue, agent string, abandon bool) error {
 }
 
 // run runs `atb linear <sub> <issue> args...`. Any non-zero exit is an
-// environment failure naming the step, atb's status and its first line of
-// output.
+// environment failure naming the step and atb's status. atb's output is
+// dropped: atb holds the key, so what it prints may carry it.
 func run(sub, issue string, args ...string) error {
 	op := "atb linear " + sub + " " + issue
 	argv := append([]string{"linear", sub, issue}, args...)
-	out, errOut, err := herdr.Exec(op, envNames, "atb", argv...)
+	_, _, err := herdr.Exec(op, envNames, "atb", argv...)
 	var failure *exit.Failure
 	if errors.As(err, &failure) {
 		return failure
 	}
 	if err != nil {
-		return exit.Environmentf("%s failed (%s): %s",
-			op, herdr.Status(err), herdr.FirstLine(string(errOut), string(out)))
+		return exit.Environmentf("%s failed (%s); its output is not shown, run it yourself to see why",
+			op, herdr.Status(err))
 	}
 	return nil
 }

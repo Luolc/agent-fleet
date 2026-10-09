@@ -161,7 +161,7 @@ func (h *Herdr) Call(args ...string) (*Reply, error) {
 		// "exit exit status: N": the source prints the status's own Display
 		// after the word exit.
 		return nil, exit.Environmentf("herdr gave no JSON reply (exit %s): %s",
-			Status(err), FirstLine(stderr, stdout))
+			Status(err), firstLine(stderr, stdout))
 	}
 	// Exact keys: a map lookup, never a struct, which would match
 	// case-insensitively.
@@ -233,7 +233,7 @@ func (h *Herdr) Screen(target string) (string, error) {
 	}
 	if err != nil {
 		return "", exit.Environmentf("herdr agent read %s failed (%s): %s",
-			target, Status(err), FirstLine(string(errOut), string(out)))
+			target, Status(err), firstLine(string(errOut), string(out)))
 	}
 	return string(out), nil
 }
@@ -286,9 +286,9 @@ func Status(err error) string {
 	return "exit status: 0"
 }
 
-// FirstLine is the first non-empty line of stderr, else of stdout, else "".
+// firstLine is the first non-empty line of stderr, else of stdout, else "".
 // A line ends at "\n" or "\r\n", as Rust's `lines()` splits.
-func FirstLine(texts ...string) string {
+func firstLine(texts ...string) string {
 	for _, text := range texts {
 		line, _, _ := strings.Cut(text, "\n")
 		line = strings.TrimSuffix(line, "\r")

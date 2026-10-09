@@ -221,7 +221,8 @@ func TestCloseRefusesLiveRowsWithoutForceAndNonOrchestraCallers(t *testing.T) {
 
 // fakeAtb puts a stand-in for atb on PATH. Each call appends its argv, one
 // line, to <dir>/calls, with `key=set` when LINEAR_API_KEY reached it. The
-// subcommand named by failOn (`comment` or `release`) exits 4.
+// subcommand named by failOn (`comment` or `release`) prints the key it
+// got to stdout and stderr and exits 4.
 func (w *world) fakeAtb(failOn string) {
 	w.t.Helper()
 	script := `#!/bin/sh
@@ -229,7 +230,8 @@ key=unset
 [ -n "$LINEAR_API_KEY" ] && key=set
 echo "atb $* key=$key" >> "$(dirname "$0")/../calls"
 if [ "$2" = "` + failOn + `" ]; then
-  echo "error: refused: no holder" >&2
+  echo "error: refused: no holder, key $LINEAR_API_KEY" >&2
+  echo "key $LINEAR_API_KEY"
   exit 4
 fi
 `
@@ -295,7 +297,7 @@ func TestDoneStopsWhenAnAtbStepFails(t *testing.T) {
 		w.herdr(`{"id":"cli:agent:prompt","result":{"type":"agent_prompted"}}`, "", false)
 		w.fakeAtb(step)
 		out := w.doneWithReport("--report-file", report, "--issue", "EX-7")
-		if out.code != 5 || !strings.Contains(out.stderr, "atb linear "+step+" EX-7 failed (exit status: 4): error: refused") {
+		if out.code != 5 || !strings.Contains(out.stderr, "atb linear "+step+" EX-7 failed (exit status: 4)") {
 			t.Errorf("%s: %+v", step, out)
 		}
 		if strings.Contains(out.stderr+out.stdout, "fake0xK3Y") {
