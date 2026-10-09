@@ -25,7 +25,8 @@ func TestMain(m *testing.M) {
 
 // fakeHerdr is a stand-in for herdr, generated per test because the
 // binary passes herdr only an allow-list of the environment. `agent prompt`
-// answers with `reply` and records its argv in <dir>/argv; `agent read`
+// answers with `reply`, records its argv in <dir>/argv and appends a line
+// to <dir>/calls; `agent read`
 // prints a fixed screen, or fails when readFails is set; `agent list`
 // answers with `list`.
 func fakeHerdr(reply, list string, readFails bool) string {
@@ -49,6 +50,7 @@ LIST
     ;;
   "agent prompt")
     printf '%s\n' "$@" > "$(dirname "$0")/../argv"
+    echo "herdr agent prompt" >> "$(dirname "$0")/../calls"
     cat <<'REPLY'
 ` + reply + `
 REPLY

@@ -218,3 +218,119 @@ func TestCloseRefusesLiveRowsWithoutForceAndNonOrchestraCallers(t *testing.T) {
 		t.Errorf("state = %s", got)
 	}
 }
+
+// fakeAtb puts a stand-in for atb on PATH. Each call appends its argv, one
+// line, to <dir>/calls, with `key=set` when LINEAR_API_KEY reached it. The
+// subcommand named by failOn (`comment` or `release`) prints the key it
+// got to stdout and stderr and exits 4.
+func (w *world) fakeAtb(failOn string) {
+	w.t.Helper()
+	script := `#!/bin/sh
+key=unset
+[ -n "$LINEAR_API_KEY" ] && key=set
+echo "atb $* key=$key" >> "$(dirname "$0")/../calls"
+if [ "$2" = "` + failOn + `" ]; then
+  echo "error: refused: no holder, key $LINEAR_API_KEY" >&2
+  echo "key $LINEAR_API_KEY"
+  exit 4
+fi
+`
+	if err := os.WriteFile(filepath.Join(w.dir, "fake-herdr", "atb"), []byte(script), 0o755); err != nil {
+		w.t.Fatal(err)
+	}
+}
+
+func (w *world) calls() string {
+	w.t.Helper()
+	data, _ := os.ReadFile(filepath.Join(w.dir, "calls"))
+	return string(data)
+}
+
+// The key is a made-up value; it must reach atb and nothing else.
+const linearKey = "LINEAR_API_KEY=lin_api_fake0xK3Y"
+
+func (w *world) doneWithReport(args ...string) result {
+	w.t.Helper()
+	return w.run("", append([]string{"done"}, args...),
+		"FLEET_AGENT=item-1-a", "FLEET_ROLE=worker", "FLEET_PARENT=item-1-lead", "FLEET_REPO="+repo,
+		"FLEET_JOB=item-1", linearKey)
+}
+
+func TestDoneWritesTheReportAndReleasesBeforeDelivering(t *testing.T) {
+	for _, abandon := range []bool{false, true} {
+		w := newWorld(t)
+		ledgerWith(w, []struct{ name, role, job string }{{"item-1-a", "worker", "item-1"}})
+		report := task(w, "report.md", "what I did\n")
+		w.herdr(`{"id":"cli:agent:prompt","result":{"type":"agent_prompted"}}`, "", false)
+		w.fakeAtb("")
+		args := []string{"--report-file", report, "--issue", "EX-7"}
+		release, body := "--done", "item-1-a is done. Report: EX-7.\n"
+		if abandon {
+			args = append(args, "--abandon")
+			release, body = "--abandon", "item-1-a abandoned the task. Report: EX-7.\n"
+		}
+		out := w.doneWithReport(args...)
+		if out.code != 0 {
+			t.Fatalf("abandon=%v: %+v", abandon, out)
+		}
+		expected := "atb linear comment EX-7 --body-file " + report + " key=set\n" +
+			"atb linear release EX-7 --agent item-1-a --reason done " + release + " key=set\n" +
+			"herdr agent prompt\n"
+		if got := w.calls(); got != expected {
+			t.Errorf("abandon=%v: calls = %q, want %q", abandon, got, expected)
+		}
+		argv, _ := os.ReadFile(filepath.Join(w.dir, "argv"))
+		if want := "item-1-lead\n[FROM: item-1-a]\n" + body + "\n--wait"; !strings.Contains(string(argv), want) {
+			t.Errorf("abandon=%v: argv = %q, want %q in it", abandon, argv, want)
+		}
+		if got := state(w, "item-1-a"); got != "ended" {
+			t.Errorf("abandon=%v: state = %s", abandon, got)
+		}
+	}
+}
+
+func TestDoneStopsWhenAnAtbStepFails(t *testing.T) {
+	for _, step := range []string{"comment", "release"} {
+		w := newWorld(t)
+		ledgerWith(w, []struct{ name, role, job string }{{"item-1-a", "worker", "item-1"}})
+		report := task(w, "report.md", "what I did\n")
+		w.herdr(`{"id":"cli:agent:prompt","result":{"type":"agent_prompted"}}`, "", false)
+		w.fakeAtb(step)
+		out := w.doneWithReport("--report-file", report, "--issue", "EX-7")
+		if out.code != 5 || !strings.Contains(out.stderr, "atb linear "+step+" EX-7 failed (exit status: 4)") {
+			t.Errorf("%s: %+v", step, out)
+		}
+		if strings.Contains(out.stderr+out.stdout, "fake0xK3Y") {
+			t.Errorf("%s: the key leaked: %+v", step, out)
+		}
+		if strings.Contains(w.calls(), "herdr") {
+			t.Errorf("%s: the parent was prompted: %q", step, w.calls())
+		}
+		if got := state(w, "item-1-a"); got != "active" {
+			t.Errorf("%s: state = %s", step, got)
+		}
+	}
+}
+
+func TestDoneRefusesBadReportArguments(t *testing.T) {
+	w := newWorld(t)
+	ledgerWith(w, []struct{ name, role, job string }{{"item-1-a", "worker", "item-1"}})
+	report := task(w, "report.md", "what I did\n")
+	w.fakeAtb("")
+	for _, args := range [][]string{
+		{"--report-file", report},
+		{"--issue", "EX-7"},
+		{"--abandon"},
+		{"--report-file", filepath.Join(w.dir, "missing.md"), "--issue", "EX-7"},
+	} {
+		if out := w.doneWithReport(args...); out.code != 1 {
+			t.Errorf("%v: %+v", args, out)
+		}
+	}
+	if w.calls() != "" {
+		t.Errorf("calls = %q", w.calls())
+	}
+	if got := state(w, "item-1-a"); got != "active" {
+		t.Errorf("state = %s", got)
+	}
+}

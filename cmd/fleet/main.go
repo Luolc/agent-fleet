@@ -88,6 +88,9 @@ var doneHelp = cmd.DoneLongAbout + "\n\n" + doneUsage + `
 
 Options:
       --result-file <PATH>  File with the result, named in the report so the parent can read it
+      --report-file <PATH>  Worker report, written to --issue with atb before the report is delivered
+      --issue <ISSUE>       Linear issue (your child issue) for the worker report, released after it
+      --abandon             Release the issue as abandoned instead of done; needs --report-file
       --session <NAME>      ` + sessionHelp + `
   -h, --help                Print help
 `
@@ -296,12 +299,19 @@ func runSpawn(args []string, session *cliargs.OptString) (exit.Code, error) {
 func runDone(args []string, session *cliargs.OptString) (exit.Code, error) {
 	fs := flagSet("done", session)
 	resultFile := cliargs.OptString{Name: "result-file", Placeholder: "PATH"}
+	reportFile := cliargs.OptString{Name: "report-file", Placeholder: "PATH"}
+	issue := cliargs.OptString{Name: "issue", Placeholder: "ISSUE"}
+	abandon := cliargs.Bool{Name: "abandon"}
 	fs.Var(&resultFile, "result-file", "File with the result")
+	fs.Var(&reportFile, "report-file", "File with the worker report")
+	fs.Var(&issue, "issue", "Linear issue the report is written to")
+	fs.Var(&abandon, "abandon", "Release the issue as abandoned")
 	_, helped, err := parse(fs, args, doneHelp, doneUsage, nil)
 	if err != nil || helped {
 		return exit.Ok, err
 	}
-	return cmd.Done(herdr.New(session.Ptr()), cmd.DoneArgs{ResultFile: resultFile.Ptr()})
+	return cmd.Done(herdr.New(session.Ptr()), cmd.DoneArgs{
+		ResultFile: resultFile.Ptr(), ReportFile: reportFile.Ptr(), Issue: issue.Ptr(), Abandon: abandon.Value})
 }
 
 func runStatus(args []string, session *cliargs.OptString) (exit.Code, error) {
