@@ -1,0 +1,128 @@
+#!/bin/bash
+# Fake Claude Code for the judge. herdr detects Claude purely from the screen
+# (manifest `claude`, bundled in 0.9.3) and the foreground process name, so a
+# script named `claude` that draws the right shapes is enough:
+#   idle     a prompt box whose body line starts with ❯, plus the ✳ title
+#   working  a braille spinner in the title and a "… (Ns · esc to interrupt)" line
+#   blocked  a "Do you want to proceed? ❯ 1. Yes" permission prompt
+# The screen is redrawn in full at every change (transcript, then the state's
+# footer), like a TUI, so no stale spinner line can keep herdr in `working`.
+#
+# A message that contains BLOCK draws the permission prompt and waits for one
+# more line. While ~/.fake-claude/stall exists, a message is shown without ever
+# entering working, which makes `herdr agent prompt --wait` report
+# agent_prompt_stalled (the tool's own header line comes first, so the message
+# text cannot carry the trigger).
+# A message that is exactly TICK or HANG starts working for good, redrawing every
+# second with the input box, a spinner timer and a footer countdown, as the real
+# Claude does: TICK also adds a transcript line each time (a moving agent),
+# HANG does not (a stuck one). Exact, because a stuck agent's screen, with
+# the word on it, is quoted in the notice another fake Claude receives.
+rule=$(printf '─%.0s' $(seq 1 60))
+transcript=()
+draw() {
+  local n=${#transcript[@]} start=0
+  [ "$n" -gt 20 ] && start=$((n - 20))
+  printf '\033[2J\033[H'
+  printf '%s\n' "${transcript[@]:$start}"
+}
+idle() {
+  printf '\033]0;\xe2\x9c\xb3 Claude Code\007'
+  draw
+  printf '\n%s\n\xe2\x9d\xaf \n%s\n  ? for shortcuts\n' "$rule" "$rule"
+}
+working() {
+  printf '\033]0;\xe2\xa0\x8b Working\007'
+  draw
+  printf '\n\xe2\x9c\xbb Thinking\xe2\x80\xa6 (2s \xc2\xb7 esc to interrupt)\n'
+}
+blocked() {
+  # The title must not carry the spinner: osc_title_working outranks every
+  # blocked rule.
+  printf '\033]0;\xe2\x9c\xb3 Claude Code\007'
+  draw
+  printf '\n%s\n Bash command\n\n   rm -rf build\n\n Do you want to proceed?\n \xe2\x9d\xaf 1. Yes\n   2. No\n\n Esc to cancel\n' "$rule"
+}
+forever() {
+  local i=0
+  while :; do
+    i=$((i + 1))
+    case "$1" in TICK) transcript+=("$(printf '\xe2\x8f\xba tick %d' "$i")") ;; esac
+    printf '\033]0;\xe2\xa0\x8b Working\007'
+    draw
+    printf '\n\xe2\x9c\xbb Thinking\xe2\x80\xa6 (%ds \xc2\xb7 esc to interrupt)\n\n%s\n\xe2\x9d\xaf \n%s\n  Session: 9%% | Reset: %dm\n' \
+      "$i" "$rule" "$rule" "$((600 - i))"
+    sleep 1
+  done
+}
+# Keyboard echo off, as a TUI would: typed text appears only through draw.
+stty -echo 2>/dev/null
+transcript+=(" Welcome to fake Claude Code ($(pwd))")
+[ "$#" -gt 0 ] && transcript+=(" args: $*")
+# Start-up screens for `spawn`, switched on by files the test writes under
+# ~/.fake-claude/ (a pane's environment is the tool's to set):
+#   trust          the folder-trust prompt, drawn once per cwd, as Claude
+#                  Code 2.1.292 draws it (cancel first and highlighted, no
+#                  indexes); down then enter trusts, enter alone exits
+#   unknown-screen a screen the tool does not know; waits forever
+#   gateway-full   exits at once with a gateway's refusal, as when the
+#                  machine is at its session limit
+fake=$HOME/.fake-claude
+if [ -e "$fake/gateway-full" ]; then
+  echo "gateway: machine example-1 is at its limit of 2 sessions" >&2
+  exit 1
+fi
+if [ -e "$fake/unknown-screen" ]; then
+  printf '\033]0;\xe2\x9c\xb3 Claude Code\007\033[2J\033[H'
+  printf ' Choose the text style that looks best with your terminal\n\n \xe2\x9d\xaf 1. Dark mode\n   2. Light mode\n'
+  while :; do sleep 60; done
+fi
+if [ -e "$fake/trust" ] && ! grep -qxF "$(pwd)" "$fake/trusted" 2>/dev/null; then
+  cursor=0
+  trust_screen() {
+    local no='  ' yes='  '
+    if [ "$cursor" = 0 ]; then no=$'\xe2\x9d\xaf '; else yes=$'\xe2\x9d\xaf '; fi
+    printf '\033]0;\xe2\x9c\xb3 Claude Code\007\033[2J\033[H'
+    printf '%s\n Accessing workspace:\n\n %s\n\n' "$rule" "$(pwd)"
+    printf ' Quick safety check: Is this a project you created or one you trust? (Like your own code, a well-known open source project, or work from your team). If not, take a moment to review what'"'"'s in this folder first.\n\n'
+    printf ' %sNo, exit\n %sYes, I trust this folder\n\n Enter to confirm \xc2\xb7 Esc to cancel\n' "$no" "$yes"
+  }
+  trust_screen
+  while IFS= read -rsn1 key; do
+    case "$key" in
+      $'\e') read -rsn2 -t 1 seq; case "$seq" in '[B'|OB) cursor=1;; '[A'|OA) cursor=0;; esac; trust_screen ;;
+      '') [ "$cursor" = 1 ] || exit 1; pwd >> "$fake/trusted"; break ;;
+    esac
+  done
+fi
+idle
+while IFS= read -r line; do
+  # herdr types the text, then presses Enter about 300 ms later (measured
+  # on 2026-10-07). A multi-line message therefore arrives as its first
+  # line at once and its last line with the Enter. Working is drawn as soon
+  # as the first line is in, so herdr's 5 s stall limit does not depend on
+  # how long the rest takes; then everything that follows within the gather
+  # window is taken as part of the same message. The window is 1 s, or the
+  # number of seconds in ~/.fake-claude/gather-secs (the judge sets it past
+  # 5 s to prove the first frame does not wait for it).
+  [ -n "$line" ] || continue
+  gather=$(cat "$HOME/.fake-claude/gather-secs" 2>/dev/null || echo 1)
+  transcript+=("> $line")
+  [ -e "$HOME/.fake-claude/stall" ] || working
+  while IFS= read -r -t "$gather" more; do
+    line="$line"$'\n'"$more"
+    transcript+=("> $more")
+    [ -e "$HOME/.fake-claude/stall" ] || working
+  done
+  if [ -e "$HOME/.fake-claude/stall" ]; then idle; continue; fi
+  case "$line" in
+    TICK | HANG) forever "$line" ;;
+  esac
+  working
+  sleep "${FAKE_CLAUDE_WORK_SECS:-2}"
+  case "$line" in
+    *BLOCK*) blocked; read -r _ ;;
+  esac
+  transcript+=("" "$(printf '\xe2\x8f\xba fake reply to: %s' "${line##*$'\n'}")")
+  idle
+done
