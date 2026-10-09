@@ -19,15 +19,16 @@ import (
 
 // CloseAbout and CloseLongAbout are the help texts of `close`.
 const (
-	CloseAbout     = "Clean up a job after its PR is merged: workspace, worktree, branch, ledger rows"
-	CloseLongAbout = "Clean up a job after its PR is merged: workspace, worktree, branch, ledger rows.\n\n" +
+	CloseAbout     = "Clean up a job after its PR is merged: workspace, worktrees, branches, ledger rows"
+	CloseLongAbout = "Clean up a job after its PR is merged: workspace, worktrees, branches, ledger rows.\n\n" +
 		"Called by the orchestra. Refused while the job still has live rows unless --force is " +
 		"given. Closes the job's workspace, then checks that no agent in herdr has its cwd " +
-		"inside the job's worktree; only then removes the worktree with `git worktree remove` " +
-		"(which refuses uncommitted changes) and deletes its local branch. Finally counts what " +
-		"is left: workspaces named after the job, agents in them or in the worktree, and the " +
-		"worktree path. Success only when that count is 0; the job's rows are then marked " +
-		"ended. Parts already gone are skipped, so it can be run again.\n\n" +
+		"inside one of the job's worktrees: its own and those `fleet worktree` recorded for it. " +
+		"Only then removes each with `git worktree remove` (which refuses uncommitted changes) " +
+		"and deletes its local branch. Finally counts what is left: workspaces named after the " +
+		"job, agents in them or in a worktree, and the worktree paths. Success only when that " +
+		"count is 0; the job's rows are then marked ended and its worktrees removed. Parts " +
+		"already gone are skipped, so it can be run again.\n\n" +
 		"Exit: 0 when nothing is left; 1 when live rows remain without --force, or the caller " +
 		"is not the orchestra; 5 when git or herdr fails, or something is left (listed)."
 )
@@ -93,8 +94,8 @@ func describe(agent map[string]any) string {
 }
 
 // agentsLeft are the agents in one of `workspaces` or with their cwd inside
-// `worktree`.
-func agentsLeft(h *herdr.Herdr, workspaces []string, worktree string) ([]string, error) {
+// one of `worktrees`.
+func agentsLeft(h *herdr.Herdr, workspaces []string, worktrees []jobWorktree) ([]string, error) {
 	agents, err := HerdrAgentList(h)
 	if err != nil {
 		return nil, err
@@ -103,46 +104,85 @@ func agentsLeft(h *herdr.Herdr, workspaces []string, worktree string) ([]string,
 	for _, entry := range agents {
 		agent, _ := entry.(map[string]any)
 		id, ok := agent["workspace_id"].(string)
-		if ok && slices.Contains(workspaces, id) || inside(agent, worktree) {
+		if ok && slices.Contains(workspaces, id) || slices.ContainsFunc(worktrees, func(w jobWorktree) bool {
+			return inside(agent, w.path)
+		}) {
 			left = append(left, describe(agent))
 		}
 	}
 	return left, nil
 }
 
+// jobWorktree is a worktree `close` removes, with the checkout it belongs to.
+type jobWorktree struct{ path, checkout string }
+
 // closeChecks refuses a caller that is not the orchestra, a bad job name
-// and live rows without --force, and finds the job's worktree: the last
-// one recorded, else `$HOME/wt/<repo>/<job>`. Returns the ledger, the
-// worktree and `$HOME/dev/<repo>`.
-func closeChecks(args CloseArgs) (conn *sql.DB, worktree, checkout string, err error) {
+// and live rows without --force, and finds the job's worktrees: its own
+// (the last one recorded, else `$HOME/wt/<repo>/<job>`, in
+// `$HOME/dev/<repo>`), then those `fleet worktree` recorded for the job.
+func closeChecks(args CloseArgs) (conn *sql.DB, worktrees []jobWorktree, err error) {
 	me, err := identity.FromEnv()
 	if err != nil {
-		return nil, "", "", err
+		return nil, nil, err
 	}
 	if me.Role != identity.Orchestra {
-		return nil, "", "", exit.Refusedf("only the orchestra closes jobs")
+		return nil, nil, exit.Refusedf("only the orchestra closes jobs")
 	}
 	if err := CheckName(args.Job); err != nil {
-		return nil, "", "", err
+		return nil, nil, err
 	}
 	repo, err := RepoName(me.Repo)
 	if err != nil {
-		return nil, "", "", err
+		return nil, nil, err
 	}
 	home, err := Home()
 	if err != nil {
-		return nil, "", "", err
+		return nil, nil, err
 	}
 	conn, err = db.Open(me.Repo)
 	if err != nil {
-		return nil, "", "", err
+		return nil, nil, err
 	}
-	worktree, err = closeWorktree(conn, args, filepath.Join(home, "wt", repo, args.Job))
+	own, err := closeWorktree(conn, args, filepath.Join(home, "wt", repo, args.Job))
 	if err != nil {
 		conn.Close()
-		return nil, "", "", err
+		return nil, nil, err
 	}
-	return conn, worktree, filepath.Join(home, "dev", repo), nil
+	worktrees = []jobWorktree{{own, filepath.Join(home, "dev", repo)}}
+	recorded, err := jobWorktrees(conn, args.Job, home)
+	if err != nil {
+		conn.Close()
+		return nil, nil, err
+	}
+	for _, w := range recorded {
+		if w.path != own {
+			worktrees = append(worktrees, w)
+		}
+	}
+	return conn, worktrees, nil
+}
+
+// jobWorktrees are the worktrees the ledger records for `job` and not yet
+// removed, oldest first.
+func jobWorktrees(conn *sql.DB, job, home string) ([]jobWorktree, error) {
+	rows, err := conn.Query(
+		"SELECT path, repo FROM worktrees WHERE job = ?1 AND removed_at IS NULL ORDER BY id", job)
+	if err != nil {
+		return nil, exit.Database(err)
+	}
+	defer rows.Close()
+	var found []jobWorktree
+	for rows.Next() {
+		var path, repo string
+		if err := rows.Scan(&path, &repo); err != nil {
+			return nil, exit.Database(err)
+		}
+		found = append(found, jobWorktree{path, filepath.Join(home, "dev", repo)})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, exit.Database(err)
+	}
+	return found, nil
 }
 
 // closeWorktree refuses live rows without --force, then returns the job's
@@ -205,9 +245,56 @@ func removeWorktree(checkout, worktree string) error {
 	return nil
 }
 
+// removeWorktrees refuses while an agent is in one of `workspaces` or
+// `worktrees`, then removes each worktree that still exists.
+func removeWorktrees(h *herdr.Herdr, workspaces []string, worktrees []jobWorktree) error {
+	blocking, err := agentsLeft(h, workspaces, worktrees)
+	if err != nil {
+		return err
+	}
+	if len(blocking) > 0 {
+		paths := make([]string, len(worktrees))
+		for i, w := range worktrees {
+			paths[i] = w.path
+		}
+		return exit.Environmentf("not removing %s: still in use by %s",
+			strings.Join(paths, ", "), strings.Join(blocking, ", "))
+	}
+	for _, w := range worktrees {
+		if exists(w.path) {
+			if err := removeWorktree(w.checkout, w.path); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// closeLeft is what is left of `job`: agents in its workspaces or
+// worktrees, workspaces named after it, and worktree paths.
+func closeLeft(h *herdr.Herdr, job string, workspaces []string, worktrees []jobWorktree) ([]string, error) {
+	left, err := agentsLeft(h, workspaces, worktrees)
+	if err != nil {
+		return nil, err
+	}
+	still, err := WorkspacesLabelled(h, job)
+	if err != nil {
+		return nil, err
+	}
+	for _, id := range still {
+		left = append(left, fmt.Sprintf("workspace %s (%s)", job, id))
+	}
+	for _, w := range worktrees {
+		if exists(w.path) {
+			left = append(left, "worktree "+w.path)
+		}
+	}
+	return left, nil
+}
+
 // Close runs `close`.
 func Close(h *herdr.Herdr, args CloseArgs) (exit.Code, error) {
-	conn, worktree, checkout, err := closeChecks(args)
+	conn, worktrees, err := closeChecks(args)
 	if err != nil {
 		return 0, err
 	}
@@ -224,39 +311,24 @@ func Close(h *herdr.Herdr, args CloseArgs) (exit.Code, error) {
 		fmt.Fprintf(os.Stdout, "closed workspace %s (%s)\n", args.Job, id)
 	}
 
-	blocking, err := agentsLeft(h, workspaces, worktree)
-	if err != nil {
+	if err := removeWorktrees(h, workspaces, worktrees); err != nil {
 		return 0, err
 	}
-	if len(blocking) > 0 {
-		return 0, exit.Environmentf("not removing %s: still in use by %s", worktree, strings.Join(blocking, ", "))
-	}
-	if exists(worktree) {
-		if err := removeWorktree(checkout, worktree); err != nil {
-			return 0, err
-		}
-	}
-
-	left, err := agentsLeft(h, workspaces, worktree)
+	left, err := closeLeft(h, args.Job, workspaces, worktrees)
 	if err != nil {
 		return 0, err
-	}
-	still, err := WorkspacesLabelled(h, args.Job)
-	if err != nil {
-		return 0, err
-	}
-	for _, id := range still {
-		left = append(left, fmt.Sprintf("workspace %s (%s)", args.Job, id))
-	}
-	if exists(worktree) {
-		left = append(left, "worktree "+worktree)
 	}
 	if len(left) > 0 {
 		return 0, exit.Environmentf("%d left after closing %s: %s", len(left), args.Job, strings.Join(left, ", "))
 	}
+	now := db.Now()
+	if _, err := conn.Exec("UPDATE worktrees SET removed_at = ?1 WHERE job = ?2 AND removed_at IS NULL",
+		now, args.Job); err != nil {
+		return 0, exit.Database(err)
+	}
 	res, err := conn.Exec(
 		"UPDATE agents SET state = 'ended', ended_at = ?1 WHERE job = ?2 AND state != 'ended'",
-		db.Now(), args.Job)
+		now, args.Job)
 	if err != nil {
 		return 0, exit.Database(err)
 	}
