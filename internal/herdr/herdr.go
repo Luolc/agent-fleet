@@ -1,0 +1,272 @@
+// Package herdr runs `herdr` and reads its JSON replies.
+//
+// Every herdr CLI command prints one JSON object: `{"id":…,"result":{…}}`
+// on success or `{"id":…,"error":{"code":…,"message":…}}` on failure
+// (herdr 0.9.3). `agent read` is the exception and prints plain text.
+package herdr
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/Luolc/agent-fleet/internal/exit"
+)
+
+// callTimeout bounds one herdr call; herdr's own longest wait is 30 s.
+const callTimeout = 60 * time.Second
+
+// waitDelay is how long Wait keeps the pipes open after herdr exits.
+const waitDelay = 5 * time.Second
+
+// Herdr is how to reach the herdr server. Inside a pane herdr finds its
+// own session through `HERDR_SOCKET_PATH`; from cron or a test the session
+// is named.
+type Herdr struct {
+	Session *string
+}
+
+// Reply is a parsed reply. `Error` is set (and `Result` nil) when herdr
+// answered with an error; it carries herdr's error code (for example
+// `agent_not_found`) and message.
+type Reply struct {
+	Result json.RawMessage
+	Error  *ReplyError
+}
+
+// ReplyError is herdr's error object.
+type ReplyError struct {
+	Code    string
+	Message string
+}
+
+// New makes a Herdr for the given session (nil: the pane's own).
+func New(session *string) *Herdr {
+	return &Herdr{Session: session}
+}
+
+// envPrefixes are the variables herdr may see, by exact name or prefix.
+var envNames = []string{"PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "TERM", "LANG"}
+var envPrefixes = []string{"LC_", "XDG_", "HERDR_"}
+
+func env() []string {
+	var kept []string
+	for _, kv := range os.Environ() {
+		name, _, _ := strings.Cut(kv, "=")
+		keep := false
+		for _, n := range envNames {
+			keep = keep || name == n
+		}
+		for _, p := range envPrefixes {
+			keep = keep || strings.HasPrefix(name, p)
+		}
+		if keep {
+			kept = append(kept, kv)
+		}
+	}
+	return kept
+}
+
+// run runs `herdr [--session S] args...` and returns stdout, stderr and
+// the exit error, if any.
+func (h *Herdr) run(args ...string) (stdout, stderr []byte, err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
+	defer cancel()
+	argv := make([]string, 0, len(args)+2)
+	if h.Session != nil {
+		argv = append(argv, "--session", *h.Session)
+	}
+	argv = append(argv, args...)
+	cmd := exec.CommandContext(ctx, "herdr", argv...)
+	cmd.Env = env()
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
+	cmd.WaitDelay = waitDelay
+	var out, errOut bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &errOut
+	err = cmd.Run()
+	if ctx.Err() != nil {
+		return nil, nil, exit.Environmentf("herdr %s timed out after %v", strings.Join(args, " "), callTimeout)
+	}
+	var exitErr *exec.ExitError
+	if err != nil && !errors.As(err, &exitErr) {
+		return nil, nil, exit.Environmentf("cannot run herdr: %v", err)
+	}
+	return out.Bytes(), errOut.Bytes(), err
+}
+
+// Call runs a herdr command and parses its JSON reply. A reply that is not
+// JSON at all, or a herdr that cannot be started, is an environment error.
+func (h *Herdr) Call(args ...string) (*Reply, error) {
+	out, errOut, err := h.run(args...)
+	var failure *exit.Failure
+	if errors.As(err, &failure) {
+		return nil, failure
+	}
+	stdout, stderr := string(out), string(errOut)
+	text := ""
+	for _, candidate := range []string{strings.TrimSpace(stdout), strings.TrimSpace(stderr)} {
+		if strings.HasPrefix(candidate, "{") {
+			text = candidate
+			break
+		}
+	}
+	if text == "" {
+		return nil, exit.Environmentf("herdr gave no JSON reply (%s): %s",
+			status(err), firstLine(stderr, stdout))
+	}
+	var value map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(text), &value); err != nil {
+		return nil, exit.Environmentf("herdr reply is not JSON: %v", err)
+	}
+	if raw, ok := value["error"]; ok {
+		var fields map[string]any
+		_ = json.Unmarshal(raw, &fields)
+		field := func(name string) string {
+			s, _ := fields[name].(string)
+			return s
+		}
+		return &Reply{Error: &ReplyError{Code: field("code"), Message: field("message")}}, nil
+	}
+	if raw, ok := value["result"]; ok {
+		return &Reply{Result: raw}, nil
+	}
+	return nil, exit.Environmentf("herdr reply has neither result nor error")
+}
+
+// CallOK is Call, but a herdr error becomes an environment failure.
+func (h *Herdr) CallOK(args ...string) (json.RawMessage, error) {
+	reply, err := h.Call(args...)
+	if err != nil {
+		return nil, err
+	}
+	if reply.Error != nil {
+		return nil, exit.Environmentf("herdr: %s: %s", reply.Error.Code, reply.Error.Message)
+	}
+	return reply.Result, nil
+}
+
+// Prompt is `herdr agent prompt <target> <text> --wait --until working
+// --timeout 20000`, mapped to the exit-code contract.
+func (h *Herdr) Prompt(target, text string) (PromptOutcome, error) {
+	reply, err := h.Call("agent", "prompt", target, text,
+		"--wait", "--until", "working", "--timeout", "20000")
+	if err != nil {
+		return PromptOutcome{}, err
+	}
+	if reply.Error == nil {
+		var result struct {
+			Type string `json:"type"`
+		}
+		_ = json.Unmarshal(reply.Result, &result)
+		if result.Type == "agent_prompted" {
+			return PromptOutcome{Kind: Prompted}, nil
+		}
+		return PromptOutcome{Kind: Unknown,
+			Reason: fmt.Sprintf("unexpected herdr reply: %s", compact(reply.Result))}, nil
+	}
+	code, message := reply.Error.Code, reply.Error.Message
+	switch code {
+	case "agent_blocked":
+		return PromptOutcome{Kind: Blocked}, nil
+	case "agent_not_found":
+		return PromptOutcome{Kind: NotFound}, nil
+	case "timeout", "agent_prompt_stalled":
+		return PromptOutcome{Kind: Unknown, Reason: code + ": " + message}, nil
+	default:
+		return PromptOutcome{}, exit.Environmentf("herdr: %s: %s", code, message)
+	}
+}
+
+// Screen is the target's visible screen as plain text (`herdr agent read
+// --source visible`). A failed read is an environment error, not an empty
+// screen.
+func (h *Herdr) Screen(target string) (string, error) {
+	out, errOut, err := h.run("agent", "read", target, "--source", "visible")
+	var failure *exit.Failure
+	if errors.As(err, &failure) {
+		return "", failure
+	}
+	if err != nil {
+		return "", exit.Environmentf("herdr agent read %s failed (%s): %s",
+			target, status(err), firstLine(string(errOut), string(out)))
+	}
+	return string(out), nil
+}
+
+// PromptKind is what `herdr agent prompt` reported, in the terms of the
+// exit-code table.
+type PromptKind int
+
+// The outcomes.
+const (
+	// Prompted is `agent_prompted`: exit 0.
+	Prompted PromptKind = iota
+	// Unknown is timeout or stalled: exit 2. Reason is herdr's reason.
+	Unknown
+	// Blocked is `agent_blocked`: exit 3.
+	Blocked
+	// NotFound is `agent_not_found`: exit 4.
+	NotFound
+)
+
+// PromptOutcome is the outcome and, for Unknown, herdr's reason.
+type PromptOutcome struct {
+	Kind   PromptKind
+	Reason string
+}
+
+// Exit maps the outcome to its exit code.
+func (o PromptOutcome) Exit() exit.Code {
+	switch o.Kind {
+	case Prompted:
+		return exit.Ok
+	case Unknown:
+		return exit.Unknown
+	case Blocked:
+		return exit.Blocked
+	default:
+		return exit.NotFound
+	}
+}
+
+// status renders the process status as Rust's ExitStatus Display does.
+func status(err error) string {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		if ws, ok := exitErr.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+			return fmt.Sprintf("signal: %d", ws.Signal())
+		}
+		return fmt.Sprintf("exit status: %d", exitErr.ExitCode())
+	}
+	return "exit status: 0"
+}
+
+// firstLine is the first non-empty line of stderr, else of stdout, else "".
+func firstLine(texts ...string) string {
+	for _, text := range texts {
+		line, _, _ := strings.Cut(text, "\n")
+		if line != "" {
+			return line
+		}
+	}
+	return ""
+}
+
+func compact(raw json.RawMessage) string {
+	var buf bytes.Buffer
+	if json.Compact(&buf, raw) != nil {
+		return string(raw)
+	}
+	return buf.String()
+}

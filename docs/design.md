@@ -6,7 +6,15 @@ A CLI that runs and coordinates coding agents in herdr; not an agent itself, not
 
 ## Parts and how they connect
 
-Only `cmd/fleet` exists so far; parts are added here as they are ported.
+Ported so far (the rest is added as it lands; the port follows `porting.md`):
+
+- `cmd/fleet`: parses the command line (standard `flag`, one `FlagSet` per command, `--session` global) and dispatches to `internal/cmd`; turns a failure into `fleet: <message>` on stderr and the exit code.
+- `internal/cmd`: one file per command. `send` reads the body, adds the `[FROM: <agent>]` header and delivers it through `herdr.Prompt`; `status` joins the ledger's live rows with `herdr agent list`.
+- `internal/herdr`: runs the `herdr` CLI with a bounded environment and a deadline, parses its one-object JSON reply, and maps `agent prompt` outcomes to the exit codes.
+- `internal/db`: the ledger (`modernc.org/sqlite`, WAL, 5 s busy timeout, immediate transactions) and its schema migration.
+- `internal/identity`: the caller's identity from the `FLEET_*` variables.
+- `internal/exit`: the exit-code contract and the failure type every command returns.
+- `internal/cliargs`: the clap behaviors `flag` lacks (flags after positionals, a string flag that records whether it was given).
 
 ## Invariants
 
@@ -26,7 +34,7 @@ What the judge pins down (the CLI reference and `--json` output are added as the
 
 ## Known issues and next steps
 
-The judge is red against the Go binary, which only has `--version`. Next: port the commands one by one until it is green, then make the judge a blocking CI check (one line in `.github/workflows/ci.yml`).
+The judge is still red against the Go binary: `send` and `status` are ported, `spawn`, `done`, `watch` and `close` are not. Next: port the remaining commands until it is green, then make the judge a blocking CI check (one line in `.github/workflows/ci.yml`).
 
 ## Decision log
 
