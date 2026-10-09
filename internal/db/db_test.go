@@ -62,3 +62,37 @@ func TestLedgerPathUsesTheRepoNameUnderScratch(t *testing.T) {
 		t.Errorf("bare name gives %q, want %q", bare, path)
 	}
 }
+
+func TestAVersion2LedgerGainsTheIssueColumnsAndKeepsItsRows(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fleet.db")
+	conn, err := OpenAt(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Back to what a version 2 binary left behind.
+	for _, stmt := range []string{
+		"ALTER TABLE agents DROP COLUMN issue",
+		"ALTER TABLE agents DROP COLUMN parent_issue",
+		"PRAGMA user_version = 2",
+		"INSERT INTO agents (name, role, state, started_at) VALUES ('a-lead', 'lead', 'active', 1)",
+	} {
+		if _, err := conn.Exec(stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	conn, err = OpenAt(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	var name, issue, parentIssue string
+	if err := conn.QueryRow("SELECT name, issue, parent_issue FROM agents").Scan(&name, &issue, &parentIssue); err != nil {
+		t.Fatal(err)
+	}
+	if name != "a-lead" || issue != "" || parentIssue != "" {
+		t.Errorf("row = %q %q %q", name, issue, parentIssue)
+	}
+}

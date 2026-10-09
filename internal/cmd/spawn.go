@@ -20,6 +20,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/Luolc/agent-fleet/internal/atb"
+	"github.com/Luolc/agent-fleet/internal/config"
 	"github.com/Luolc/agent-fleet/internal/db"
 	"github.com/Luolc/agent-fleet/internal/exit"
 	"github.com/Luolc/agent-fleet/internal/herdr"
@@ -33,13 +35,25 @@ const (
 		"Your role decides what is started. The orchestra starts a lead: <NAME> is the job id, the " +
 		"agent is named `<job>-lead`, and --branch is valid only here. A lead starts a worker in " +
 		"its own job, named `<job>-<NAME>`. Workers and human-interface cannot spawn.\n\n" +
+		"Settings come from .fleet/config.json in ~/dev/<repo>: `max_agents_per_job` (default 4), " +
+		"`resource_check` (default true) and `linear` ({\"team\": ..., \"project\": ...}; absent: " +
+		"Linear is off). A missing file is all defaults; a file that cannot be read or is not valid " +
+		"is refused, naming the key.\n\n" +
 		"Checks, all before anything is created: the task file is readable and not empty; the " +
+		"config is valid; with Linear on, a lead has --parent-issue (refused with Linear off) and " +
+		"the task's first non-empty line gives a title; the " +
 		"name uses only [a-z0-9-], is not `cron`, and is not taken in the ledger or in herdr; a " +
-		"new job has no workspace or worktree yet; a job holds at most 4 live agents including " +
-		"the lead; the 1-minute load average is below the CPU count and available memory is above " +
-		"2 GiB.\n\n" +
+		"new job has no workspace or worktree yet; a job holds at most max_agents_per_job live " +
+		"agents including the lead; with resource_check, the 1-minute load average is below the " +
+		"CPU count and available memory is above 2 GiB.\n\n" +
 		"For a lead, ~/dev/<repo> then runs `git fetch origin`, and origin/HEAD must resolve; " +
 		"the job branches from it, never from the local HEAD.\n\n" +
+		"With Linear on, the agent's work order is created next, before anything else: " +
+		"`atb linear create` under the job's parent issue (a worker's is its lead's), titled with " +
+		"the task's first non-empty line without leading `#` (at most 80 characters) and " +
+		"described by the task file, then `atb linear claim` in the new agent's name. The agent " +
+		"gets FLEET_ISSUE and its task starts with a line naming the work order's URL. If an atb " +
+		"step fails, nothing else is created; an issue created but not claimed is listed.\n\n" +
 		"Then the agent's row is written as `starting`. A lead gets the worktree " +
 		"~/wt/<repo>/<job> on a new branch from origin/HEAD and a workspace named after the " +
 		"job, whose first tab is the lead's; a worker gets a new tab in that workspace. Both run " +
@@ -56,7 +70,7 @@ const (
 		"gateway that refuses the session (machine over its session cap) is a failed start.\n\n" +
 		"Exit: 0 when the task was delivered; 1 when a check refuses; 2/3/4 as `send` for the " +
 		"delivery; 3 when the agent stops at a screen other than its input box (the screen is " +
-		"printed); 5 when git, herdr or the database fails, including a failed start."
+		"printed); 5 when atb, git, herdr or the database fails, including a failed start."
 )
 
 // SpawnArgs are the arguments of `spawn`.
@@ -74,10 +88,11 @@ type SpawnArgs struct {
 	Model *string
 	// Effort is passed to the agent as --effort. Default: the agent's own.
 	Effort *string
+	// ParentIssue is the job's parent issue (lead only, and only in a repo
+	// that uses Linear).
+	ParentIssue *string
 }
 
-// jobCap is the agents per job workspace, counting the lead.
-const jobCap int64 = 4
 const minAvailableKiB uint64 = 2 * 1024 * 1024
 
 // startTimeoutMS is how long `herdr agent start` may take, in ms.
@@ -556,6 +571,9 @@ func planSpawn(me *identity.Identity, args SpawnArgs) (plan, error) {
 		if args.Branch != nil {
 			return plan{}, exit.Refusedf("--branch is for leads only; a worker uses its job's worktree")
 		}
+		if args.ParentIssue != nil {
+			return plan{}, exit.Refusedf("--parent-issue is for leads only; a worker's parent issue is its lead's")
+		}
 		if me.Job == "" {
 			return plan{}, exit.Refusedf("FLEET_JOB is not set")
 		}
@@ -583,17 +601,22 @@ func liveNameTaken(conn *sql.DB, name string) (bool, error) {
 }
 
 // checked is what the checks before anything is created established:
-// the caller, the plan, the task (with its header, and its canonical
-// path), the places, and the commit a lead branches from.
+// the caller, the plan, the repo's config, the task (its body, its
+// canonical path and its title), the places, the commit a lead branches
+// from, and the job's parent issue.
 type checked struct {
-	me         *identity.Identity
-	p          plan
-	text       string
-	task       string
-	worktree   string
-	checkout   string
-	base       string
-	workspaces []string
+	me          *identity.Identity
+	p           plan
+	cfg         *config.Config
+	repo        string
+	body        string
+	task        string
+	title       string
+	worktree    string
+	checkout    string
+	base        string
+	workspaces  []string
+	parentIssue string
 }
 
 // spawnChecks runs every check, in the source's order: the plan, the task
@@ -612,8 +635,7 @@ func spawnChecks(h *herdr.Herdr, args SpawnArgs) (*checked, *sql.DB, error) {
 	if err != nil {
 		return nil, nil, exit.Refusedf("cannot read %s: %v", args.TaskFile, err)
 	}
-	text, err := WithHeader(me.Agent, string(data))
-	if err != nil {
+	if _, err := WithHeader(me.Agent, string(data)); err != nil {
 		return nil, nil, err
 	}
 	task, err := canonicalize(args.TaskFile)
@@ -628,11 +650,14 @@ func spawnChecks(h *herdr.Herdr, args SpawnArgs) (*checked, *sql.DB, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	c := &checked{me: me, p: p, repo: repo, body: string(data), task: task, checkout: filepath.Join(home, "dev", repo)}
+	if err := c.linearChecks(args); err != nil {
+		return nil, nil, err
+	}
 	conn, err := db.Open(me.Repo)
 	if err != nil {
 		return nil, nil, err
 	}
-	c := &checked{me: me, p: p, text: text, task: task, checkout: filepath.Join(home, "dev", repo)}
 	if err := c.ledgerAndHerdr(h, conn, filepath.Join(home, "wt", repo, p.job)); err != nil {
 		_ = conn.Close()
 		return nil, nil, err
@@ -640,10 +665,55 @@ func spawnChecks(h *herdr.Herdr, args SpawnArgs) (*checked, *sql.DB, error) {
 	return c, conn, nil
 }
 
+// linearChecks loads the repo's config and checks what a work order
+// needs: a lead has --parent-issue exactly when the repo uses Linear, and
+// the task gives a title.
+func (c *checked) linearChecks(args SpawnArgs) error {
+	var err error
+	if c.cfg, err = config.Load(c.checkout); err != nil {
+		return err
+	}
+	if c.p.role == identity.Lead {
+		switch {
+		case c.cfg.Linear != nil && args.ParentIssue == nil:
+			return exit.Refusedf("--parent-issue is required: %s sets linear, so a lead gets a work order "+
+				"under the job's parent issue", config.Path(c.checkout))
+		case c.cfg.Linear == nil && args.ParentIssue != nil:
+			return exit.Refusedf("--parent-issue is for repos that use Linear; %s sets no linear",
+				config.Path(c.checkout))
+		case args.ParentIssue != nil:
+			c.parentIssue = *args.ParentIssue
+		}
+	}
+	if c.cfg.Linear == nil {
+		return nil
+	}
+	if c.title = WorkOrderTitle(c.body); c.title == "" {
+		return exit.Refusedf("the task file's first non-empty line gives no title for the work order")
+	}
+	return nil
+}
+
+// WorkOrderTitle is the title of a work order for `task`: its first
+// non-empty line without leading `#` and spaces, cut to 80 characters.
+func WorkOrderTitle(task string) string {
+	for _, line := range lines(task) {
+		line = strings.TrimSpace(strings.TrimLeft(strings.TrimSpace(line), "#"))
+		if line == "" {
+			continue
+		}
+		if runes := []rune(line); len(runes) > 80 {
+			line = strings.TrimSpace(string(runes[:80]))
+		}
+		return line
+	}
+	return ""
+}
+
 // ledgerAndHerdr is the ledger checks, then herdr's view, then the
 // resources and origin/HEAD; `leadWorktree` is the worktree a lead gets.
 func (c *checked) ledgerAndHerdr(h *herdr.Herdr, conn *sql.DB, leadWorktree string) error {
-	me, p := c.me, c.p
+	p := c.p
 	taken, err := liveNameTaken(conn, p.agent)
 	if err != nil {
 		return err
@@ -654,7 +724,7 @@ func (c *checked) ledgerAndHerdr(h *herdr.Herdr, conn *sql.DB, leadWorktree stri
 	// Ledger checks first, then herdr's view.
 	if p.role == identity.Lead {
 		c.worktree = leadWorktree
-	} else if c.worktree, err = workerWorktree(conn, me.Agent, p.job); err != nil {
+	} else if err = c.fromLead(conn); err != nil {
 		return err
 	}
 	agents, err := HerdrAgentList(h)
@@ -677,17 +747,7 @@ func (c *checked) ledgerAndHerdr(h *herdr.Herdr, conn *sql.DB, leadWorktree stri
 	case p.role == identity.Worker && len(c.workspaces) != 1:
 		return exit.Environmentf("expected one workspace labelled %s, herdr has %d", p.job, len(c.workspaces))
 	}
-	loadavg, err := os.ReadFile("/proc/loadavg")
-	if err != nil {
-		return exit.IO(err)
-	}
-	meminfo, err := os.ReadFile("/proc/meminfo")
-	if err != nil {
-		return exit.IO(err)
-	}
-	// TODO(port): available_parallelism also honors a cgroup CPU quota;
-	// NumCPU honors only the affinity mask.
-	if err := CheckResources(string(loadavg), runtime.NumCPU(), string(meminfo)); err != nil {
+	if err := c.resources(); err != nil {
 		return err
 	}
 	// Only a lead makes a branch; a worker uses its job's worktree.
@@ -699,34 +759,66 @@ func (c *checked) ledgerAndHerdr(h *herdr.Herdr, conn *sql.DB, leadWorktree stri
 	return nil
 }
 
-// workerWorktree is the job's worktree from the lead's live row, once the
-// job is under its cap.
-func workerWorktree(conn *sql.DB, lead, job string) (string, error) {
-	var found sql.NullString
-	err := conn.QueryRow("SELECT worktree FROM agents WHERE name = ?1 AND state != 'ended'", lead).Scan(&found)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return "", exit.Database(err)
+// resources is machineResources, unless the config turns the check off.
+func (c *checked) resources() error {
+	if !c.cfg.ResourceCheck {
+		return nil
 	}
-	if !found.Valid || found.String == "" {
-		return "", exit.Refusedf("%s has no live row with a worktree", lead)
+	return machineResources()
+}
+
+// machineResources is CheckResources on this machine; a variable so a
+// test can stand in for the machine.
+var machineResources = func() error {
+	loadavg, err := os.ReadFile("/proc/loadavg")
+	if err != nil {
+		return exit.IO(err)
+	}
+	meminfo, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		return exit.IO(err)
+	}
+	// TODO(port): available_parallelism also honors a cgroup CPU quota;
+	// NumCPU honors only the affinity mask.
+	return CheckResources(string(loadavg), runtime.NumCPU(), string(meminfo))
+}
+
+// fromLead takes the job's worktree and parent issue from the lead's live
+// row, once the job is under its cap. In a repo that uses Linear the lead
+// must have a parent issue.
+func (c *checked) fromLead(conn *sql.DB) error {
+	var worktree, parentIssue sql.NullString
+	err := conn.QueryRow("SELECT worktree, parent_issue FROM agents WHERE name = ?1 AND state != 'ended'",
+		c.me.Agent).Scan(&worktree, &parentIssue)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return exit.Database(err)
+	}
+	if !worktree.Valid || worktree.String == "" {
+		return exit.Refusedf("%s has no live row with a worktree", c.me.Agent)
 	}
 	var live int64
-	if err := conn.QueryRow("SELECT count(*) FROM agents WHERE job = ?1 AND state != 'ended'", job).Scan(&live); err != nil {
-		return "", exit.Database(err)
+	if err := conn.QueryRow("SELECT count(*) FROM agents WHERE job = ?1 AND state != 'ended'", c.p.job).Scan(&live); err != nil {
+		return exit.Database(err)
 	}
-	if live >= jobCap {
-		return "", exit.Refusedf("job %s already has %d live agents; the cap is %d including the lead",
-			job, live, jobCap)
+	if limit := int64(c.cfg.MaxAgentsPerJob); live >= limit {
+		return exit.Refusedf("job %s already has %d live agents; the cap is %d including the lead",
+			c.p.job, live, limit)
 	}
-	return found.String, nil
+	if c.cfg.Linear != nil && parentIssue.String == "" {
+		return exit.Refusedf("%s has no parent issue in the ledger, so its worker cannot get a work order; "+
+			"it was started before %s set linear", c.me.Agent, config.Path(c.checkout))
+	}
+	c.worktree, c.parentIssue = worktree.String, parentIssue.String
+	return nil
 }
 
 // spawnCreate is everything after the row is written: the worktree and
 // workspace (lead) or tab (worker), the agent, the delivery and the
 // `active` row. Every step appends what it made to `created`.
-func spawnCreate(h *herdr.Herdr, conn *sql.DB, c *checked, args SpawnArgs, created *[]string) (exit.Code, error) {
+func spawnCreate(h *herdr.Herdr, conn *sql.DB, c *checked, args SpawnArgs, issue atb.Issue, created *[]string) (exit.Code, error) {
 	p := c.p
-	id := &identity.Identity{Agent: p.agent, Role: p.role, Parent: c.me.Agent, Repo: c.me.Repo, Job: p.job}
+	id := &identity.Identity{Agent: p.agent, Role: p.role, Parent: c.me.Agent, Repo: c.me.Repo, Job: p.job,
+		Issue: issue.Identifier}
 	var place Place
 	var err error
 	if p.branch != nil {
@@ -757,7 +849,15 @@ func spawnCreate(h *herdr.Herdr, conn *sql.DB, c *checked, args SpawnArgs, creat
 		return 0, err
 	}
 	*created = append(*created, fmt.Sprintf("agent %s in pane %s", p.agent, place.PaneID))
-	code, err := Deliver(h, p.agent, c.text)
+	body := c.body
+	if issue.URL != "" {
+		body = "Work order: " + issue.URL + "\n\n" + body
+	}
+	text, err := WithHeader(c.me.Agent, body)
+	if err != nil {
+		return 0, err
+	}
+	code, err := Deliver(h, p.agent, text)
 	if err != nil {
 		return 0, err
 	}
@@ -774,6 +874,27 @@ func spawnCreate(h *herdr.Herdr, conn *sql.DB, c *checked, args SpawnArgs, creat
 	return code, nil
 }
 
+// workOrder creates the new agent's work order under the job's parent
+// issue and claims it in the agent's name, when the repo uses Linear;
+// otherwise it returns the zero Issue. An issue that was created is in
+// `created`, claimed or not.
+func (c *checked) workOrder(created *[]string) (atb.Issue, error) {
+	if c.cfg.Linear == nil {
+		return atb.Issue{}, nil
+	}
+	issue, err := atb.Create(c.cfg.Linear.Team, c.cfg.Linear.Project, c.parentIssue, c.title, c.task)
+	if err != nil {
+		return atb.Issue{}, err
+	}
+	*created = append(*created, fmt.Sprintf("work order %s (%s), not claimed", issue.Identifier, issue.URL))
+	if err := atb.Claim(issue.Identifier, c.p.agent, c.me.Agent, c.repo+": job "+c.p.job); err != nil {
+		return atb.Issue{}, err
+	}
+	(*created)[len(*created)-1] = fmt.Sprintf("work order %s (%s), claimed by %s",
+		issue.Identifier, issue.URL, c.p.agent)
+	return issue, nil
+}
+
 // Spawn runs `spawn`.
 func Spawn(h *herdr.Herdr, args SpawnArgs) (exit.Code, error) {
 	c, conn, err := spawnChecks(h, args)
@@ -782,39 +903,56 @@ func Spawn(h *herdr.Herdr, args SpawnArgs) (exit.Code, error) {
 	}
 	defer conn.Close()
 	p := c.p
-	if _, err := conn.Exec(
-		"INSERT INTO agents (name, role, job, worktree, parent, report_to, task, state, started_at) "+
-			"VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?6, 'starting', ?7)",
-		p.agent, p.role.String(), p.job, c.worktree, c.me.Agent, c.task, db.Now()); err != nil {
-		return 0, exit.Database(err)
+	var created []string
+	issue, err := c.workOrder(&created)
+	if err != nil {
+		return spawnFailed(c, err, 0, created, false)
 	}
-	created := []string{fmt.Sprintf("ledger row %s (state starting)", p.agent)}
-	code, err := spawnCreate(h, conn, c, args, &created)
-
+	if _, err := conn.Exec(
+		"INSERT INTO agents (name, role, job, worktree, parent, report_to, task, state, started_at, issue, parent_issue) "+
+			"VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?6, 'starting', ?7, ?8, ?9)",
+		p.agent, p.role.String(), p.job, c.worktree, c.me.Agent, c.task, db.Now(),
+		issue.Identifier, c.parentIssue); err != nil {
+		return spawnFailed(c, exit.Database(err), 0, created, false)
+	}
+	created = append(created, fmt.Sprintf("ledger row %s (state starting)", p.agent))
+	code, err := spawnCreate(h, conn, c, args, issue, &created)
 	if err != nil || code != exit.Ok {
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "fleet: %s\n", err)
-		}
+		return spawnFailed(c, err, code, created, true)
+	}
+	fmt.Fprintf(os.Stdout, "started %s in job %s (%s)\n", p.agent, p.job, c.worktree)
+	return code, nil
+}
+
+// spawnFailed prints why the spawn stopped and what it created, and
+// returns the exit code. `placed` is whether the ledger row exists, and
+// so whether there is anything to clean up besides a work order.
+func spawnFailed(c *checked, err error, code exit.Code, created []string, placed bool) (exit.Code, error) {
+	p := c.p
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "fleet: %s\n", err)
+	}
+	if len(created) > 0 {
 		fmt.Fprintf(os.Stderr, "spawn of %s did not complete; created so far:\n", p.agent)
 		for _, item := range created {
 			fmt.Fprintf(os.Stderr, "  - %s\n", item)
 		}
-		if p.role == identity.Lead {
-			fmt.Fprintf(os.Stderr, "clean up with: fleet close %s --force\n", p.job)
-		} else {
-			fmt.Fprintln(os.Stderr, "report this failure to the orchestra (`fleet send orchestra`); "+
-				"the cleanup is the orchestra's call")
-		}
-		var failure *exit.Failure
-		if errors.As(err, &failure) {
-			return failure.Code, nil
-		}
-		if err != nil {
-			return exit.Environment, nil
-		}
-		return code, nil
 	}
-	fmt.Fprintf(os.Stdout, "started %s in job %s (%s)\n", p.agent, p.job, c.worktree)
+	switch {
+	case !placed:
+	case p.role == identity.Lead:
+		fmt.Fprintf(os.Stderr, "clean up with: fleet close %s --force\n", p.job)
+	default:
+		fmt.Fprintln(os.Stderr, "report this failure to the orchestra (`fleet send orchestra`); "+
+			"the cleanup is the orchestra's call")
+	}
+	var failure *exit.Failure
+	if errors.As(err, &failure) {
+		return failure.Code, nil
+	}
+	if err != nil {
+		return exit.Environment, nil
+	}
 	return code, nil
 }
 

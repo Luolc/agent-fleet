@@ -17,7 +17,7 @@ import (
 	"github.com/Luolc/agent-fleet/internal/exit"
 )
 
-const schemaVersion = 2
+const schemaVersion = 3
 
 // One table, `agents`. Ended rows are kept as history, so `name` is unique
 // only among rows that have not ended.
@@ -53,6 +53,13 @@ CREATE TABLE dataset (
     repo    TEXT    NOT NULL,
     session TEXT    NOT NULL
 );
+`
+
+// Version 3: the agent's work order and its job's parent issue, both
+// Linear identifiers; empty when the repo does not use Linear.
+const schemaV3 = `
+ALTER TABLE agents ADD COLUMN issue TEXT NOT NULL DEFAULT '';
+ALTER TABLE agents ADD COLUMN parent_issue TEXT NOT NULL DEFAULT '';
 `
 
 // Path is where the database of a dataset repo lives:
@@ -125,29 +132,22 @@ func migrate(conn *sql.DB) error {
 	if err := tx.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		return exit.Database(err)
 	}
-	switch version {
-	case 0:
-		if _, err := tx.Exec(schema); err != nil {
-			return exit.Database(err)
-		}
-		if _, err := tx.Exec(schemaV2); err != nil {
-			return exit.Database(err)
-		}
-		if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version = %d", schemaVersion)); err != nil {
-			return exit.Database(err)
-		}
-	case 1:
-		if _, err := tx.Exec(schemaV2); err != nil {
-			return exit.Database(err)
-		}
-		if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version = %d", schemaVersion)); err != nil {
-			return exit.Database(err)
-		}
-	case schemaVersion:
-	default:
+	// Each step upgrades from the version before it, in order.
+	steps := []string{schema, schemaV2, schemaV3}
+	if version > schemaVersion {
 		return exit.Environmentf(
 			"database schema version %d is newer than this binary supports (%d)",
 			version, schemaVersion)
+	}
+	for _, step := range steps[version:] {
+		if _, err := tx.Exec(step); err != nil {
+			return exit.Database(err)
+		}
+	}
+	if version < schemaVersion {
+		if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version = %d", schemaVersion)); err != nil {
+			return exit.Database(err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return exit.Database(err)

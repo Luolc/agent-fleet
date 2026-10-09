@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Luolc/agent-fleet/internal/config"
 	"github.com/Luolc/agent-fleet/internal/exit"
 )
 
@@ -148,5 +149,31 @@ func TestClaudeGetsTheFixedArguments(t *testing.T) {
 	}
 	if got := len(ClaudeArgs(nil, nil)); got != 5 {
 		t.Errorf("without model and effort: %d arguments", got)
+	}
+}
+
+func TestWorkOrderTitleIsTheFirstNonEmptyLine(t *testing.T) {
+	for task, want := range map[string]string{
+		"\n  \n## Import the A table  \nbody\n": "Import the A table",
+		"#\n# \nfix the timeout\n":              "fix the timeout",
+		"   plain first line\n":                 "plain first line",
+		strings.Repeat("é", 81) + "\n":          strings.Repeat("é", 80),
+		"#\n##\n":                               "",
+	} {
+		if got := WorkOrderTitle(task); got != want {
+			t.Errorf("%q: got %q, want %q", task, got, want)
+		}
+	}
+}
+
+func TestTheResourceCheckFollowsTheConfig(t *testing.T) {
+	saved := machineResources
+	defer func() { machineResources = saved }()
+	machineResources = func() error { return exit.Refusedf("the machine is busy") }
+	for _, on := range []bool{true, false} {
+		c := &checked{cfg: &config.Config{MaxAgentsPerJob: 4, ResourceCheck: on}}
+		if refused := c.resources() != nil; refused != on {
+			t.Errorf("resource_check %v: refused %v", on, refused)
+		}
 	}
 }
