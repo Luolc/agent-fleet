@@ -191,9 +191,10 @@ func tempFile(content string) (string, func(), error) {
 type inboundMessage struct {
 	Thread, Text, User, TS, Context string
 	// Question is the asking agent's name; Approval asks for an approval
-	// card.
-	Question string
-	Approval bool
+	// card; Conclusion marks a job's conclusion, which needs no answer.
+	Question   string
+	Approval   bool
+	Conclusion bool
 }
 
 // channel is the channel part of the thread key `CHANNEL/TS`.
@@ -212,6 +213,10 @@ func (m inboundMessage) sender() string {
 
 // body is the message as the thread agent reads it.
 func (m inboundMessage) body() string {
+	if m.Conclusion {
+		return fmt.Sprintf("Conclusion of a job from %s for the people in thread %s. Post it to the thread with "+
+			"`fednet client post`; nothing is waiting for an answer.\n\n%s", m.Question, m.Thread, m.Text)
+	}
 	if m.Question != "" {
 		how := "Post it to the thread with `fednet client post`"
 		if m.Approval {
@@ -225,6 +230,9 @@ func (m inboundMessage) body() string {
 
 // trigger is what the `Session <n> started` comment names.
 func (m inboundMessage) trigger() string {
+	if m.Conclusion {
+		return "the conclusion of a job from " + m.Question
+	}
 	if m.Question != "" {
 		return "a question from " + m.Question
 	}

@@ -299,3 +299,15 @@ check "ask-human: exit 1 from a worker" 1 "$rc"
 out=$(PATH=/home/agent/fake-thread:$PATH env "${P}AGENT=item-1-lead" "${P}ROLE=lead" "${P}PARENT=thread-1" "${P}TARGET=$TARGET" \
   "${P}JOB=item-1" "$T" --session judge ask-human --file /home/agent/tasks/q1.md 2>&1); rc=$?
 check "ask-human: exit 1 from a lead whose job has no home thread" 1 "$rc"
+
+# The job's conclusion reaches its home thread the same way: the thread's
+# agent is gone, so one is started with the conclusion as its first
+# message.
+printf 'Imported everything. 0xREPORT8\n' > /home/agent/tasks/report8.md
+out=$(PATH=/home/agent/fake-thread:$PATH env "${P}AGENT=item-8-lead" "${P}ROLE=lead" "${P}PARENT=$A" "${P}TARGET=default" \
+  "${P}JOB=item-8" "${P}ISSUE=" "$T" --session judge job end --report-file /home/agent/tasks/report8.md 2>&1); rc=$?
+check "job end: exit 0 with a home thread" 0 "$rc"
+[ "$rc" = 0 ] || printf '%s\n' "$out"
+has "job end: conclusion printed and delivered" "$out" "Job item-8 ended: done." "started $A for thread $K"
+has "job end: conclusion on the thread agent's screen" "$(screen "$A")" "[FROM: item-8-lead]" "Conclusion of a job from item-8-lead" "Job item-8 ended: done." "0xREPORT8"
+check "job end: the job is ended" "ended|done " "$(tledger "SELECT state, outcome FROM jobs WHERE job = 'item-8'")"

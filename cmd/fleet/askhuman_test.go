@@ -192,3 +192,44 @@ func TestAskHumanRefusalsAndLinearDown(t *testing.T) {
 		t.Errorf("questions = %q", got)
 	}
 }
+
+func TestJobEndTakesTheConclusionToTheHomeThread(t *testing.T) {
+	w := threadWorld(t, "")
+	openJobWithHomeThread(w, true)
+	if out := w.inbox(w.event("m1", "start the import", "")); out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	if err := os.WriteFile(filepath.Join(w.dir, "has-thread-c0123-1700000000-123"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.Remove(filepath.Join(w.dir, "calls"))
+	report := task(w, "report.md", "All rows imported.\n")
+	out := w.run("", []string{"job", "end", "--report-file", report},
+		"FLEET_AGENT=item-1-lead", "FLEET_ROLE=lead", "FLEET_PARENT=thread-x", "FLEET_TARGET=default", "FLEET_JOB=item-1")
+	if out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	if !strings.Contains(out.stdout, "Job item-1 ended: done.") {
+		t.Errorf("stdout = %q", out.stdout)
+	}
+	argv := w.file("argv")
+	if !strings.HasPrefix(argv, "agent\nprompt\nthread-c0123-1700000000-123\n[FROM: item-1-lead]\nConclusion of a job from item-1-lead for the people in thread "+
+		threadKey+". Post it to the thread with `fednet client post`; nothing is waiting for an answer.\n\nJob item-1 ended: done.\n") {
+		t.Errorf("argv = %q", argv)
+	}
+	if got := questions(w); got != "" {
+		t.Errorf("a conclusion was recorded as a question: %q", got)
+	}
+	calls := w.calls()
+	if strings.Index(calls, "herdr agent prompt") > strings.Index(calls, "herdr workspace close") {
+		t.Errorf("the workspace was closed before the conclusion was delivered: %q", calls)
+	}
+	// A job without a home thread only prints.
+	w2 := threadWorld(t, "")
+	openJobWithHomeThread(w2, false)
+	out = w2.run("", []string{"job", "end", "--report-file", task(w2, "r.md", "done\n")},
+		"FLEET_AGENT=item-1-lead", "FLEET_ROLE=lead", "FLEET_PARENT=thread-x", "FLEET_TARGET=default", "FLEET_JOB=item-1")
+	if out.code != 0 || !strings.Contains(out.stdout, "Job item-1 ended: done.") || strings.Contains(w2.calls(), "agent prompt") {
+		t.Errorf("no home thread: %+v, calls %q", out, w2.calls())
+	}
+}

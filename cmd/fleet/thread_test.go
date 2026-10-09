@@ -47,7 +47,7 @@ case "$1 $2" in
   "pane rename")
     if [ -e "$dir/kill-at-rename" ]; then rm "$dir/kill-at-rename"; kill -9 $PPID; sleep 1; fi
     echo '{"result":{}}' ;;
-  "tab rename") echo '{"result":{}}' ;;
+  "tab rename"|"workspace close") echo '{"result":{}}' ;;
   "pane get")
     if [ -e "$dir/pane-gone" ]; then echo '{"error":{"code":"pane_not_found","message":"pane '"$3"' not found"}}'; else
       echo '{"result":{"pane":{"pane_id":"'"$3"'","tab_id":"t9","workspace_id":"w7"}}}'; fi ;;
