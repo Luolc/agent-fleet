@@ -52,6 +52,7 @@ case "$1 $2" in
     if [ -e "$dir/pane-gone" ]; then echo '{"error":{"code":"pane_not_found","message":"pane '"$3"' not found"}}'; else
       echo '{"result":{"pane":{"pane_id":"'"$3"'","tab_id":"t9","workspace_id":"w7"}}}'; fi ;;
   "tab get")
+    if [ -e "$dir/tab-get-breaks" ]; then echo '{"error":{"code":"server_not_running","message":"no server"}}'; exit 1; fi
     if [ -e "$dir/closed-tab" ]; then echo '{"error":{"code":"tab_not_found","message":"tab '"$3"' not found"}}'; else
       echo '{"result":{"tab":{"tab_id":"'"$3"'"}}}'; fi ;;
   "tab close")
@@ -874,6 +875,19 @@ func TestThreadEndClosesTheRecordedTabWhenTheAgentIsGone(t *testing.T) {
 	out = w2.asThreadAgent("TH-5", "thread", "end", "--summary-file", task(w2, "s.md", "bye\n"))
 	if out.code != 5 || !strings.Contains(out.stderr, "still there after") {
 		t.Errorf("tab stays: %+v", out)
+	}
+	// A verification that answers with another error is not a verified
+	// close: exit 5, naming the error.
+	w4 := threadWorld(t, "")
+	if out := w4.inbox(w4.event("m1", "first", "")); out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	if err := os.WriteFile(filepath.Join(w4.dir, "tab-get-breaks"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out = w4.asThreadAgent("TH-5", "thread", "end", "--summary-file", task(w4, "s.md", "bye\n"))
+	if out.code != 5 || !strings.Contains(out.stderr, "server_not_running") || !strings.Contains(out.stderr, "not verified") {
+		t.Errorf("tab get breaks: %+v", out)
 	}
 	// Agent gone and pane gone: the tab is gone with it, nothing to close.
 	w3 := threadWorld(t, "")

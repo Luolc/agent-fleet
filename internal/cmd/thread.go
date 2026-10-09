@@ -703,8 +703,12 @@ func closeOwnTab(h *herdr.Herdr, conn querier, name string) error {
 	if reply, err = h.Call("tab", "get", tab); err != nil {
 		return err
 	}
-	if reply.Error == nil {
+	switch {
+	case reply.Error == nil:
 		return exit.Environmentf("tab %s of %s is still there after `herdr tab close`; close it by hand", tab, name)
+	case reply.Error.Code != "tab_not_found":
+		return exit.Environmentf("herdr: %s: %s; whether tab %s of %s is closed is not verified", reply.Error.Code,
+			reply.Error.Message, tab, name)
 	}
 	return nil
 }
