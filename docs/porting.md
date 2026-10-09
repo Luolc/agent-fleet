@@ -25,8 +25,9 @@ here in the same PR. The page is deleted when the port is complete.
 ## Names
 
 - The command is `fleet`; the identity variables are `FLEET_AGENT`,
-  `FLEET_ROLE`, `FLEET_PARENT`, `FLEET_REPO`, `FLEET_JOB`; the ledger file
-  is `fleet.db` (its directory is in design.md); watch's override is
+  `FLEET_ROLE`, `FLEET_PARENT`, `FLEET_REPO`, `FLEET_JOB` and `FLEET_ISSUE`
+  (the work order, empty when the agent has none); the ledger file is
+  `fleet.db` (its directory is in design.md); watch's override is
   `FLEET_WATCH_STALE_SECS`. Every message, help text and error that named the
   earlier tool or its variables uses these names instead; nothing else in the
   wording changes.
