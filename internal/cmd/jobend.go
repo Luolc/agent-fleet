@@ -28,9 +28,10 @@ const (
 		"With Linear on, first: the report is written to your work order (FLEET_ISSUE, `atb " +
 		"linear comment`) and the work order is released as done or abandoned (`atb linear " +
 		"release`); then the conclusion (outcome, lead, work order, report path) is written to " +
-		"the job's parent issue and the parent is released the same way. If an atb step fails, " +
-		"nothing else changes and `job end` exits 5 naming the step; the comment may already be " +
-		"written.\n\n" +
+		"the job's parent issue and the parent is released the same way. Each step done is " +
+		"recorded in the ledger; if a step fails, `job end` exits 5 naming it and nothing else " +
+		"changes, and running it again continues from the first step not recorded, so a " +
+		"release already done is not repeated.\n\n" +
 		"Then the cleanup: every other agent in the job's workspace is closed; no agent but you " +
 		"may have its cwd inside one of the job's directories (the worktrees `fleet worktree` " +
 		"recorded for it and, for a cross-repo job, ~/cross-repo/<job>/); each worktree is " +
@@ -497,35 +498,44 @@ func conclusion(job, outcome, lead, issue, report string) string {
 
 // linearEnd writes the report to the lead's work order and releases it,
 // then the conclusion to the parent and releases it; each only when the
-// job has one.
-func (e *leadEnding) linearEnd(abandon bool) error {
+// job has one. Each step done is recorded under the job's key, so a
+// retry after a failure continues where it stopped.
+func (e *leadEnding) linearEnd(conn querier, abandon bool) error {
+	key := fmt.Sprintf("job-end:%d", e.job.ID)
 	if e.me.Issue != "" {
-		if err := atb.Comment(e.me.Issue, e.report); err != nil {
+		if err := runStep(conn, key, "comment-work-order", func() error { return atb.Comment(e.me.Issue, e.report) }); err != nil {
 			return err
 		}
-		if err := atb.Release(e.me.Issue, e.me.Agent, abandon); err != nil {
+		if err := runStep(conn, key, "release-work-order", func() error { return atb.Release(e.me.Issue, e.me.Agent, abandon) }); err != nil {
 			return err
 		}
 	}
 	if e.job.ParentIssue == "" {
 		return nil
 	}
+	if err := runStep(conn, key, "comment-parent", func() error {
+		return e.commentParent(conclusion(e.job.Job, outcomeOf(abandon), e.me.Agent, e.me.Issue, e.report))
+	}); err != nil {
+		return err
+	}
+	return runStep(conn, key, "release-parent", func() error { return atb.Release(e.job.ParentIssue, e.me.Agent, abandon) })
+}
+
+// commentParent writes `text` to the parent issue through a temporary file.
+func (e *leadEnding) commentParent(text string) error {
 	file, err := os.CreateTemp("", "fleet-conclusion-*.md")
 	if err != nil {
 		return exit.IO(err)
 	}
 	defer os.Remove(file.Name())
-	_, err = file.WriteString(conclusion(e.job.Job, outcomeOf(abandon), e.me.Agent, e.me.Issue, e.report))
+	_, err = file.WriteString(text)
 	if closeErr := file.Close(); err == nil {
 		err = closeErr
 	}
 	if err != nil {
 		return exit.IO(err)
 	}
-	if err := atb.Comment(e.job.ParentIssue, file.Name()); err != nil {
-		return err
-	}
-	return atb.Release(e.job.ParentIssue, e.me.Agent, abandon)
+	return atb.Comment(e.job.ParentIssue, file.Name())
 }
 
 // jobEndByLead is the lead ending its own job.
@@ -542,7 +552,7 @@ func jobEndByLead(h *herdr.Herdr, args JobEndArgs) (exit.Code, error) {
 	if err := e.ledgerChecks(conn); err != nil {
 		return 0, err
 	}
-	if err := e.linearEnd(args.Abandon); err != nil {
+	if err := e.linearEnd(conn, args.Abandon); err != nil {
 		return 0, err
 	}
 	home, err := Home()

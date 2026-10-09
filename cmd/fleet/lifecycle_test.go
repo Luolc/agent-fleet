@@ -402,12 +402,14 @@ func TestJobEndForceEndsTheJobAndRemovesTheCrossRepoDirectory(t *testing.T) {
 // jobEndHerdr is a fake herdr for a lead ending job item-1: workspace w1
 // labelled item-1 holds the lead (pane p0) and `other` (pane p9, gone
 // from the list once closed); `pane close` and `workspace close` are
-// logged to <dir>/calls, in order with atb's calls.
-func (w *world) jobEndHerdr() {
+// logged to <dir>/calls, in order with atb's calls. The commands named
+// in `failing` ("pane close") exit 2 instead.
+func (w *world) jobEndHerdr(failing ...string) {
 	w.t.Helper()
 	script := `#!/bin/sh
 dir="$(dirname "$0")/.."
 case "$1 $2" in
+  "` + strings.Join(failing, `"|"`) + `") echo "fake herdr: $1 $2 failing" >&2; exit 2 ;;
   "workspace list") echo '{"result":{"workspaces":[{"workspace_id":"w1","label":"item-1"}]}}' ;;
   "agent list")
     other=',{"name":"other","pane_id":"p9","workspace_id":"w1","cwd":"/elsewhere"}'
@@ -512,6 +514,55 @@ func TestJobEndStopsWhenAnAtbStepFails(t *testing.T) {
 	}
 	if got := jobState(w, "item-1"); got != "open" {
 		t.Errorf("job state = %s", got)
+	}
+}
+
+func TestJobEndResumesAfterAPartialFailure(t *testing.T) {
+	w := newWorld(t)
+	openJobWithLead(w, "EX-10")
+	report := task(w, "report.md", "what the job did\n")
+	// First: the parent's release fails after the work order was commented
+	// and released.
+	w.jobEndHerdr()
+	w.fakeAtb("release EX-10")
+	if out := w.endJob("--report-file", report); out.code != 5 {
+		t.Fatalf("first: %+v", out)
+	}
+	// Second: atb now refuses the work order's release, as the real one
+	// does for an issue nobody holds; the retry must not ask for it. The
+	// cleanup then fails at herdr.
+	w.fakeAtb("release EX-12")
+	w.jobEndHerdr("pane close")
+	before := w.calls()
+	out := w.endJob("--report-file", report)
+	if out.code != 5 || !strings.Contains(out.stderr, "pane close") {
+		t.Fatalf("second: %+v", out)
+	}
+	second := strings.TrimPrefix(w.calls(), before)
+	if strings.Count(second, "atb ") != 1 || !strings.Contains(second, "atb linear release EX-10 --agent item-1-lead --reason done --done") {
+		t.Errorf("second run's atb calls = %q, want only the parent's release", second)
+	}
+	if got := jobState(w, "item-1"); got != "open" {
+		t.Errorf("job state after the second run = %s", got)
+	}
+	// Third: every Linear step is recorded, so atb is not asked (the
+	// calls log shows it); herdr works again.
+	w.fakeAtb("release")
+	w.jobEndHerdr()
+	before = w.calls()
+	out = w.endJob("--report-file", report)
+	if out.code != 0 {
+		t.Fatalf("third: %+v", out)
+	}
+	third := strings.TrimPrefix(w.calls(), before)
+	if strings.Contains(third, "atb ") || !strings.Contains(third, "herdr workspace close w1") {
+		t.Errorf("third run's calls = %q, want herdr only, ending with the workspace", third)
+	}
+	if got := jobState(w, "item-1"); got != "ended done" {
+		t.Errorf("job state = %s", got)
+	}
+	if got := state(w, "item-1-lead"); got != "ended" {
+		t.Errorf("state = %s", got)
 	}
 }
 

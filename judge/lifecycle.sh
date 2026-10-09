@@ -277,17 +277,30 @@ cat > /home/agent/fake-atb/atb <<'ATB'
 #!/bin/sh
 echo "$*" >> /home/agent/atb.log
 [ "$2" = comment ] && cat "$5" >> /home/agent/atb-bodies.log
+[ "$2 $3" = "$(cat /home/agent/atb-fail 2>/dev/null)" ] && { echo "error: refused: no holder" >&2; exit 4; }
 exit 0
 ATB
+# First the parent's release fails: exit 5, nothing changed but the steps
+# done, which the retry does not repeat (the fake then refuses the work
+# order's release, as atb does for an issue nobody holds). The failing
+# step is read from a file: the runner's allow-list passes no variable.
+echo "release QT-10" > /home/agent/atb-fail
 out=$(PATH=/home/agent/fake-atb:$PATH ISSUE=QT-12 as wire-lead lead thread-1 wire -- job end --report-file /home/agent/tasks/wire.md --abandon 2>&1); rc=$?
-check "job end cross-repo: exit 0" 0 "$rc"
+check "job end cross-repo: exit 5 when the parent's release fails" 5 "$rc"
+has "job end cross-repo: names the failed step" "$out" "atb linear release QT-10 failed"
+check "job end cross-repo: job and lead still live, workspace kept" "open active 1" \
+  "$(ledger "SELECT state FROM jobs WHERE job = 'wire'")$(ledger "SELECT state FROM agents WHERE name = 'wire-lead'")$("${S[@]}" workspace list | jq '[.result.workspaces[] | select(.label == "wire")] | length')"
+echo "release QT-12" > /home/agent/atb-fail
+out=$(PATH=/home/agent/fake-atb:$PATH ISSUE=QT-12 as wire-lead lead thread-1 wire -- job end --report-file /home/agent/tasks/wire.md --abandon 2>&1); rc=$?
+check "job end cross-repo: exit 0 on the retry" 0 "$rc"
 [ "$rc" = 0 ] || printf '%s\n' "$out"
-check "job end cross-repo: report to the work order, released; conclusion to the parent, released" \
-  "linear comment QT-12 --body-file /home/agent/tasks/wire.md|linear release QT-12 --agent wire-lead --reason abandoned --abandon|linear comment QT-10 --body-file |linear release QT-10 --agent wire-lead --reason abandoned --abandon|" \
+check "job end cross-repo: report to the work order, released; conclusion to the parent, released once each, the retry only releasing the parent" \
+  "linear comment QT-12 --body-file /home/agent/tasks/wire.md|linear release QT-12 --agent wire-lead --reason abandoned --abandon|linear comment QT-10 --body-file |linear release QT-10 --agent wire-lead --reason abandoned --abandon|linear release QT-10 --agent wire-lead --reason abandoned --abandon|" \
   "$(sed 's|--body-file /tmp/.*|--body-file |' /home/agent/atb.log | tr '\n' '|')"
 check "job end cross-repo: the conclusion written to the parent" \
   "Wire the repos 0xWIRE|Job wire ended: abandoned.|Lead: wire-lead. Work order: QT-12. Report: /home/agent/tasks/wire.md|" \
   "$(tr '\n' '|' < /home/agent/atb-bodies.log)"
+rm /home/agent/atb-fail
 has "job end cross-repo: the conclusion printed" "$out" "Job wire ended: abandoned."
 check "job end cross-repo: directory removed" no "$([ -e /home/agent/cross-repo/wire ] && echo yes || echo no)"
 check "job end cross-repo: job ended as abandoned with its rows" "ended|abandoned ended ended " \

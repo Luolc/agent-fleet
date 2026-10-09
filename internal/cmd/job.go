@@ -110,6 +110,7 @@ type JobListArgs struct {
 
 // jobRow is an open job as the ledger records it.
 type jobRow struct {
+	ID          int64
 	Job         string
 	ParentIssue string
 	Key         string
@@ -122,9 +123,9 @@ type jobRow struct {
 // openJob is the open job named `job`, or nil.
 func openJob(conn *sql.DB, job string) (*jobRow, error) {
 	var r jobRow
-	err := conn.QueryRow("SELECT job, parent_issue, key, repo, lead_cwd, home_thread, started_at FROM jobs "+
+	err := conn.QueryRow("SELECT id, job, parent_issue, key, repo, lead_cwd, home_thread, started_at FROM jobs "+
 		"WHERE job = ?1 AND state = 'open'", job).Scan(
-		&r.Job, &r.ParentIssue, &r.Key, &r.Repo, &r.LeadCwd, &r.HomeThread, &r.StartedAt)
+		&r.ID, &r.Job, &r.ParentIssue, &r.Key, &r.Repo, &r.LeadCwd, &r.HomeThread, &r.StartedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -136,7 +137,7 @@ func openJob(conn *sql.DB, job string) (*jobRow, error) {
 
 // openJobs are the open jobs, oldest first.
 func openJobs(conn *sql.DB) ([]jobRow, error) {
-	rows, err := conn.Query("SELECT job, parent_issue, key, repo, lead_cwd, home_thread, started_at FROM jobs " +
+	rows, err := conn.Query("SELECT id, job, parent_issue, key, repo, lead_cwd, home_thread, started_at FROM jobs " +
 		"WHERE state = 'open' ORDER BY id")
 	if err != nil {
 		return nil, exit.Database(err)
@@ -145,7 +146,7 @@ func openJobs(conn *sql.DB) ([]jobRow, error) {
 	var jobs []jobRow
 	for rows.Next() {
 		var r jobRow
-		if err := rows.Scan(&r.Job, &r.ParentIssue, &r.Key, &r.Repo, &r.LeadCwd, &r.HomeThread, &r.StartedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.Job, &r.ParentIssue, &r.Key, &r.Repo, &r.LeadCwd, &r.HomeThread, &r.StartedAt); err != nil {
 			return nil, exit.Database(err)
 		}
 		jobs = append(jobs, r)
