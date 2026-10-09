@@ -64,7 +64,7 @@ check "spawn lead: Claude's fixed arguments" \
   "$(proc_args item-1-lead)"
 has "spawn lead: header and task on screen" "$(screen item-1-lead)" "[FROM: orchestra]" "0xLEAD1"
 check "spawn lead: identity variables in its process" \
-  "${P}AGENT=item-1-lead ${P}JOB=item-1 ${P}PARENT=orchestra ${P}REPO=acme/$R ${P}ROLE=lead " \
+  "${P}AGENT=item-1-lead ${P}ISSUE= ${P}JOB=item-1 ${P}PARENT=orchestra ${P}REPO=acme/$R ${P}ROLE=lead " \
   "$(proc_env item-1-lead)"
 check "spawn lead: ledger row active with its places" \
   "lead|item-1|orchestra|orchestra|active|$WT/item-1|/home/agent/tasks/lead.md|$(agent_field item-1-lead pane_id) " \
@@ -84,7 +84,7 @@ check "spawn worker: pane renamed" item-1-a \
   "$("${S[@]}" pane get "$(agent_field item-1-a pane_id)" | jq -r .result.pane.label)"
 has "spawn worker: header and task on screen" "$(screen item-1-a)" "[FROM: item-1-lead]" "0xWORKA"
 check "spawn worker: identity variables in its process" \
-  "${P}AGENT=item-1-a ${P}JOB=item-1 ${P}PARENT=item-1-lead ${P}REPO=acme/$R ${P}ROLE=worker " \
+  "${P}AGENT=item-1-a ${P}ISSUE= ${P}JOB=item-1 ${P}PARENT=item-1-lead ${P}REPO=acme/$R ${P}ROLE=worker " \
   "$(proc_env item-1-a)"
 check "spawn worker: ledger row active in the job" "worker|item-1|item-1-lead|active|$WT/item-1 " \
   "$(ledger "SELECT role, job, parent, state, worktree FROM agents WHERE name = 'item-1-a'")"
