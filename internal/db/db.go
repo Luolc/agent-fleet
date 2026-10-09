@@ -17,7 +17,7 @@ import (
 	"github.com/Luolc/agent-fleet/internal/exit"
 )
 
-const schemaVersion = 7
+const schemaVersion = 8
 
 // Version 1: the `agents` table. Ended rows are kept as history, so `name`
 // is unique only among rows that have not ended.
@@ -152,8 +152,26 @@ CREATE TABLE inbox (
 );
 `
 
+// Version 8: `questions`, one row per `fleet ask-human`: the job it came
+// from (empty when a thread agent asked), the thread it went to, who
+// asked, the text, whether an approval card was asked for, and `pending`
+// until a person's message arrives in that thread.
+const schemaV8 = `
+CREATE TABLE questions (
+    id          INTEGER PRIMARY KEY,
+    job         TEXT    NOT NULL DEFAULT '',
+    thread      TEXT    NOT NULL,
+    asked_by    TEXT    NOT NULL,
+    text        TEXT    NOT NULL,
+    approval    INTEGER NOT NULL DEFAULT 0,
+    state       TEXT    NOT NULL CHECK (state IN ('pending', 'answered')),
+    asked_at    INTEGER NOT NULL,
+    answered_at INTEGER
+);
+`
+
 // migrations[v] upgrades a ledger at version v to v+1.
-var migrations = [schemaVersion]string{schema, schemaV2, schemaV3, schemaV4, schemaV5, schemaV6, schemaV7}
+var migrations = [schemaVersion]string{schema, schemaV2, schemaV3, schemaV4, schemaV5, schemaV6, schemaV7, schemaV8}
 
 // Path is where the ledger of `target` lives:
 // `$XDG_STATE_HOME/fleet/<target>/fleet.db`, with `~/.local/state` when

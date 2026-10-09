@@ -244,15 +244,15 @@ func TestAnOpenJobsNameAndKeyAreUnique(t *testing.T) {
 	}
 }
 
-func TestAVersion5LedgerGainsTheThreadTablesAndKeepsItsRows(t *testing.T) {
+func TestAVersion6LedgerGainsTheStepsAndQuestionsTablesAndKeepsItsRows(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "fleet.db")
 	conn, err := sql.Open("sqlite", path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, step := range []string{schema, schemaV2, schemaV3, schemaV4, schemaV5,
+	for _, step := range []string{schema, schemaV2, schemaV3, schemaV4, schemaV5, schemaV6,
 		"INSERT INTO jobs (job, lead_cwd, state, started_at) VALUES ('a', '/c', 'open', 1)",
-		"PRAGMA user_version = 5"} {
+		"PRAGMA user_version = 6"} {
 		if _, err := conn.Exec(step); err != nil {
 			t.Fatal(err)
 		}
@@ -265,16 +265,16 @@ func TestAVersion5LedgerGainsTheThreadTablesAndKeepsItsRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer conn.Close()
-	var jobs, threads, inbox, steps, version int64
+	var jobs, threads, inbox, steps, questions, version int64
 	for query, into := range map[string]*int64{"SELECT count(*) FROM jobs": &jobs,
 		"SELECT count(*) FROM threads": &threads, "SELECT count(*) FROM inbox": &inbox,
-		"SELECT count(*) FROM steps": &steps, "PRAGMA user_version": &version} {
+		"SELECT count(*) FROM steps": &steps, "SELECT count(*) FROM questions": &questions, "PRAGMA user_version": &version} {
 		if err := conn.QueryRow(query).Scan(into); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if jobs != 1 || threads != 0 || inbox != 0 || steps != 0 || version != schemaVersion {
-		t.Errorf("jobs %d, threads %d, inbox %d, steps %d, version %d", jobs, threads, inbox, steps, version)
+	if jobs != 1 || threads != 0 || inbox != 0 || steps != 0 || questions != 0 || version != schemaVersion {
+		t.Errorf("jobs %d, threads %d, inbox %d, steps %d, questions %d, version %d", jobs, threads, inbox, steps, questions, version)
 	}
 }
 

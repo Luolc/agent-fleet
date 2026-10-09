@@ -184,9 +184,16 @@ func tempFile(content string) (string, func(), error) {
 	return f.Name(), func() { _ = os.Remove(f.Name()) }, nil
 }
 
-// inboundMessage is one message from a person, as `fleet inbox` got it.
+// inboundMessage is what a thread agent is given: a message from a
+// person, as `fleet inbox` got it, or (`Question` set) a question from
+// an agent for the people in the thread, from `fleet ask-human` or the
+// job's conclusion.
 type inboundMessage struct {
 	Thread, Text, User, TS, Context string
+	// Question is the asking agent's name; Approval asks for an approval
+	// card.
+	Question string
+	Approval bool
 }
 
 // channel is the channel part of the thread key `CHANNEL/TS`.
@@ -195,9 +202,33 @@ func (m inboundMessage) channel() string {
 	return channel
 }
 
+// sender is the header name the message is delivered under.
+func (m inboundMessage) sender() string {
+	if m.Question != "" {
+		return m.Question
+	}
+	return inboxSender
+}
+
 // body is the message as the thread agent reads it.
 func (m inboundMessage) body() string {
+	if m.Question != "" {
+		how := "Post it to the thread with `fednet client post`"
+		if m.Approval {
+			how = "Post it to the thread as an approval card with `fednet client request-approval`"
+		}
+		return fmt.Sprintf("Question from %s for the people in thread %s. %s; when they answer, pass the answer on "+
+			"with `fleet send %s --file <file>`.\n\n%s\n", m.Question, m.Thread, how, m.Question, m.Text)
+	}
 	return fmt.Sprintf("Message in thread %s from %s at %s:\n\n%s\n", m.Thread, m.User, m.TS, m.Text)
+}
+
+// trigger is what the `Session <n> started` comment names.
+func (m inboundMessage) trigger() string {
+	if m.Question != "" {
+		return "a question from " + m.Question
+	}
+	return fmt.Sprintf("a message from %s at %s", m.User, m.TS)
 }
 
 // threadStart is one start of a thread agent for a message.
@@ -325,8 +356,7 @@ func (s *threadStart) linearSteps() error {
 	if s.session == 1 {
 		return nil
 	}
-	file, remove, err := tempFile(fmt.Sprintf("Session %d started\n\nTriggered by a message from %s at %s.\n",
-		s.session, s.msg.User, s.msg.TS))
+	file, remove, err := tempFile(fmt.Sprintf("Session %d started\n\nTriggered by %s.\n", s.session, s.msg.trigger()))
 	if err != nil {
 		return err
 	}
@@ -439,7 +469,7 @@ func (s *threadStart) start() (exit.Code, error) {
 	if err != nil {
 		return startFailed(s.id.Agent, err, 0, s.created, "")
 	}
-	code, err := startAndDeliver(s.h, s.conn, s.id, place, nil, nil, inboxSender, s.prompt(), "", &s.created)
+	code, err := startAndDeliver(s.h, s.conn, s.id, place, nil, nil, s.msg.sender(), s.prompt(), "", &s.created)
 	if err != nil || code != exit.Ok {
 		return startFailed(s.id.Agent, err, code, s.created, "")
 	}
@@ -452,10 +482,15 @@ func (s *threadStart) start() (exit.Code, error) {
 // thread; only when the post succeeded is the message dropped. A post
 // that fails, or no socket to post with, is exit 5: the message stays
 // reserved and fednet runs the hook again.
+// An agent's question (`Question` set) gets the failure back instead of
+// a post: nobody in the thread asked anything.
 func (s *threadStart) linearUnavailable(cause error) error {
 	fmt.Fprintf(os.Stderr, "fleet: Linear is unavailable, no thread agent started: %v\n", cause)
 	if err := s.unreserve(); err != nil {
 		return err
+	}
+	if s.msg.Question != "" {
+		return nil
 	}
 	if s.cfg.FednetSocket == "" {
 		return exit.Environmentf("fednet.socket is not configured, so the thread cannot be told; the message is kept for a retry")

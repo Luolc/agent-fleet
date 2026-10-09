@@ -49,6 +49,7 @@ Commands:
   inbox     ` + cmd.InboxAbout + `
   thread    ` + cmd.ThreadAbout + `
   job       ` + cmd.JobAbout + `
+  ask-human ` + cmd.AskHumanAbout + `
   spawn     ` + cmd.SpawnAbout + `
   send      ` + cmd.SendAbout + `
   done      ` + cmd.DoneAbout + `
@@ -133,6 +134,17 @@ Arguments:
 
 Options:
   -h, --help  Print help
+`
+
+const askHumanUsage = "Usage: fleet ask-human [OPTIONS] --file <PATH>"
+
+var askHumanHelp = cmd.AskHumanLongAbout + "\n\n" + askHumanUsage + `
+
+Options:
+      --file <PATH>     The question, delivered to the home thread's agent to post
+      --approval        Ask for an approval card (fednet's request-approval) instead of a plain question
+      --session <NAME>  ` + sessionHelp + `
+  -h, --help            Print help
 `
 
 const jobUsage = "Usage: fleet job <COMMAND>"
@@ -335,6 +347,8 @@ func dispatch(args []string) (exit.Code, error) {
 		return runThread(rest[1:], &session)
 	case "job":
 		return runJob(rest[1:], &session)
+	case "ask-human":
+		return runAskHuman(rest[1:], &session)
 	case "send":
 		return runSend(rest[1:], &session)
 	case "spawn":
@@ -354,7 +368,7 @@ func dispatch(args []string) (exit.Code, error) {
 
 // help is clap's implicit `help [COMMAND]` subcommand.
 func help(args []string) (exit.Code, error) {
-	helps := map[string]string{"inbox": inboxHelp, "thread": threadHelp, "job": jobHelp, "send": sendHelp, "spawn": spawnHelp, "done": doneHelp,
+	helps := map[string]string{"inbox": inboxHelp, "thread": threadHelp, "job": jobHelp, "ask-human": askHumanHelp, "send": sendHelp, "spawn": spawnHelp, "done": doneHelp,
 		"status": statusHelp, "watch": watchHelp, "worktree": worktreeHelp, "help": topHelp}
 	if len(args) == 0 {
 		fmt.Fprint(os.Stdout, topHelp)
@@ -483,6 +497,19 @@ func runThread(args []string, session *cliargs.OptString) (exit.Code, error) {
 	default:
 		return 0, &usageError{fmt.Sprintf("unrecognized subcommand '%s'", args[0]), threadUsage}
 	}
+}
+
+func runAskHuman(args []string, session *cliargs.OptString) (exit.Code, error) {
+	fs := flagSet("ask-human", session)
+	file := cliargs.OptString{Name: "file", Placeholder: "PATH"}
+	approval := cliargs.Bool{Name: "approval"}
+	fs.Var(&file, "file", "The question")
+	fs.Var(&approval, "approval", "Ask for an approval card")
+	_, helped, err := parse(fs, args, askHumanHelp, askHumanUsage, nil, &file)
+	if err != nil || helped {
+		return exit.Ok, err
+	}
+	return cmd.AskHuman(herdr.New(session.Ptr()), cmd.AskHumanArgs{File: file.Value, Approval: approval.Value})
 }
 
 // runJob dispatches `fleet job <COMMAND>`.

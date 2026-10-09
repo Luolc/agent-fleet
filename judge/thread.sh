@@ -271,3 +271,31 @@ check "job start from a thread agent: exit 0" 0 "$rc"
 [ "$rc" = 0 ] || printf '%s\n' "$out"
 check "job start: the caller's thread is the job's home thread" "$K " "$(tledger "SELECT home_thread FROM jobs WHERE job = 'item-8'")"
 check "job start: the lead's process has no thread variable" "" "$(proc_env item-8-lead | grep -o "${P}THREAD=[^ ]*")"
+
+# The lead of item-8 asks the people in its home thread: the question
+# reaches the live thread agent; the next message in the thread answers it.
+printf 'Which month should the import cover? 0xQ1\n' > /home/agent/tasks/q1.md
+out=$(PATH=/home/agent/fake-thread:$PATH env "${P}AGENT=item-8-lead" "${P}ROLE=lead" "${P}PARENT=$A" "${P}TARGET=default" \
+  "${P}JOB=item-8" "${P}ISSUE=" "$T" --session judge ask-human --file /home/agent/tasks/q1.md 2>&1); rc=$?
+check "ask-human: exit 0 from the lead" 0 "$rc"
+[ "$rc" = 0 ] || printf '%s\n' "$out"
+has "ask-human: delivered to the home thread's agent" "$out" "delivered to $A"
+has "ask-human: question on the thread agent's screen" "$(screen "$A")" "[FROM: item-8-lead]" "Question from item-8-lead" "fednet client post" "0xQ1"
+check "ask-human: pending in the ledger" "item-8|$K|item-8-lead|0|pending " \
+  "$(tledger "SELECT job, thread, asked_by, approval, state FROM questions")"
+settled "$A"
+out=$(PATH=/home/agent/fake-thread:$PATH env "${P}AGENT=item-8-lead" "${P}ROLE=lead" "${P}PARENT=$A" "${P}TARGET=default" \
+  "${P}JOB=item-8" "${P}ISSUE=" "$T" --session judge ask-human --file /home/agent/tasks/q1.md --approval 2>&1); rc=$?
+check "ask-human --approval: exit 0" 0 "$rc"
+has "ask-human --approval: the agent is told to post an approval card" "$(screen "$A")" "request-approval"
+settled "$A"
+out=$(inbox "$(event m5 "$K" 'September 0xMSG5')" 2>&1); rc=$?
+check "inbox: a reply in the thread, exit 0" 0 "$rc"
+has "inbox: the reply marks the questions answered" "$out" "2 pending question(s) in thread $K answered"
+check "inbox: no question pending" "0 " "$(tledger "SELECT count(*) FROM questions WHERE state = 'pending'")"
+has "inbox: the reply on the thread agent's screen" "$(screen "$A")" "0xMSG5"
+out=$(as item-1-a worker item-1-lead item-1 -- ask-human --file /home/agent/tasks/q1.md 2>&1); rc=$?
+check "ask-human: exit 1 from a worker" 1 "$rc"
+out=$(PATH=/home/agent/fake-thread:$PATH env "${P}AGENT=item-1-lead" "${P}ROLE=lead" "${P}PARENT=thread-1" "${P}TARGET=$TARGET" \
+  "${P}JOB=item-1" "$T" --session judge ask-human --file /home/agent/tasks/q1.md 2>&1); rc=$?
+check "ask-human: exit 1 from a lead whose job has no home thread" 1 "$rc"
