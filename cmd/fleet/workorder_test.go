@@ -60,7 +60,7 @@ func (w *world) fakeAtbCreating(failOn string) {
 	if err != nil {
 		w.t.Fatal(err)
 	}
-	script = append(script, []byte(`[ "$2" = create ] && echo '{"identifier":"EX-12","url":"https://linear.example/EX-12"}'
+	script = append(script, []byte(`[ "$2" = create ] && echo '{"identifier":"EX-12","url":"https://linear.example.test/EX-12"}'
 exit 0
 `)...)
 	if err := os.WriteFile(path, script, 0o755); err != nil {
@@ -157,7 +157,7 @@ func TestSpawnCreatesAndClaimsTheWorkOrderBeforeAnythingElse(t *testing.T) {
 		t.Errorf("tab create argv = %q", tabArgv)
 	}
 	argv, _ := os.ReadFile(filepath.Join(w.dir, "argv"))
-	if want := "[FROM: item-1-lead]\nWork order: https://linear.example/EX-12\n\n\n# Import the A table\n"; !strings.Contains(string(argv), want) {
+	if want := "[FROM: item-1-lead]\nWork order: https://linear.example.test/EX-12\n\n\n# Import the A table\n"; !strings.Contains(string(argv), want) {
 		t.Errorf("delivered argv = %q, want %q in it", argv, want)
 	}
 	if got := row(w, "item-1-a"); got != "EX-12 EX-10 active" {
@@ -181,7 +181,7 @@ func TestSpawnStopsWhenAnAtbStepFails(t *testing.T) {
 		failed := "atb linear create failed (exit status: 4)"
 		if step == "claim" {
 			failed = "atb linear claim EX-12 failed (exit status: 4)"
-			if !strings.Contains(out.stderr, "work order EX-12 (https://linear.example/EX-12), not claimed") {
+			if !strings.Contains(out.stderr, "work order EX-12 (https://linear.example.test/EX-12), not claimed") {
 				t.Errorf("claim: the created issue is not listed: %q", out.stderr)
 			}
 		}
