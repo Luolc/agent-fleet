@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -54,18 +55,18 @@ func New(session *string) *Herdr {
 	return &Herdr{Session: session}
 }
 
-// envPrefixes are the variables herdr may see, by exact name or prefix.
+// envNames and envPrefixes are the variables herdr may see, by exact name
+// or prefix.
 var envNames = []string{"PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "TERM", "LANG"}
 var envPrefixes = []string{"LC_", "XDG_", "HERDR_"}
 
-func env() []string {
+// env is the environment from the allow-list plus the variables named in
+// more.
+func env(more []string) []string {
 	var kept []string
 	for _, kv := range os.Environ() {
 		name, _, _ := strings.Cut(kv, "=")
-		keep := false
-		for _, n := range envNames {
-			keep = keep || name == n
-		}
+		keep := slices.Contains(envNames, name) || slices.Contains(more, name)
 		for _, p := range envPrefixes {
 			keep = keep || strings.HasPrefix(name, p)
 		}
@@ -88,15 +89,27 @@ func (h *Herdr) Run(args ...string) (stdout, stderr []byte, err error) {
 // run runs `herdr [--session S] args...` and returns stdout, stderr and
 // the exit error, if any.
 func (h *Herdr) run(args ...string) (stdout, stderr []byte, err error) {
-	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
-	defer cancel()
 	argv := make([]string, 0, len(args)+2)
 	if h.Session != nil {
 		argv = append(argv, "--session", *h.Session)
 	}
 	argv = append(argv, args...)
-	cmd := exec.CommandContext(ctx, "herdr", argv...)
-	cmd.Env = env()
+	// Only the operation is named: args may carry a message body.
+	op := "herdr " + strings.Join(args[:min(2, len(args))], " ")
+	return Exec(op, nil, "herdr", argv...)
+}
+
+// Exec runs `program argv...` as herdr is run: with a deadline, the
+// environment allow-list plus the variables named in more, and its process
+// group killed on return. op names the call in errors. It returns stdout,
+// stderr and the exit error, if any: a *exit.Failure when the program could
+// not be run or hit the deadline, an *exec.ExitError when it exited
+// non-zero.
+func Exec(op string, more []string, program string, argv ...string) (stdout, stderr []byte, err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, program, argv...)
+	cmd.Env = env(more)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
 		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
@@ -106,24 +119,24 @@ func (h *Herdr) run(args ...string) (stdout, stderr []byte, err error) {
 	cmd.Stdout = &out
 	cmd.Stderr = &errOut
 	err = cmd.Run()
-	// Whatever herdr left behind in its process group (a descendant holding
-	// the pipes past WaitDelay, or everything after the deadline) goes with
-	// it; nothing herdr starts for a call is meant to outlive the call.
+	// Whatever the program left behind in its process group (a descendant
+	// holding the pipes past WaitDelay, or everything after the deadline)
+	// goes with it; nothing it starts for a call is meant to outlive the
+	// call.
 	if cmd.Process != nil {
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	}
 	if ctx.Err() != nil {
-		// Only the operation is named: args may carry a message body.
-		return nil, nil, exit.Environmentf("herdr %s timed out after %v", strings.Join(args[:min(2, len(args))], " "), callTimeout)
+		return nil, nil, exit.Environmentf("%s timed out after %v", op, callTimeout)
 	}
-	// herdr itself has exited and what it printed is in hand; the
+	// The program itself has exited and what it printed is in hand; the
 	// descendant that kept the pipes open was just killed.
 	if errors.Is(err, exec.ErrWaitDelay) {
 		err = nil
 	}
 	var exitErr *exec.ExitError
 	if err != nil && !errors.As(err, &exitErr) {
-		return nil, nil, exit.Environmentf("cannot run herdr: %v", err)
+		return nil, nil, exit.Environmentf("cannot run %s: %v", program, err)
 	}
 	return out.Bytes(), errOut.Bytes(), err
 }
@@ -148,7 +161,7 @@ func (h *Herdr) Call(args ...string) (*Reply, error) {
 		// "exit exit status: N": the source prints the status's own Display
 		// after the word exit.
 		return nil, exit.Environmentf("herdr gave no JSON reply (exit %s): %s",
-			status(err), firstLine(stderr, stdout))
+			Status(err), FirstLine(stderr, stdout))
 	}
 	// Exact keys: a map lookup, never a struct, which would match
 	// case-insensitively.
@@ -220,7 +233,7 @@ func (h *Herdr) Screen(target string) (string, error) {
 	}
 	if err != nil {
 		return "", exit.Environmentf("herdr agent read %s failed (%s): %s",
-			target, status(err), firstLine(string(errOut), string(out)))
+			target, Status(err), FirstLine(string(errOut), string(out)))
 	}
 	return string(out), nil
 }
@@ -261,8 +274,8 @@ func (o PromptOutcome) Exit() exit.Code {
 	}
 }
 
-// status renders the process status as Rust's ExitStatus Display does.
-func status(err error) string {
+// Status renders the process status as Rust's ExitStatus Display does.
+func Status(err error) string {
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
 		if ws, ok := exitErr.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
@@ -273,9 +286,9 @@ func status(err error) string {
 	return "exit status: 0"
 }
 
-// firstLine is the first non-empty line of stderr, else of stdout, else "".
+// FirstLine is the first non-empty line of stderr, else of stdout, else "".
 // A line ends at "\n" or "\r\n", as Rust's `lines()` splits.
-func firstLine(texts ...string) string {
+func FirstLine(texts ...string) string {
 	for _, text := range texts {
 		line, _, _ := strings.Cut(text, "\n")
 		line = strings.TrimSuffix(line, "\r")
