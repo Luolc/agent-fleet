@@ -379,15 +379,20 @@ thra "$K" TH-5 -- job end item-9 --force >/dev/null 2>&1; rc=$?
 check "job end --force of the repo job: exit 0" 0 "$rc"
 
 # Sessions on demand. The container has no systemd: a fake systemctl starts
-# the server the unit would (`herdr --session fleet-%i server`), detached
-# from the hook's process group as systemd would run it.
+# the server the unit would (`herdr --session fleet-%i server`) in a session
+# of its own, outside the hook's process group, as systemd would run it.
 cat > /home/agent/fake-thread/systemctl <<'SYSTEMCTL'
 #!/bin/sh
 echo "$*" >> /home/agent/systemctl.log
 unit=${3%.service}
-setsid herdr --session "fleet-${unit#fleet-scope@}" server >/dev/null 2>&1 </dev/null &
+setsid herdr --session "fleet-${unit#fleet-scope@}" server >>/home/agent/systemctl-server.log 2>&1 </dev/null &
+# Return once the server answers, as it is then in its own session: the
+# hook kills systemctl's process group right after it exits.
+for _ in $(seq 1 50); do herdr --session "fleet-${unit#fleet-scope@}" status server --json | grep -q '"running":true' && exit 0; sleep 0.2; done
+exit 1
 SYSTEMCTL
 chmod +x /home/agent/fake-thread/systemctl
+mkdir -p /home/agent/run
 L=(herdr --session fleet-lazy)
 lazy_tabs() { "${L[@]}" tab list | jq -r '[.result.tabs[].label] | join(" ")'; }
 check "the scope lazy has no session yet" false "$("${L[@]}" status server --json | jq .running)"
@@ -401,6 +406,7 @@ check "inbox: a scope without a session, exit 0" 0 "$rc"
 has "inbox: says it started the session" "$out" "started the herdr session of scope lazy (fleet-scope@lazy.service)"
 check "inbox: the session started through the user unit" "--user start fleet-scope@lazy.service|" "$(tr '\n' '|' < /home/agent/systemctl.log)"
 check "inbox: the session outlives the hook" true "$("${L[@]}" status server --json | jq .running)"
+[ "$("${L[@]}" status server --json | jq .running)" = true ] || cat /home/agent/systemctl-server.log
 check "inbox: the threads workspace has the shell tab, then the thread's" "shell c0lz-1-1" "$(lazy_tabs)"
 shell_pane=$("${L[@]}" pane list | jq -r '.result.panes[] | select(.label == "lazy-shell") | .pane_id')
 check "inbox: the shell pane is labelled <scope>-shell and runs no agent" "lazy-shell null" \
