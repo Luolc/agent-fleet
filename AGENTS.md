@@ -37,7 +37,7 @@ downloading another one. Bump the installed Go before bumping `go.mod`.
   run is not a substitute.
 - `pre-commit run --all-files`: gitleaks on the staged diff, then gofmt.
 - `judge/run.sh <binary>`: the end-to-end suite. Needs docker; takes a few
-  minutes. Red against the Go binary until the port lands.
+  minutes. Green against the Go binary.
 
 ## CI
 
@@ -45,9 +45,7 @@ downloading another one. Bump the installed Go before bumping `go.mod`.
 check on `main`. It runs on pull requests and on pushes to `main`: a gitleaks
 scan of the full history, pre-commit (gitleaks hook skipped, since the full
 scan covers it), `scripts/check.sh`, `go test -race ./...`, and the judge
-against a fresh Go build. The judge step has `continue-on-error` until the
-port lands; deleting that line makes it a blocking check. Third-party
-actions are pinned by commit SHA.
+against a fresh Go build. Third-party actions are pinned by commit SHA.
 
 ## Test data
 
