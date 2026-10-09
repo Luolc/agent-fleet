@@ -71,7 +71,7 @@ func AskHuman(h *herdr.Herdr, args AskHumanArgs) (exit.Code, error) {
 	if text == "" {
 		return 0, exit.Refusedf("the question file is empty")
 	}
-	conn, err := db.Open(me.Target)
+	conn, err := db.Open(me.Scope)
 	if err != nil {
 		return 0, err
 	}
@@ -86,7 +86,7 @@ func AskHuman(h *herdr.Herdr, args AskHumanArgs) (exit.Code, error) {
 			return 0, err
 		}
 		if row == nil {
-			return 0, exit.Refusedf("job %s is not open in target %s", me.Job, me.Target)
+			return 0, exit.Refusedf("job %s is not open in scope %s", me.Job, me.Scope)
 		}
 		if row.HomeThread == "" {
 			return 0, exit.Refusedf("job %s has no home thread: it was started by a caller without FLEET_THREAD, "+
@@ -104,19 +104,19 @@ func AskHuman(h *herdr.Herdr, args AskHumanArgs) (exit.Code, error) {
 		fmt.Fprintf(os.Stdout, "recorded a pending question in thread %s; post it there\n", thread)
 		return exit.Ok, nil
 	}
-	cfg, err := config.LoadTarget(me.Target)
+	cfg, err := config.LoadScope(me.Scope)
 	if err != nil {
 		return 0, err
 	}
 	msg := inboundMessage{Thread: thread, Text: text, Question: me.Agent}
-	return toThread(h, conn, me.Target, cfg, msg)
+	return toThread(h, conn, me.Scope, cfg, msg)
 }
 
 // toThread takes an agent's message to a thread as `route` does, with a
 // dropped message (Linear unavailable) an environment failure: unlike
 // fednet, the caller gets nothing from a drop.
-func toThread(h *herdr.Herdr, conn *sql.DB, target string, cfg *config.Target, msg inboundMessage) (exit.Code, error) {
-	code, dropped, err := route(h, conn, target, cfg, msg)
+func toThread(h *herdr.Herdr, conn *sql.DB, scope string, cfg *config.Scope, msg inboundMessage) (exit.Code, error) {
+	code, dropped, err := route(h, conn, scope, cfg, msg)
 	if err != nil || code != exit.Ok {
 		return code, err
 	}

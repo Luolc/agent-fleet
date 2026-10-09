@@ -14,6 +14,7 @@ import (
 	"github.com/Luolc/agent-fleet/internal/cmd"
 	"github.com/Luolc/agent-fleet/internal/exit"
 	"github.com/Luolc/agent-fleet/internal/herdr"
+	"github.com/Luolc/agent-fleet/internal/identity"
 )
 
 // version is the fleet release version.
@@ -23,9 +24,10 @@ const longAbout = "Runs and coordinates coding agents through herdr.\n\n" +
 	"A thread agent starts a job (`fleet job start`): its lead, which starts workers " +
 	"(`fleet spawn`). Every agent fleet starts carries its identity in FLEET_* " +
 	"environment variables; messages between agents go through `fleet send`, " +
-	"which adds the `[FROM: <agent>]` header. State lives in the ledger of the target, " +
-	"$XDG_STATE_HOME/fleet/<target>/fleet.db (~/.local/state when XDG_STATE_HOME is unset; " +
-	"the target is FLEET_TARGET, `default` when unset).\n\n" +
+	"which adds the `[FROM: <agent>]` header. A scope is one fleet: the herdr session " +
+	"fleet-<scope>, the ledger $XDG_STATE_HOME/fleet/<scope>.db (~/.local/state when " +
+	"XDG_STATE_HOME is unset) and the settings $XDG_CONFIG_HOME/fleet/<scope>.json. The " +
+	"scope is --scope, else FLEET_SCOPE (which every agent has), else `main`.\n\n" +
 	"Exit codes, shared by every command:\n" +
 	"  0  ok\n" +
 	"  1  usage error or precondition refused (role, cap, resources, empty body)\n" +
@@ -34,12 +36,8 @@ const longAbout = "Runs and coordinates coding agents through herdr.\n\n" +
 	"  4  target not found\n" +
 	"  5  environment error (herdr, atb, git or the database failed)"
 
-const sessionHelp = "herdr session to talk to. Inside a herdr pane this is not needed: herdr " +
-	"finds the pane's own session. Use it from cron or a plain shell"
-
-const targetHelp = "Target whose ledger to read; the ledger is $XDG_STATE_HOME/fleet/<target>/fleet.db " +
-	"(~/.local/state when XDG_STATE_HOME is unset). Defaults to FLEET_TARGET, which every agent has, " +
-	"then to `default`"
+const scopeHelp = "Scope to act in: its ledger, settings and herdr session fleet-<NAME>. " +
+	"Default: FLEET_SCOPE, which every agent has, then `main`. Use it from cron or a plain shell"
 
 const topUsage = "Usage: fleet [OPTIONS] <COMMAND>"
 
@@ -59,7 +57,7 @@ Commands:
   help      Print this message or the help of the given subcommand(s)
 
 Options:
-      --session <NAME>  ` + sessionHelp + `
+      --scope <NAME>    ` + scopeHelp + `
   -h, --help            Print help
   -V, --version         Print version
 `
@@ -73,7 +71,7 @@ Arguments:
 
 Options:
       --file <PATH>     Read the body from this file instead of stdin
-      --session <NAME>  ` + sessionHelp + `
+      --scope <NAME>    ` + scopeHelp + `
   -h, --help            Print help
 `
 
@@ -85,9 +83,7 @@ Arguments:
   <EVENT-FILE>  The event file the fednet client wrote: one JSON object with msg_id and payload
 
 Options:
-      --session <NAME>  ` + sessionHelp + `; the hook runs outside herdr, so without it the
-                        target's name is used
-  -h, --help            Print help
+  -h, --help    Print help
 `
 
 const threadUsage = "Usage: fleet thread <COMMAND>"
@@ -110,7 +106,7 @@ var threadEndHelp = cmd.ThreadEndLongAbout + "\n\n" + threadEndUsage + `
 Options:
       --summary-file <PATH>  The session's summary, written to the thread ticket and given to the next session
       --force                Finish the local cleanup even when a Linear step keeps failing; the steps left are printed
-      --session <NAME>       ` + sessionHelp + `
+      --scope <NAME>         ` + scopeHelp + `
   -h, --help                 Print help
 `
 
@@ -143,7 +139,7 @@ var askHumanHelp = cmd.AskHumanLongAbout + "\n\n" + askHumanUsage + `
 Options:
       --file <PATH>     The question, delivered to the home thread's agent to post
       --approval        Ask for an approval card; not supported yet, refused with exit 1
-      --session <NAME>  ` + sessionHelp + `
+      --scope <NAME>    ` + scopeHelp + `
   -h, --help            Print help
 `
 
@@ -174,11 +170,11 @@ Options:
       --new-parent <TITLE>
                           Create the parent issue with this title first (single-repo jobs with Linear on)
       --repo <REPO>       Directory name under ~/dev: a single-repo job, the lead runs there. Without
-                          it the job is cross-repo and the lead runs in ~/cross-repo/<job>/
-      --key <KEY>         Dedup key: refused when an open job of the target has the same key
+                          it the job is cross-repo and the lead runs in ~/x-repo/<I>/<job>/
+      --key <KEY>         Dedup key: refused when an open job of the scope has the same key
       --model <MODEL>     Model passed to the agent as --model. Default: the agent's own
       --effort <EFFORT>   Effort passed to the agent as --effort. Default: the agent's own
-      --session <NAME>    ` + sessionHelp + `
+      --scope <NAME>      ` + scopeHelp + `
   -h, --help              Print help
 `
 
@@ -187,8 +183,9 @@ const jobListUsage = "Usage: fleet job list [OPTIONS]"
 var jobListHelp = cmd.JobListLongAbout + "\n\n" + jobListUsage + `
 
 Options:
-      --target <TARGET>  ` + targetHelp + `
+      --all              Every open job of the scope, not only those of your thread's channel
       --json             Machine-readable output: a JSON array, one object per job
+      --scope <NAME>     ` + scopeHelp + `
   -h, --help             Print help
 `
 
@@ -205,7 +202,7 @@ Options:
       --abandon             End the job as abandoned instead of done
       --force               Reclaim the job from outside (a thread agent, or no FLEET_ROLE): no report,
                             no Linear step; the cleanup after a failed start or a lost lead
-      --session <NAME>      ` + sessionHelp + `
+      --scope <NAME>        ` + scopeHelp + `
   -h, --help                Print help
 `
 
@@ -221,7 +218,7 @@ Options:
       --cwd <DIR>         Directory the worker runs in; must exist (typically a path from ` + "`fleet worktree`" + `)
       --model <MODEL>     Model passed to the agent as --model. Default: the agent's own
       --effort <EFFORT>   Effort passed to the agent as --effort. Default: the agent's own
-      --session <NAME>    ` + sessionHelp + `
+      --scope <NAME>      ` + scopeHelp + `
   -h, --help              Print help
 `
 
@@ -233,7 +230,7 @@ Options:
       --report-file <PATH>  Your report, named in the message so the parent can read it, and written
                             to FLEET_ISSUE with atb first when that is set (then it is required)
       --abandon             Release FLEET_ISSUE as abandoned instead of done
-      --session <NAME>      ` + sessionHelp + `
+      --scope <NAME>        ` + scopeHelp + `
   -h, --help                Print help
 `
 
@@ -244,8 +241,7 @@ var statusHelp = cmd.StatusLongAbout + "\n\n" + statusUsage + `
 Options:
       --job <JOB>        Only this job and its agents
       --json             Machine-readable output: {"jobs": [...], "agents": [...]}
-      --target <TARGET>  ` + targetHelp + `
-      --session <NAME>   ` + sessionHelp + `
+      --scope <NAME>     ` + scopeHelp + `
   -h, --help             Print help
 `
 
@@ -254,8 +250,7 @@ const watchUsage = "Usage: fleet watch [OPTIONS]"
 var watchHelp = cmd.WatchLongAbout + "\n\n" + watchUsage + `
 
 Options:
-      --target <TARGET>  ` + targetHelp + `
-      --session <NAME>   ` + sessionHelp + `
+      --scope <NAME>     ` + scopeHelp + `
   -h, --help             Print help
 `
 
@@ -269,7 +264,7 @@ Arguments:
 Options:
       --name <NAME>     Another worktree of the job in this repo: ~/wt/<repo>/<job>-<name>. Only [a-z0-9-]
       --branch <NAME>   Branch to create. Default: <job>, or <job>-<name> with --name
-      --session <NAME>  ` + sessionHelp + `
+      --scope <NAME>    ` + scopeHelp + `
   -h, --help            Print help
 `
 
@@ -288,12 +283,31 @@ func (e *usageError) Error() string {
 }
 
 // flagSet is a FlagSet that reports its own errors through usageError and
-// `-h`/`--help` through flag.ErrHelp, with the global `--session`.
-func flagSet(name string, session *cliargs.OptString) *flag.FlagSet {
+// `-h`/`--help` through flag.ErrHelp, with the global `--scope`.
+func flagSet(name string, scope *cliargs.OptString) *flag.FlagSet {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	fs.Var(session, "session", sessionHelp)
+	fs.Var(scope, "scope", scopeHelp)
 	return fs
+}
+
+// scoped applies --scope, when given, as FLEET_SCOPE for the command, and
+// returns herdr for the scope's session.
+func scoped(scope *cliargs.OptString) (*herdr.Herdr, error) {
+	if scope.Given {
+		if _, err := identity.CheckScope(scope.Value); err != nil {
+			return nil, err
+		}
+		if err := os.Setenv("FLEET_SCOPE", scope.Value); err != nil {
+			return nil, exit.Environmentf("cannot set FLEET_SCOPE: %v", err)
+		}
+	}
+	name, err := identity.Scope()
+	if err != nil {
+		return nil, err
+	}
+	session := identity.Session(name)
+	return herdr.New(&session), nil
 }
 
 // run parses the command line, runs the command, and returns the process
@@ -318,8 +332,8 @@ func run(args []string) int {
 }
 
 func dispatch(args []string) (exit.Code, error) {
-	session := cliargs.OptString{Name: "session", Placeholder: "NAME"}
-	fs := flagSet("fleet", &session)
+	scope := cliargs.OptString{Name: "scope", Placeholder: "NAME"}
+	fs := flagSet("fleet", &scope)
 	var showVersion bool
 	fs.BoolVar(&showVersion, "version", false, "Print version")
 	fs.BoolVar(&showVersion, "V", false, "Print version")
@@ -342,25 +356,25 @@ func dispatch(args []string) (exit.Code, error) {
 	case "help":
 		return help(rest[1:])
 	case "inbox":
-		return runInbox(rest[1:], &session)
+		return runInbox(rest[1:], &scope)
 	case "thread":
-		return runThread(rest[1:], &session)
+		return runThread(rest[1:], &scope)
 	case "job":
-		return runJob(rest[1:], &session)
+		return runJob(rest[1:], &scope)
 	case "ask-human":
-		return runAskHuman(rest[1:], &session)
+		return runAskHuman(rest[1:], &scope)
 	case "send":
-		return runSend(rest[1:], &session)
+		return runSend(rest[1:], &scope)
 	case "spawn":
-		return runSpawn(rest[1:], &session)
+		return runSpawn(rest[1:], &scope)
 	case "done":
-		return runDone(rest[1:], &session)
+		return runDone(rest[1:], &scope)
 	case "status":
-		return runStatus(rest[1:], &session)
+		return runStatus(rest[1:], &scope)
 	case "watch":
-		return runWatch(rest[1:], &session)
+		return runWatch(rest[1:], &scope)
 	case "worktree":
-		return runWorktree(rest[1:], &session)
+		return runWorktree(rest[1:], &scope)
 	default:
 		return 0, &usageError{fmt.Sprintf("unrecognized subcommand '%s'", rest[0]), topUsage}
 	}
@@ -438,30 +452,37 @@ func parse(fs *flag.FlagSet, args []string, help, usage string, names []string, 
 	return got, false, nil
 }
 
-func runSend(args []string, session *cliargs.OptString) (exit.Code, error) {
-	fs := flagSet("send", session)
+func runSend(args []string, scope *cliargs.OptString) (exit.Code, error) {
+	fs := flagSet("send", scope)
 	file := cliargs.OptString{Name: "file", Placeholder: "PATH"}
 	fs.Var(&file, "file", "Read the body from this file instead of stdin")
 	got, helped, err := parse(fs, args, sendHelp, sendUsage, []string{"TO"})
 	if err != nil || helped {
 		return exit.Ok, err
 	}
-	return cmd.Send(herdr.New(session.Ptr()), cmd.SendArgs{To: got[0], File: file.Ptr()})
+	h, err := scoped(scope)
+	if err != nil {
+		return 0, err
+	}
+	return cmd.Send(h, cmd.SendArgs{To: got[0], File: file.Ptr()})
 }
 
-func runInbox(args []string, session *cliargs.OptString) (exit.Code, error) {
-	fs := flagSet("inbox", session)
+func runInbox(args []string, scope *cliargs.OptString) (exit.Code, error) {
+	fs := flagSet("inbox", scope)
 	got, helped, err := parse(fs, args, inboxHelp, inboxUsage, []string{"EVENT-FILE"})
 	if err != nil || helped {
 		return exit.Ok, err
 	}
-	return cmd.Inbox(herdr.New(session.Ptr()), cmd.InboxArgs{File: got[0]})
+	if scope.Given {
+		return 0, exit.Refusedf("--scope does not apply to inbox: the scope comes from the message")
+	}
+	return cmd.Inbox(cmd.InboxArgs{File: got[0]})
 }
 
 var threadHelps = map[string]string{"end": threadEndHelp, "set-project": threadSetProjectHelp, "relate": threadRelateHelp}
 
 // runThread dispatches `fleet thread <COMMAND>`.
-func runThread(args []string, session *cliargs.OptString) (exit.Code, error) {
+func runThread(args []string, scope *cliargs.OptString) (exit.Code, error) {
 	if len(args) == 0 {
 		return 0, &usageError{"'fleet thread' requires a subcommand but one was not provided", threadUsage}
 	}
@@ -470,7 +491,7 @@ func runThread(args []string, session *cliargs.OptString) (exit.Code, error) {
 		fmt.Fprint(os.Stdout, threadHelp)
 		return exit.Ok, nil
 	case "end":
-		fs := flagSet("thread end", session)
+		fs := flagSet("thread end", scope)
 		summary := cliargs.OptString{Name: "summary-file", Placeholder: "PATH"}
 		force := cliargs.Bool{Name: "force"}
 		fs.Var(&summary, "summary-file", "The session's summary")
@@ -479,19 +500,29 @@ func runThread(args []string, session *cliargs.OptString) (exit.Code, error) {
 		if err != nil || helped {
 			return exit.Ok, err
 		}
-		return cmd.ThreadEnd(herdr.New(session.Ptr()), cmd.ThreadEndArgs{SummaryFile: summary.Value, Force: force.Value})
+		h, err := scoped(scope)
+		if err != nil {
+			return 0, err
+		}
+		return cmd.ThreadEnd(h, cmd.ThreadEndArgs{SummaryFile: summary.Value, Force: force.Value})
 	case "set-project":
-		got, helped, err := parse(flagSet("thread set-project", session), args[1:], threadSetProjectHelp,
+		got, helped, err := parse(flagSet("thread set-project", scope), args[1:], threadSetProjectHelp,
 			threadSetProjectUsage, []string{"PROJECT"})
 		if err != nil || helped {
 			return exit.Ok, err
 		}
+		if _, err := scoped(scope); err != nil {
+			return 0, err
+		}
 		return cmd.ThreadSetProject(got[0])
 	case "relate":
-		got, helped, err := parse(flagSet("thread relate", session), args[1:], threadRelateHelp,
+		got, helped, err := parse(flagSet("thread relate", scope), args[1:], threadRelateHelp,
 			threadRelateUsage, []string{"ISSUE"})
 		if err != nil || helped {
 			return exit.Ok, err
+		}
+		if _, err := scoped(scope); err != nil {
+			return 0, err
 		}
 		return cmd.ThreadRelate(got[0])
 	default:
@@ -499,8 +530,8 @@ func runThread(args []string, session *cliargs.OptString) (exit.Code, error) {
 	}
 }
 
-func runAskHuman(args []string, session *cliargs.OptString) (exit.Code, error) {
-	fs := flagSet("ask-human", session)
+func runAskHuman(args []string, scope *cliargs.OptString) (exit.Code, error) {
+	fs := flagSet("ask-human", scope)
 	file := cliargs.OptString{Name: "file", Placeholder: "PATH"}
 	approval := cliargs.Bool{Name: "approval"}
 	fs.Var(&file, "file", "The question")
@@ -509,11 +540,15 @@ func runAskHuman(args []string, session *cliargs.OptString) (exit.Code, error) {
 	if err != nil || helped {
 		return exit.Ok, err
 	}
-	return cmd.AskHuman(herdr.New(session.Ptr()), cmd.AskHumanArgs{File: file.Value, Approval: approval.Value})
+	h, err := scoped(scope)
+	if err != nil {
+		return 0, err
+	}
+	return cmd.AskHuman(h, cmd.AskHumanArgs{File: file.Value, Approval: approval.Value})
 }
 
 // runJob dispatches `fleet job <COMMAND>`.
-func runJob(args []string, session *cliargs.OptString) (exit.Code, error) {
+func runJob(args []string, scope *cliargs.OptString) (exit.Code, error) {
 	if len(args) == 0 {
 		return 0, &usageError{"'fleet job' requires a subcommand but one was not provided", jobUsage}
 	}
@@ -522,18 +557,18 @@ func runJob(args []string, session *cliargs.OptString) (exit.Code, error) {
 		fmt.Fprint(os.Stdout, jobHelp)
 		return exit.Ok, nil
 	case "start":
-		return runJobStart(args[1:], session)
+		return runJobStart(args[1:], scope)
 	case "list":
-		return runJobList(args[1:], session)
+		return runJobList(args[1:], scope)
 	case "end":
-		return runJobEnd(args[1:], session)
+		return runJobEnd(args[1:], scope)
 	default:
 		return 0, &usageError{fmt.Sprintf("unrecognized subcommand '%s'", args[0]), jobUsage}
 	}
 }
 
-func runJobStart(args []string, session *cliargs.OptString) (exit.Code, error) {
-	fs := flagSet("job start", session)
+func runJobStart(args []string, scope *cliargs.OptString) (exit.Code, error) {
+	fs := flagSet("job start", scope)
 	taskFile := cliargs.OptString{Name: "task-file", Placeholder: "PATH"}
 	parentIssue := cliargs.OptString{Name: "parent-issue", Placeholder: "ISSUE"}
 	newParent := cliargs.OptString{Name: "new-parent", Placeholder: "TITLE"}
@@ -552,26 +587,33 @@ func runJobStart(args []string, session *cliargs.OptString) (exit.Code, error) {
 	if err != nil || helped {
 		return exit.Ok, err
 	}
-	return cmd.JobStart(herdr.New(session.Ptr()), cmd.JobStartArgs{
+	h, err := scoped(scope)
+	if err != nil {
+		return 0, err
+	}
+	return cmd.JobStart(h, cmd.JobStartArgs{
 		Job: got[0], TaskFile: taskFile.Value, ParentIssue: parentIssue.Ptr(), NewParent: newParent.Ptr(),
 		Repo: repo.Ptr(), Key: key.Ptr(), Model: model.Ptr(), Effort: effort.Ptr()})
 }
 
-func runJobList(args []string, session *cliargs.OptString) (exit.Code, error) {
-	fs := flagSet("job list", session)
-	target := cliargs.OptString{Name: "target", Placeholder: "TARGET"}
+func runJobList(args []string, scope *cliargs.OptString) (exit.Code, error) {
+	fs := flagSet("job list", scope)
+	all := cliargs.Bool{Name: "all"}
 	asJSON := cliargs.Bool{Name: "json"}
-	fs.Var(&target, "target", "Target whose ledger to read")
+	fs.Var(&all, "all", "Every open job of the scope")
 	fs.Var(&asJSON, "json", "Machine-readable output")
 	_, helped, err := parse(fs, args, jobListHelp, jobListUsage, nil)
 	if err != nil || helped {
 		return exit.Ok, err
 	}
-	return cmd.JobList(cmd.JobListArgs{Target: target.Ptr(), JSON: asJSON.Value})
+	if _, err := scoped(scope); err != nil {
+		return 0, err
+	}
+	return cmd.JobList(cmd.JobListArgs{All: all.Value, JSON: asJSON.Value})
 }
 
-func runSpawn(args []string, session *cliargs.OptString) (exit.Code, error) {
-	fs := flagSet("spawn", session)
+func runSpawn(args []string, scope *cliargs.OptString) (exit.Code, error) {
+	fs := flagSet("spawn", scope)
 	taskFile := cliargs.OptString{Name: "task-file", Placeholder: "PATH"}
 	cwd := cliargs.OptString{Name: "cwd", Placeholder: "DIR"}
 	model := cliargs.OptString{Name: "model", Placeholder: "MODEL"}
@@ -584,12 +626,16 @@ func runSpawn(args []string, session *cliargs.OptString) (exit.Code, error) {
 	if err != nil || helped {
 		return exit.Ok, err
 	}
-	return cmd.Spawn(herdr.New(session.Ptr()), cmd.SpawnArgs{
+	h, err := scoped(scope)
+	if err != nil {
+		return 0, err
+	}
+	return cmd.Spawn(h, cmd.SpawnArgs{
 		Name: got[0], TaskFile: taskFile.Value, Cwd: cwd.Value, Model: model.Ptr(), Effort: effort.Ptr()})
 }
 
-func runDone(args []string, session *cliargs.OptString) (exit.Code, error) {
-	fs := flagSet("done", session)
+func runDone(args []string, scope *cliargs.OptString) (exit.Code, error) {
+	fs := flagSet("done", scope)
 	reportFile := cliargs.OptString{Name: "report-file", Placeholder: "PATH"}
 	abandon := cliargs.Bool{Name: "abandon"}
 	fs.Var(&reportFile, "report-file", "File with the report")
@@ -598,38 +644,46 @@ func runDone(args []string, session *cliargs.OptString) (exit.Code, error) {
 	if err != nil || helped {
 		return exit.Ok, err
 	}
-	return cmd.Done(herdr.New(session.Ptr()), cmd.DoneArgs{
+	h, err := scoped(scope)
+	if err != nil {
+		return 0, err
+	}
+	return cmd.Done(h, cmd.DoneArgs{
 		ReportFile: reportFile.Ptr(), Abandon: abandon.Value})
 }
 
-func runStatus(args []string, session *cliargs.OptString) (exit.Code, error) {
-	fs := flagSet("status", session)
+func runStatus(args []string, scope *cliargs.OptString) (exit.Code, error) {
+	fs := flagSet("status", scope)
 	job := cliargs.OptString{Name: "job", Placeholder: "JOB"}
-	target := cliargs.OptString{Name: "target", Placeholder: "TARGET"}
 	asJSON := cliargs.Bool{Name: "json"}
 	fs.Var(&job, "job", "Only this job's agents")
 	fs.Var(&asJSON, "json", "Machine-readable output")
-	fs.Var(&target, "target", "Target whose ledger to read")
 	_, helped, err := parse(fs, args, statusHelp, statusUsage, nil)
 	if err != nil || helped {
 		return exit.Ok, err
 	}
-	return cmd.Status(herdr.New(session.Ptr()), cmd.StatusArgs{Job: job.Ptr(), JSON: asJSON.Value, Target: target.Ptr()})
+	h, err := scoped(scope)
+	if err != nil {
+		return 0, err
+	}
+	return cmd.Status(h, cmd.StatusArgs{Job: job.Ptr(), JSON: asJSON.Value})
 }
 
-func runWatch(args []string, session *cliargs.OptString) (exit.Code, error) {
-	fs := flagSet("watch", session)
-	target := cliargs.OptString{Name: "target", Placeholder: "TARGET"}
-	fs.Var(&target, "target", "Target whose ledger to read")
+func runWatch(args []string, scope *cliargs.OptString) (exit.Code, error) {
+	fs := flagSet("watch", scope)
 	_, helped, err := parse(fs, args, watchHelp, watchUsage, nil)
 	if err != nil || helped {
 		return exit.Ok, err
 	}
-	return cmd.Watch(herdr.New(session.Ptr()), cmd.WatchArgs{Target: target.Ptr()})
+	h, err := scoped(scope)
+	if err != nil {
+		return 0, err
+	}
+	return cmd.Watch(h)
 }
 
-func runJobEnd(args []string, session *cliargs.OptString) (exit.Code, error) {
-	fs := flagSet("job end", session)
+func runJobEnd(args []string, scope *cliargs.OptString) (exit.Code, error) {
+	fs := flagSet("job end", scope)
 	reportFile := cliargs.OptString{Name: "report-file", Placeholder: "PATH"}
 	abandon := cliargs.Bool{Name: "abandon"}
 	force := cliargs.Bool{Name: "force"}
@@ -644,12 +698,16 @@ func runJobEnd(args []string, session *cliargs.OptString) (exit.Code, error) {
 	if len(got) == 1 {
 		job = &got[0]
 	}
-	return cmd.JobEnd(herdr.New(session.Ptr()), cmd.JobEndArgs{
+	h, err := scoped(scope)
+	if err != nil {
+		return 0, err
+	}
+	return cmd.JobEnd(h, cmd.JobEndArgs{
 		Job: job, ReportFile: reportFile.Ptr(), Abandon: abandon.Value, Force: force.Value})
 }
 
-func runWorktree(args []string, session *cliargs.OptString) (exit.Code, error) {
-	fs := flagSet("worktree", session)
+func runWorktree(args []string, scope *cliargs.OptString) (exit.Code, error) {
+	fs := flagSet("worktree", scope)
 	name := cliargs.OptString{Name: "name", Placeholder: "NAME"}
 	branch := cliargs.OptString{Name: "branch", Placeholder: "NAME"}
 	fs.Var(&name, "name", "Another worktree of the job in this repo")
@@ -657,6 +715,9 @@ func runWorktree(args []string, session *cliargs.OptString) (exit.Code, error) {
 	got, helped, err := parse(fs, args, worktreeHelp, worktreeUsage, []string{"REPO"})
 	if err != nil || helped {
 		return exit.Ok, err
+	}
+	if _, err := scoped(scope); err != nil {
+		return 0, err
 	}
 	return cmd.Worktree(cmd.WorktreeArgs{Repo: got[0], Name: name.Ptr(), Branch: branch.Ptr()})
 }

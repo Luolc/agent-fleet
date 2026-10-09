@@ -24,6 +24,7 @@ const rule = "──────────────────────
 // answers with `reply`.
 func watchHerdr(dir, reply string) string {
 	return `#!/bin/sh
+if [ "$1" = --session ]; then shift 2; fi
 dir='` + dir + `'
 case "$1 $2" in
   "agent list")
@@ -185,7 +186,7 @@ func TestWatchTellsALeadOnlyWhenTheSuspectsAmongItsWorkersChange(t *testing.T) {
 	w.screen("a-w2", stuck)
 	w.screen("b-lead", claude("⏺ Planning", "1s", "2hr 59m"))
 
-	out := w.run("", []string{"watch", "--target", target})
+	out := w.run("", []string{"watch", "--scope", scope})
 	if out.code != 0 {
 		t.Fatalf("%+v", out)
 	}
@@ -230,7 +231,7 @@ func TestWatchTellsALeadOnlyWhenTheSuspectsAmongItsWorkersChange(t *testing.T) {
 	// the sets are unchanged, and no lead is told again.
 	w.screen("a-lead", claude("⏺ Running the migration", "27m 40s", "2hr 44m"))
 	w.screen("a-w2", claude("⏺ Running the migration", "27m 40s", "2hr 44m"))
-	out = w.run("", []string{"watch", "--target", target})
+	out = w.run("", []string{"watch", "--scope", scope})
 	if out.code != 0 {
 		t.Fatalf("%+v", out)
 	}
@@ -247,7 +248,7 @@ func TestWatchTellsALeadOnlyWhenTheSuspectsAmongItsWorkersChange(t *testing.T) {
 	w.herdrList("thread-1 idle 1", "a-lead working 7", "a-w1 working 9", "a-w2 working 8", "b-lead blocked 3", "b-w1 working 4")
 	w.screen("b-w1", claude("⏺ Back", "1s", "2hr 40m"))
 	w.reply(`{"error":{"code":"agent_blocked","message":"b"}}`)
-	out = w.run("", []string{"watch", "--target", target})
+	out = w.run("", []string{"watch", "--scope", scope})
 	if out.code != 3 {
 		t.Fatalf("%+v", out)
 	}
@@ -259,7 +260,7 @@ func TestWatchTellsALeadOnlyWhenTheSuspectsAmongItsWorkersChange(t *testing.T) {
 	}
 
 	w.reply(`{"result":{"type":"agent_prompted"}}`)
-	out = w.run("", []string{"watch", "--target", target})
+	out = w.run("", []string{"watch", "--scope", scope})
 	if out.code != 0 {
 		t.Fatalf("%+v", out)
 	}
@@ -275,9 +276,9 @@ func TestWatchTellsALeadOnlyWhenTheSuspectsAmongItsWorkersChange(t *testing.T) {
 	}
 }
 
-func TestWatchRefusesABadTarget(t *testing.T) {
+func TestWatchRefusesABadScope(t *testing.T) {
 	w := newWatchWorld(t)
-	if out := w.run("", []string{"watch", "--target", "a/b"}); out.code != 1 {
+	if out := w.run("", []string{"watch", "--scope", "a/b"}); out.code != 1 {
 		t.Errorf("%+v", out)
 	}
 }

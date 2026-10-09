@@ -212,6 +212,7 @@ func TestWorktreeFailsWith5WhenGitFails(t *testing.T) {
 func (w *world) closeHerdr(agents string) {
 	w.t.Helper()
 	script := `#!/bin/sh
+if [ "$1" = --session ]; then shift 2; fi
 case "$1 $2" in
   "workspace list") echo '{"id":"cli:workspace:list","result":{"workspaces":[]}}' ;;
   "agent list") echo '{"id":"cli:agent:list","result":{"agents":[` + agents + `]}}' ;;

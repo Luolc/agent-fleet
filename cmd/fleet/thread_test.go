@@ -99,8 +99,9 @@ echo "fednet $*" >> "$dir/calls"
 echo m-posted
 `
 
-// threadWorld is a world with the three fakes on PATH and the default
-// target configured with a Linear team and a fednet socket.
+// threadWorld is a world with the three fakes on PATH, the scope `main`
+// configured with a Linear team and a fednet socket, and the checkout of
+// the repo the events' channel names.
 func threadWorld(t *testing.T, atbFailOn string) *world {
 	t.Helper()
 	w := newWorld(t)
@@ -109,29 +110,41 @@ func threadWorld(t *testing.T, atbFailOn string) *world {
 			t.Fatal(err)
 		}
 	}
-	w.targetConfig(`{"linear": {"team": "TH"}, "fednet": {"socket": "/run/fednet.sock"}}`)
+	w.scopeConfig("main", `{"linear": {"team": "TH"}, "fednet": {"socket": "/run/fednet.sock"}}`)
+	dir(w, filepath.Join("home", "dev", "example-dataset"))
 	return w
 }
 
-// targetConfig writes the default target's config file.
-func (w *world) targetConfig(body string) {
+// scopeConfig writes a scope's config file.
+func (w *world) scopeConfig(scope, body string) {
 	w.t.Helper()
 	dir := filepath.Join(w.dir, "home", ".config", "fleet")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		w.t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "default.json"), []byte(body), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, scope+".json"), []byte(body), 0o644); err != nil {
 		w.t.Fatal(err)
 	}
 }
 
 const threadKey = "C0123/1700000000.123"
 
-// event writes an event file for a message in threadKey.
+// event writes an event file for a message in threadKey, in the channel
+// repo-example-dataset.
 func (w *world) event(msgID, text, context string) string {
 	w.t.Helper()
+	return w.eventIn(msgID, text, context, `"channel_name":"repo-example-dataset"`)
+}
+
+// eventIn is event with the payload's channel fields (`channel_name`,
+// `trigger`, `scope`) as given, comma-separated JSON members or "".
+func (w *world) eventIn(msgID, text, context, fields string) string {
+	w.t.Helper()
+	if fields != "" {
+		fields = "," + fields
+	}
 	body := `{"msg_id":"` + msgID + `","payload":{"type":"message","thread":"` + threadKey + `","text":"` + text +
-		`","user":"U0ABC","ts":"1700000001.000","context":"` + context + `"}}`
+		`","user":"U0ABC","ts":"1700000001.000","context":"` + context + `"` + fields + `}}`
 	return task(w, msgID+".json", body)
 }
 
@@ -140,10 +153,11 @@ func (w *world) inbox(file string) result {
 	return w.run("", []string{"inbox", file}, linearKey)
 }
 
-// defaultLedger opens the default target's ledger, the one `inbox` uses.
+// defaultLedger opens the ledger of the scope `main`, the one `inbox`
+// uses for a message without a scope.
 func (w *world) defaultLedger() *sql.DB {
 	w.t.Helper()
-	path, err := db.PathUnder(filepath.Join(w.dir, "home", ".local", "state"), "default")
+	path, err := db.PathUnder(filepath.Join(w.dir, "home", ".local", "state"), "main")
 	if err != nil {
 		w.t.Fatal(err)
 	}
@@ -208,7 +222,7 @@ func TestInboxStartsAThreadAgentForANewThreadWithItsTicket(t *testing.T) {
 		"atb linear create --team TH --label thread --title Please import the A table --description-file " +
 			"DESC --json key=set",
 		"atb linear claim TH-5 --agent thread-c0123-1700000000-123 --source " + threadKey +
-			" --scope default: thread " + threadKey + " key=set",
+			" --scope repo-example-dataset: thread " + threadKey + " key=set",
 		"herdr workspace list",
 		"herdr workspace create",
 		"herdr tab rename",
@@ -228,23 +242,23 @@ func TestInboxStartsAThreadAgentForANewThreadWithItsTicket(t *testing.T) {
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Errorf("calls = %q, want %q", got, want)
 	}
-	if got := w.file("session"); strings.TrimSpace(got) != "default" {
-		t.Errorf("session = %q, want the target's name", got)
+	if got := w.file("session"); strings.TrimSpace(got) != "fleet-main" {
+		t.Errorf("session = %q, want fleet-main", got)
 	}
-	cwd := filepath.Join(w.dir, "home", "cross-repo", "threads")
+	cwd := filepath.Join(w.dir, "home", "dev", "example-dataset")
 	argv := w.file("workspace-argv")
 	for _, want := range []string{"--label\nthreads\n", "--cwd\n" + cwd + "\n", "--env\nFLEET_AGENT=thread-c0123-1700000000-123\n",
-		"--env\nFLEET_ROLE=thread\n", "--env\nFLEET_TARGET=default\n", "--env\nFLEET_ISSUE=TH-5\n",
+		"--env\nFLEET_ROLE=thread\n", "--env\nFLEET_SCOPE=main\n", "--env\nFLEET_ISSUE=TH-5\n",
 		"--env\nFLEET_THREAD=" + threadKey + "\n"} {
 		if !strings.Contains(argv, want) {
 			t.Errorf("workspace create argv = %q, want %q in it", argv, want)
 		}
 	}
-	if !dirExists(cwd) {
-		t.Errorf("%s was not made", cwd)
-	}
 	prompt := w.file("argv")
-	for _, want := range []string{"[FROM: inbox]\nYou are a thread agent", "FLEET_ISSUE=TH-5 (your thread ticket, https://linear.example.test/TH-5)",
+	for _, want := range []string{"[FROM: inbox]\nYou are a thread agent",
+		"which belongs to repo-example-dataset (scope main). You run in " + cwd + ".",
+		"a single-repo job in example-dataset (`fleet job start <job> --repo example-dataset ...`)",
+		"read the `## Fleet` section of ~/dev/<R>/AGENTS.md", "FLEET_ISSUE=TH-5 (your thread ticket, https://linear.example.test/TH-5)",
 		"fednet client post -socket /run/fednet.sock -thread " + threadKey, "## Channel context\n\nThe data channel\n",
 		"## The message\n\nMessage in thread " + threadKey + " from U0ABC at 1700000001.000:\n\nPlease import the A table\n"} {
 		if !strings.Contains(prompt, want) {
@@ -313,7 +327,7 @@ func TestInboxReopensAKnownThreadWithItsSummariesWhenTheAgentIsGone(t *testing.T
 	}
 	want := []string{
 		"atb linear claim TH-5 --agent thread-c0123-1700000000-123 --source " + threadKey +
-			" --scope default: thread " + threadKey + " key=set",
+			" --scope repo-example-dataset: thread " + threadKey + " key=set",
 		"atb linear comment TH-5 --body-file BODY key=set",
 		`atb linear query { issue(id: "TH-5") { comments { nodes { body createdAt } } } } key=set`,
 		"herdr workspace list",
@@ -406,7 +420,7 @@ func TestInboxDropsTheMessageAndTellsTheThreadWhenLinearIsUnavailable(t *testing
 
 func TestInboxRunsWithoutLinearAndIgnoresOtherPayloads(t *testing.T) {
 	w := threadWorld(t, "")
-	w.targetConfig(`{}`)
+	w.scopeConfig("main", `{}`)
 	out := w.inbox(w.event("m1", "hello", ""))
 	if out.code != 0 {
 		t.Fatalf("%+v", out)
@@ -414,7 +428,7 @@ func TestInboxRunsWithoutLinearAndIgnoresOtherPayloads(t *testing.T) {
 	if got := w.calls(); strings.Contains(got, "atb") {
 		t.Errorf("atb was called: %q", got)
 	}
-	if !strings.Contains(w.file("argv"), "FLEET_ISSUE= (empty: thread tickets are off for this target)") ||
+	if !strings.Contains(w.file("argv"), "FLEET_ISSUE= (empty: thread tickets are off for this scope)") ||
 		!strings.Contains(w.file("argv"), "the fednet socket is not configured") {
 		t.Errorf("prompt = %q", w.file("argv"))
 	}
@@ -439,31 +453,143 @@ func TestInboxRunsWithoutLinearAndIgnoresOtherPayloads(t *testing.T) {
 	if out := w.inbox(filepath.Join(w.dir, "missing.json")); out.code != 1 {
 		t.Errorf("missing file: %+v", out)
 	}
-	out = w.inbox(task(w, "t.json", `{"msg_id":"m4","payload":{"type":"message","thread":"C1/1.1","text":"x","target":"a/b"}}`))
-	if out.code != 1 || !strings.Contains(out.stderr, "directory name") {
-		t.Errorf("bad target: %+v", out)
+	out = w.inbox(task(w, "t.json", `{"msg_id":"m4","payload":{"type":"message","thread":"C1/1.1","text":"x","scope":"a/b"}}`))
+	if out.code != 1 || !strings.Contains(out.stderr, "only [a-z0-9-]") {
+		t.Errorf("bad scope: %+v", out)
+	}
+	if out := w.run("", []string{"inbox", "--scope", "main", w.event("m5", "x", "")}); out.code != 1 ||
+		!strings.Contains(out.stderr, "--scope does not apply") {
+		t.Errorf("--scope: %+v", out)
 	}
 }
 
-func TestInboxRunsAThreadAgentOfAnotherTargetInItsCheckout(t *testing.T) {
+func TestInboxRunsEachChannelKindInItsDirectory(t *testing.T) {
+	for _, c := range []struct {
+		label, fields, dir, rules string
+	}{
+		{"repo", `"channel_name":"repo-example-dataset"`, "dev/example-dataset", "a single-repo job in example-dataset"},
+		{"x-repo", `"channel_name":"x-repo-example-init"`, "x-repo/example-init",
+			"belongs to the cross-repo initiative example-init"},
+		{"x-repo-general", `"channel_name":"x-repo-general"`, "x-repo/general", "belongs to the cross-repo initiative general"},
+		{"direct message", `"trigger":"dm"`, "x-repo/general", "belongs to the cross-repo initiative general"},
+	} {
+		w := threadWorld(t, "")
+		for _, d := range []string{"x-repo/example-init", "x-repo/general"} {
+			dir(w, filepath.Join("home", d))
+		}
+		out := w.inbox(w.eventIn("m1", "x", "", c.fields))
+		if out.code != 0 {
+			t.Fatalf("%s: %+v", c.label, out)
+		}
+		cwd := filepath.Join(w.dir, "home", c.dir)
+		if !strings.Contains(w.file("workspace-argv"), "--cwd\n"+cwd+"\n") {
+			t.Errorf("%s: workspace argv = %q", c.label, w.file("workspace-argv"))
+		}
+		prompt := w.file("argv")
+		if !strings.Contains(prompt, c.rules) || !strings.Contains(prompt, "You run in "+cwd+".") {
+			t.Errorf("%s: prompt = %q", c.label, prompt)
+		}
+		if strings.HasPrefix(c.dir, "x-repo/") && !strings.Contains(prompt, filepath.Join(cwd, "AGENTS.md")+" is its charter") {
+			t.Errorf("%s: prompt names no charter: %q", c.label, prompt)
+		}
+	}
+}
+
+func TestInboxIgnoresAChannelOutsideTheConvention(t *testing.T) {
 	w := threadWorld(t, "")
-	w.configure(`{}`)
-	ev := task(w, "e.json", `{"msg_id":"m1","payload":{"type":"message","thread":"C1/1.1","text":"x","target":"example-dataset"}}`)
-	out := w.inbox(ev)
+	for i, fields := range []string{`"channel_name":"fednet-dev"`, `"channel_name":"repo-"`, ``, `"trigger":"mention"`} {
+		out := w.inbox(w.eventIn("m"+strconv.Itoa(i), "x", "", fields))
+		if out.code != 0 || !strings.Contains(out.stdout, "ignored m"+strconv.Itoa(i)) || w.calls() != "" {
+			t.Errorf("%s: %+v, calls %q", fields, out, w.calls())
+		}
+	}
+	if path := filepath.Join(w.dir, "home", ".local", "state", "fleet", "main.db"); fileExists(path) {
+		t.Error("an ignored message made the ledger")
+	}
+}
+
+func TestInboxKeepsAThreadWhereItsFirstMessagePutIt(t *testing.T) {
+	w := threadWorld(t, "")
+	if out := w.inbox(w.event("m1", "first", "")); out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	conn := w.defaultLedger()
+	var mapping, cwd string
+	if err := conn.QueryRow("SELECT mapping, cwd FROM threads WHERE thread = ?1", threadKey).Scan(&mapping, &cwd); err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(w.dir, "home", "dev", "example-dataset"); mapping != "repo-example-dataset" || cwd != want {
+		t.Errorf("recorded %q %q", mapping, cwd)
+	}
+	// The session ends and the channel is renamed out of the convention:
+	// the next message still reopens the thread in the same place.
+	if _, err := conn.Exec("UPDATE agents SET state = 'ended' WHERE role = 'thread'"); err != nil {
+		t.Fatal(err)
+	}
+	conn.Close()
+	out := w.inbox(w.eventIn("m2", "again", "", `"channel_name":"renamed"`))
+	if out.code != 0 || !strings.Contains(out.stdout, "(session 2, "+cwd+")") {
+		t.Errorf("renamed channel: %+v", out)
+	}
+}
+
+func TestInboxTellsTheThreadWhenItsCheckoutIsMissing(t *testing.T) {
+	for _, c := range []struct{ fields, line string }{
+		{`"channel_name":"repo-no-such"`, "The repo no-such is not checked out on this machine ("},
+		{`"channel_name":"x-repo-no-such"`, "The repo of x-repo-no-such is not checked out on this machine ("},
+		{`"trigger":"dm"`, "The repo of x-repo-general is not checked out on this machine ("},
+	} {
+		w := threadWorld(t, "")
+		out := w.inbox(w.eventIn("m1", "x", "", c.fields))
+		if out.code != 0 {
+			t.Fatalf("%s: %+v", c.fields, out)
+		}
+		calls := w.calls()
+		if !strings.HasPrefix(calls, "fednet client post -socket /run/fednet.sock -thread "+threadKey+" -- "+c.line) ||
+			strings.Contains(calls, "herdr") || strings.Contains(calls, "atb") {
+			t.Errorf("%s: calls = %q", c.fields, calls)
+		}
+		if got := inboxRow(w, "m1"); got != "dropped" {
+			t.Errorf("%s: inbox row = %q", c.fields, got)
+		}
+		if got := threadAgentRow(w); got != "none" {
+			t.Errorf("%s: row = %q", c.fields, got)
+		}
+		if dirExists(filepath.Join(w.dir, "home", "x-repo")) {
+			t.Errorf("%s: fleet made ~/x-repo", c.fields)
+		}
+	}
+	// No socket to tell the thread with: kept for a retry.
+	w := threadWorld(t, "")
+	w.scopeConfig("main", `{}`)
+	if out := w.inbox(w.eventIn("m1", "x", "", `"channel_name":"repo-no-such"`)); out.code != 5 {
+		t.Errorf("no socket: %+v", out)
+	}
+	if got := inboxRow(w, "m1"); got != "reserved" {
+		t.Errorf("no socket: inbox row = %q", got)
+	}
+}
+
+func TestInboxTakesTheScopeFromThePayload(t *testing.T) {
+	w := threadWorld(t, "")
+	w.scopeConfig("example", `{}`)
+	out := w.inbox(w.eventIn("m1", "x", "", `"channel_name":"repo-example-dataset","scope":"example"`))
 	if out.code != 0 {
 		t.Fatalf("%+v", out)
 	}
-	cwd := filepath.Join(w.dir, "home", "dev", "example-dataset")
-	if !strings.Contains(w.file("workspace-argv"), "--cwd\n"+cwd+"\n--env\nFLEET_AGENT=thread-c1-1-1\n") ||
-		!strings.Contains(w.file("workspace-argv"), "--env\nFLEET_TARGET=example-dataset\n") {
-		t.Errorf("workspace argv = %q", w.file("workspace-argv"))
-	}
-	if got := strings.TrimSpace(w.file("session")); got != "example-dataset" {
+	if got := strings.TrimSpace(w.file("session")); got != "fleet-example" {
 		t.Errorf("session = %q", got)
 	}
-	ev = task(w, "e2.json", `{"msg_id":"m2","payload":{"type":"message","thread":"C1/1.1","text":"x","target":"no-such"}}`)
-	if out := w.inbox(ev); out.code != 5 || !strings.Contains(out.stderr, "no checkout") {
-		t.Errorf("missing checkout: %+v", out)
+	if !strings.Contains(w.file("workspace-argv"), "--env\nFLEET_SCOPE=example\n") {
+		t.Errorf("workspace argv = %q", w.file("workspace-argv"))
+	}
+	// Its own config (no Linear), its own ledger; main's is untouched.
+	if strings.Contains(w.calls(), "atb") {
+		t.Errorf("the scope's config was not used: %q", w.calls())
+	}
+	state := filepath.Join(w.dir, "home", ".local", "state", "fleet")
+	if !fileExists(filepath.Join(state, "example.db")) || fileExists(filepath.Join(state, "main.db")) {
+		t.Errorf("ledgers: example %v, main %v", fileExists(filepath.Join(state, "example.db")), fileExists(filepath.Join(state, "main.db")))
 	}
 }
 
@@ -471,7 +597,7 @@ func TestInboxRunsAThreadAgentOfAnotherTargetInItsCheckout(t *testing.T) {
 // the ticket `issue`.
 func (w *world) asThreadAgent(issue string, args ...string) result {
 	w.t.Helper()
-	return w.run("", args, "FLEET_AGENT=thread-c0123-1700000000-123", "FLEET_ROLE=thread", "FLEET_TARGET=default",
+	return w.run("", args, "FLEET_AGENT=thread-c0123-1700000000-123", "FLEET_ROLE=thread", "FLEET_SCOPE=main",
 		"FLEET_THREAD="+threadKey, "FLEET_ISSUE="+issue, linearKey)
 }
 
@@ -544,7 +670,7 @@ func TestThreadEndRefusalsAndAtbFailureChangeNothing(t *testing.T) {
 	}
 	// Without a ticket there is no Linear step.
 	w2 := threadWorld(t, "")
-	w2.targetConfig(`{}`)
+	w2.scopeConfig("main", `{}`)
 	if out := w2.inbox(w2.event("m1", "first", "")); out.code != 0 {
 		t.Fatalf("%+v", out)
 	}
@@ -601,7 +727,7 @@ func TestJobStartFromAThreadAgentRecordsTheHomeThreadAndRelatesTheTicket(t *test
 	w.fakeAtbCreating("")
 	taskFile := task(w, "task.md", "Import the A table\n")
 	out := w.run("", []string{"job", "start", "item-7", "--repo", "example-dataset", "--parent-issue", "EX-10", "--task-file", taskFile},
-		"FLEET_AGENT=thread-c0123-1700000000-123", "FLEET_ROLE=thread", "FLEET_TARGET="+target,
+		"FLEET_AGENT=thread-c0123-1700000000-123", "FLEET_ROLE=thread", "FLEET_SCOPE="+scope,
 		"FLEET_THREAD="+threadKey, "FLEET_ISSUE=TH-5", linearKey)
 	if out.code != 0 {
 		t.Fatalf("%+v", out)
@@ -625,6 +751,38 @@ func TestJobStartFromAThreadAgentRecordsTheHomeThreadAndRelatesTheTicket(t *test
 	out = w.startJob("threads", "--task-file", taskFile)
 	if out.code != 1 || !strings.Contains(out.stderr, "reserved") {
 		t.Errorf("job named threads: %+v", out)
+	}
+}
+
+func TestACrossRepoJobOfAnInitiativeThreadRunsInTheInitiativesCheckout(t *testing.T) {
+	w := newWorld(t)
+	w.useStartHerdr()
+	checkout := dir(w, filepath.Join("home", "x-repo", "example-init"))
+	conn := w.ledger()
+	if _, err := conn.Exec("INSERT INTO threads (thread, slug, mapping, cwd, created_at) VALUES (?1, 's', 'x-repo-example-init', ?2, 0)",
+		threadKey, checkout); err != nil {
+		t.Fatal(err)
+	}
+	conn.Close()
+	out := w.run("", []string{"job", "start", "wire", "--task-file", task(w, "task.md", "Wire\n")},
+		"FLEET_AGENT=thread-c0123-1700000000-123", "FLEET_ROLE=thread", "FLEET_SCOPE="+scope, "FLEET_THREAD="+threadKey)
+	if out.code != 0 {
+		if strings.Contains(out.stderr, "try again later") {
+			t.Skip("the machine is loaded; the resource check refused")
+		}
+		t.Fatalf("%+v", out)
+	}
+	lead := filepath.Join(checkout, "wire")
+	if !dirExists(lead) || !strings.Contains(w.file("workspace-argv"), "--cwd\n"+lead+"\n") {
+		t.Errorf("lead dir %s: exists %v, argv %q", lead, dirExists(lead), w.file("workspace-argv"))
+	}
+	// job end --force removes the job's directory, never the checkout.
+	w.closeHerdr("")
+	if out := w.asThread("job", "end", "wire", "--force"); out.code != 0 || !strings.Contains(out.stdout, "removed directory "+lead) {
+		t.Errorf("%+v", out)
+	}
+	if dirExists(lead) || !dirExists(checkout) {
+		t.Errorf("after the end: job dir %v, checkout %v", dirExists(lead), dirExists(checkout))
 	}
 }
 
@@ -713,7 +871,7 @@ func TestInboxKeepsTheMessageWhenTheOutageNoticeCannotBePosted(t *testing.T) {
 	}
 	// No socket configured: nothing to post with, kept as well.
 	w2 := threadWorld(t, "create")
-	w2.targetConfig(`{"linear": {"team": "TH"}}`)
+	w2.scopeConfig("main", `{"linear": {"team": "TH"}}`)
 	out = w2.inbox(w2.event("m1", "hello", ""))
 	if out.code != 5 || !strings.Contains(out.stderr, "fednet.socket is not configured") {
 		t.Errorf("no socket: %+v", out)
@@ -908,4 +1066,9 @@ func TestThreadEndClosesTheRecordedTabWhenTheAgentIsGone(t *testing.T) {
 	if got := threadAgentRow(w3); got != "TH-5 ended" {
 		t.Errorf("row = %q", got)
 	}
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }

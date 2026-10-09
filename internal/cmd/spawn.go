@@ -106,7 +106,7 @@ func spawnChecks(h *herdr.Herdr, args SpawnArgs) (*spawnChecked, *sql.DB, error)
 		return nil, nil, exit.Refusedf("FLEET_JOB is not set")
 	}
 	c := &spawnChecked{me: me, id: &identity.Identity{Agent: me.Job + "-" + args.Name, Role: identity.Worker,
-		Parent: me.Agent, Target: me.Target, Job: me.Job}}
+		Parent: me.Agent, Scope: me.Scope, Job: me.Job}}
 	if err := CheckAgentName(c.id.Agent); err != nil {
 		return nil, nil, err
 	}
@@ -119,7 +119,7 @@ func spawnChecks(h *herdr.Herdr, args SpawnArgs) (*spawnChecked, *sql.DB, error)
 	if info, err := os.Stat(c.cwd); err != nil || !info.IsDir() {
 		return nil, nil, exit.Refusedf("--cwd %s is not a directory", args.Cwd)
 	}
-	conn, err := db.Open(me.Target)
+	conn, err := db.Open(me.Scope)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -138,7 +138,7 @@ func (c *spawnChecked) ledgerAndHerdr(h *herdr.Herdr, conn *sql.DB) error {
 		return err
 	}
 	if c.job == nil {
-		return exit.Refusedf("job %s is not open in target %s", c.me.Job, c.me.Target)
+		return exit.Refusedf("job %s is not open in scope %s", c.me.Job, c.me.Scope)
 	}
 	home, err := Home()
 	if err != nil {

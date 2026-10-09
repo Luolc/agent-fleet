@@ -46,20 +46,19 @@ func (r Role) String() string {
 	}
 }
 
-// DefaultTarget is the target when `FLEET_TARGET` is unset or empty: the
-// one ledger of a development machine.
-const DefaultTarget = "default"
+// DefaultScope is the scope when `FLEET_SCOPE` is unset or empty.
+const DefaultScope = "main"
 
 // Identity is who is calling. `Parent` and `Job` are empty for a thread
 // agent; `Issue`, the agent's Linear work order (a thread agent's thread
-// ticket), is empty when it has none; `Target` names the ledger and is
-// never empty; `Thread` is the thread key of a thread agent, empty for the
-// other roles.
+// ticket), is empty when it has none; `Scope` names the fleet (ledger,
+// config and herdr session) and is never empty; `Thread` is the thread key
+// of a thread agent, empty for the other roles.
 type Identity struct {
 	Agent  string
 	Role   Role
 	Parent string
-	Target string
+	Scope  string
 	Job    string
 	Issue  string
 	Thread string
@@ -77,32 +76,37 @@ func AgentName() (string, error) {
 	return agent, nil
 }
 
-// Target is the caller's target from `FLEET_TARGET`, or DefaultTarget when
-// that is unset or empty. Refused when it cannot name a directory.
-func Target() (string, error) {
-	return CheckTarget(os.Getenv("FLEET_TARGET"))
+// Scope is the caller's scope from `FLEET_SCOPE`, or DefaultScope when
+// that is unset or empty.
+func Scope() (string, error) {
+	return CheckScope(os.Getenv("FLEET_SCOPE"))
 }
 
-// CheckTarget is Target for a value given on the command line or in the
-// environment: empty means the default; `/`, `.` and `..` are refused.
-func CheckTarget(value string) (string, error) {
+// CheckScope is Scope for a value given in a message or the environment:
+// empty means the default; otherwise only [a-z0-9-], starting with a
+// letter or digit, since the name is part of a file name and of the herdr
+// session's.
+func CheckScope(value string) (string, error) {
 	if value == "" {
-		return DefaultTarget, nil
+		return DefaultScope, nil
 	}
-	for _, c := range value {
-		if c == '/' || c == 0 {
-			return "", exit.Refusedf("target %q must be a directory name", value)
+	for i, c := range value {
+		letterOrDigit := c >= 'a' && c <= 'z' || c >= '0' && c <= '9'
+		if !letterOrDigit && (c != '-' || i == 0) {
+			return "", exit.Refusedf("scope %q: only [a-z0-9-], not starting with `-`", value)
 		}
-	}
-	if value == "." || value == ".." {
-		return "", exit.Refusedf("target %q must be a directory name", value)
 	}
 	return value, nil
 }
 
+// Session is the herdr session of `scope`.
+func Session(scope string) string {
+	return "fleet-" + scope
+}
+
 // FromEnv reads the full identity from the environment. Fails with exit
 // code 1 when `FLEET_AGENT` is unset, `FLEET_ROLE` is not a known role or
-// `FLEET_TARGET` is not a directory name.
+// `FLEET_SCOPE` is not a scope name.
 func FromEnv() (*Identity, error) {
 	agent, err := AgentName()
 	if err != nil {
@@ -113,7 +117,7 @@ func FromEnv() (*Identity, error) {
 	if !ok {
 		return nil, exit.Refusedf("FLEET_ROLE is %q, expected thread, lead or worker: %s", roleValue, hint)
 	}
-	target, err := Target()
+	scope, err := Scope()
 	if err != nil {
 		return nil, err
 	}
@@ -121,7 +125,7 @@ func FromEnv() (*Identity, error) {
 		Agent:  agent,
 		Role:   role,
 		Parent: os.Getenv("FLEET_PARENT"),
-		Target: target,
+		Scope:  scope,
 		Job:    os.Getenv("FLEET_JOB"),
 		Issue:  os.Getenv("FLEET_ISSUE"),
 		Thread: os.Getenv("FLEET_THREAD"),
@@ -137,7 +141,7 @@ func (id *Identity) EnvPairs() [][2]string {
 		{"FLEET_AGENT", id.Agent},
 		{"FLEET_ROLE", id.Role.String()},
 		{"FLEET_PARENT", id.Parent},
-		{"FLEET_TARGET", id.Target},
+		{"FLEET_SCOPE", id.Scope},
 		{"FLEET_JOB", id.Job},
 		{"FLEET_ISSUE", id.Issue},
 	}

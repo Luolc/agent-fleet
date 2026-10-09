@@ -29,9 +29,8 @@ var callTimeout = 60 * time.Second
 // variable so the test can shorten it.
 var waitDelay = 5 * time.Second
 
-// Herdr is how to reach the herdr server. Inside a pane herdr finds its
-// own session through `HERDR_SOCKET_PATH`; from cron or a test the session
-// is named.
+// Herdr is how to reach the herdr server: the session named, or the
+// pane's own (found through `HERDR_SOCKET_PATH`) when Session is nil.
 type Herdr struct {
 	Session *string
 }

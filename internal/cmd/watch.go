@@ -32,7 +32,7 @@ const sender = "cron"
 const (
 	WatchAbout     = "Cron check for stuck agents; tells a lead when the suspects among its workers change"
 	WatchLongAbout = "Cron check for stuck agents; tells a lead when the suspects among its workers change.\n\n" +
-		"Meant for cron every 15 minutes, with --session and --target. It looks at the live " +
+		"Meant for cron every 15 minutes, with --scope. It looks at the live " +
 		"lead and worker rows of the ledger. For each agent it reads `agent_status` and " +
 		"`state_change_seq` from herdr and hashes the visible screen with the spinner line, the " +
 		"input box and the status footer stripped (the spinner timer and the footer's countdowns " +
@@ -46,17 +46,10 @@ const (
 		"The screen filter knows only the screen of Claude Code, currently the only supported " +
 		"agent.\n\n" +
 		"Exit: 0 when the check ran (and every lead that had to be told was told); 1 when the " +
-		"target is not a directory name; 2, 3 or 4 when telling a lead gave no clear signal, " +
+		"scope is not a scope name; 2, 3 or 4 when telling a lead gave no clear signal, " +
 		"found it blocked, or did not find it, as for `send` (on 3 and 4 the next run tells it " +
 		"again); 5 when herdr or the database fails, or the ledger does not exist."
 )
-
-// WatchArgs are the arguments of `watch`.
-type WatchArgs struct {
-	// Target, when set, replaces FLEET_TARGET; cron must pass one or the
-	// other, else the default target is watched.
-	Target *string
-}
 
 // reading is what `watch` read for one agent this run.
 type reading struct {
@@ -77,8 +70,8 @@ type watched struct {
 }
 
 // Watch runs `watch`.
-func Watch(h *herdr.Herdr, args WatchArgs) (exit.Code, error) {
-	conn, err := OpenLedger(args.Target)
+func Watch(h *herdr.Herdr) (exit.Code, error) {
+	conn, err := OpenLedger()
 	if err != nil {
 		return 0, err
 	}

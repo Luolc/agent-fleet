@@ -30,7 +30,9 @@ const (
 		"<JOB> is the job id; the lead is named `<job>-lead`. With --repo the job is a " +
 		"single-repo job and the lead runs in ~/dev/<repo>, which must exist (read-only by " +
 		"convention: the lead plans and spawns, it does not edit there). Without --repo it is " +
-		"a cross-repo job and the lead runs in ~/cross-repo/<job>/, which is created. No " +
+		"a cross-repo job and the lead runs in <job>/ inside the checkout of your thread's " +
+		"initiative, ~/x-repo/<I>/ (~/x-repo/general/ for a thread of a single repo), which " +
+		"must exist; <job>/ is created. No " +
 		"worktree is made; agents open theirs with `fleet worktree`.\n\n" +
 		"Settings: a single-repo job reads .fleet/config.json in ~/dev/<repo> (`max_agents_per_job`, " +
 		"`resource_check`, `linear`; see `fleet spawn --help`). A cross-repo job reads no " +
@@ -43,10 +45,10 @@ const (
 		"Checks, all before anything is created: the task file is readable and not empty; " +
 		"the names are valid (`<job>-lead` has at most 32 characters); the config is valid; " +
 		"with Linear on, the task's first non-empty line gives a title; no open job in this " +
-		"target has the same name or, with --key, the same key (the job is named); no live " +
+		"scope has the same name or, with --key, the same key (the job is named); no live " +
 		"lead has the same parent issue (the lead is named: talk to it instead); the lead's " +
 		"name is free in the ledger and in herdr; no workspace is labelled after the job and, " +
-		"for a cross-repo job, ~/cross-repo/<job>/ does not exist; with resource_check, the " +
+		"for a cross-repo job, ~/x-repo/<I>/<job>/ does not exist; with resource_check, the " +
 		"1-minute load average is below the CPU count and available memory is above 2 GiB; " +
 		"last, for a cross-repo job, the parent's team and project are read from Linear.\n\n" +
 		"Then the job is reserved: the job's row (open, with the caller's thread as the job's " +
@@ -63,7 +65,7 @@ const (
 		"step fails, nothing else is created; what was created is listed, with the cleanup " +
 		"command, and the rows keep the identifiers written so far.\n\n" +
 		"Then the cross-repo directory is made, the workspace is created with the FLEET_* " +
-		"variables set (FLEET_TARGET, FLEET_JOB, FLEET_ISSUE), Claude Code is started as `fleet " +
+		"variables set (FLEET_SCOPE, FLEET_JOB, FLEET_ISSUE), Claude Code is started as `fleet " +
 		"spawn` starts a worker, the task is delivered with the work order's URL, and the " +
 		"lead's row becomes active.\n\n" +
 		"There is no rollback and no retry. When a step fails after the reservation, the " +
@@ -71,8 +73,12 @@ const (
 		"Exit: 0 when the task was delivered; 1 when a check refuses; 2/3/4 as `send` for the " +
 		"delivery; 3 when the lead stops at a screen other than its input box (the screen is " +
 		"printed); 5 when atb, herdr or the database fails, including a failed start."
-	JobListAbout     = "List the open jobs of a target (read-only)"
-	JobListLongAbout = "List the open jobs of a target (read-only).\n\n" +
+	JobListAbout     = "List the open jobs of your thread's channel, or of the whole scope (read-only)"
+	JobListLongAbout = "List the open jobs of your thread's channel, or of the whole scope (read-only).\n\n" +
+		"The jobs are those of the caller's scope (its ledger). By default only the jobs whose " +
+		"home thread belongs to the same repo-<R> or x-repo-<I> channel as the caller's thread " +
+		"(a thread agent's own, a lead's or worker's job's home thread); --all lists every " +
+		"open job of the scope, as does a caller with no thread (a plain shell).\n\n" +
 		"One line per open job, oldest first, tab-separated: job, parent issue, key, repo, " +
 		"lead, workers. An empty field is `-`; repo is `-` for a cross-repo job; lead is " +
 		"`<job>-lead` while its row is live, else `-`; workers are the live workers' names " +
@@ -80,7 +86,7 @@ const (
 		"job is open. --json prints a JSON array instead, one object per job with job, " +
 		"parent_issue, key, repo, lead_cwd, lead (null when none is live), workers and " +
 		"started_at.\n\n" +
-		"Exit: 0; 1 when the target is not a directory name; 5 when the database fails or " +
+		"Exit: 0; 1 when the scope is not a scope name; 5 when the database fails or " +
 		"the ledger does not exist."
 )
 
@@ -105,8 +111,9 @@ type JobStartArgs struct {
 
 // JobListArgs are the arguments of `job list`.
 type JobListArgs struct {
-	// Target, when set, replaces FLEET_TARGET.
-	Target *string
+	// All lists every job of the scope instead of only those whose home
+	// thread has the caller's mapping.
+	All bool
 	// JSON asks for machine-readable output.
 	JSON bool
 }
@@ -210,7 +217,7 @@ func jobStartChecks(h *herdr.Herdr, args JobStartArgs) (*jobChecked, *sql.DB, er
 		return nil, nil, exit.Refusedf("the job name `%s` is reserved for thread agents", threadsWorkspace)
 	}
 	c := &jobChecked{me: me, id: &identity.Identity{Agent: args.Job + "-lead", Role: identity.Lead,
-		Parent: me.Agent, Target: me.Target, Job: args.Job}}
+		Parent: me.Agent, Scope: me.Scope, Job: args.Job}}
 	if err := CheckAgentName(c.id.Agent); err != nil {
 		return nil, nil, err
 	}
@@ -223,11 +230,17 @@ func jobStartChecks(h *herdr.Herdr, args JobStartArgs) (*jobChecked, *sql.DB, er
 	if err := c.repoAndLinear(args); err != nil {
 		return nil, nil, err
 	}
-	conn, err := db.Open(me.Target)
+	conn, err := db.Open(me.Scope)
 	if err != nil {
 		return nil, nil, err
 	}
-	if err := c.ledgerAndHerdr(h, conn); err != nil {
+	if c.repo == "" {
+		err = c.crossRepoDir(conn)
+	}
+	if err == nil {
+		err = c.ledgerAndHerdr(h, conn)
+	}
+	if err != nil {
 		_ = conn.Close()
 		return nil, nil, err
 	}
@@ -277,7 +290,6 @@ func (c *jobChecked) repoAndLinear(args JobStartArgs) error {
 			return exit.Refusedf("no checkout at %s", c.cwd)
 		}
 	} else {
-		c.cwd = filepath.Join(c.home, "cross-repo", args.Job)
 		if args.NewParent != nil {
 			return exit.Refusedf("--new-parent is for single-repo jobs; a cross-repo job has no project " +
 				"to create the parent in, so create it first and pass --parent-issue")
@@ -302,6 +314,23 @@ func (c *jobChecked) repoAndLinear(args JobStartArgs) error {
 	return nil
 }
 
+// crossRepoDir is where a cross-repo job's lead runs: a directory named
+// after the job in the checkout of the caller's thread's initiative
+// (~/x-repo/<I>/<job>), or of x-repo-general for a thread of one repo.
+// The checkout must exist; the job's directory is made at the start.
+func (c *jobChecked) crossRepoDir(conn querier) error {
+	mapping, err := threadMapping(conn, c.me.Thread)
+	if err != nil {
+		return err
+	}
+	root := crossRepoRoot(c.home, mapping)
+	if info, err := os.Stat(root); err != nil || !info.IsDir() {
+		return exit.Refusedf("no checkout at %s, where a cross-repo job of this thread runs", root)
+	}
+	c.cwd = filepath.Join(root, c.id.Job)
+	return nil
+}
+
 // dedup is the dedup checks in the ledger: the job's name, its key and its
 // parent issue, then the lead's name. Run once before the Linear query,
 // so a refusal needs no Linear, and again inside the reservation.
@@ -313,8 +342,8 @@ func (c *jobChecked) dedup(conn querier) error {
 		return exit.Database(err)
 	}
 	if err == nil {
-		return exit.Refusedf("job %s is already open in target %s; if it is left over, clean up with "+
-			"`fleet job end %s --force`", job, c.me.Target, job)
+		return exit.Refusedf("job %s is already open in scope %s; if it is left over, clean up with "+
+			"`fleet job end %s --force`", job, c.me.Scope, job)
 	}
 	if c.key != "" {
 		var other string
@@ -450,7 +479,7 @@ func JobStart(h *herdr.Herdr, args JobStartArgs) (exit.Code, error) {
 	}
 	c.id.Issue = issue.Identifier
 	if c.repo == "" {
-		if err := os.MkdirAll(c.cwd, 0o777); err != nil {
+		if err := os.Mkdir(c.cwd, 0o777); err != nil {
 			return startFailed(c.id.Agent, exit.IO(err), 0, created, hint)
 		}
 		created = append(created, "directory "+c.cwd)
@@ -482,9 +511,28 @@ type jobLine struct {
 	StartedAt   int64    `json:"started_at"`
 }
 
-// jobLines joins the open jobs with their live lead and workers.
-func jobLines(conn *sql.DB) ([]jobLine, error) {
+// onMapping keeps the jobs whose home thread has `mapping`.
+func onMapping(conn querier, jobs []jobRow, mapping string) ([]jobRow, error) {
+	var kept []jobRow
+	for _, j := range jobs {
+		home, err := threadMapping(conn, j.HomeThread)
+		if err != nil {
+			return nil, err
+		}
+		if home == mapping {
+			kept = append(kept, j)
+		}
+	}
+	return kept, nil
+}
+
+// jobLines joins the open jobs with their live lead and workers: every
+// open job, or with `mapping` set only those whose home thread has it.
+func jobLines(conn *sql.DB, mapping string) ([]jobLine, error) {
 	jobs, err := openJobs(conn)
+	if err == nil && mapping != "" {
+		jobs, err = onMapping(conn, jobs, mapping)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -519,14 +567,53 @@ func jobLines(conn *sql.DB) ([]jobLine, error) {
 	return lines, nil
 }
 
+// callerMapping is the mapping of the caller's thread: a thread agent's
+// own (FLEET_THREAD), or for a lead or worker its job's home thread
+// (FLEET_JOB). "" when the caller has neither, such as a plain shell.
+func callerMapping(conn *sql.DB) (string, error) {
+	thread := os.Getenv("FLEET_THREAD")
+	if thread == "" {
+		if job := os.Getenv("FLEET_JOB"); job != "" {
+			row, err := latestJob(conn, job)
+			if err != nil {
+				return "", err
+			}
+			if row != nil {
+				thread = row.HomeThread
+			}
+		}
+	}
+	if thread == "" {
+		return "", nil
+	}
+	return threadMapping(conn, thread)
+}
+
+// threadMapping is the recorded mapping of `thread`, "" when the ledger
+// does not know it.
+func threadMapping(conn querier, thread string) (string, error) {
+	var mapping string
+	err := conn.QueryRow("SELECT mapping FROM threads WHERE thread = ?1", thread).Scan(&mapping)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return "", exit.Database(err)
+	}
+	return mapping, nil
+}
+
 // JobList runs `job list`.
 func JobList(args JobListArgs) (exit.Code, error) {
-	conn, err := OpenLedger(args.Target)
+	conn, err := OpenLedger()
 	if err != nil {
 		return 0, err
 	}
 	defer conn.Close()
-	lines, err := jobLines(conn)
+	mapping := ""
+	if !args.All {
+		if mapping, err = callerMapping(conn); err != nil {
+			return 0, err
+		}
+	}
+	lines, err := jobLines(conn, mapping)
 	if err != nil {
 		return 0, err
 	}

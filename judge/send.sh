@@ -1,6 +1,6 @@
 # Sourced by inside.sh: `send` against the real herdr and a fake Claude,
 # every outcome of `herdr agent prompt` mapped to its exit code.
-sender() { env "${P}AGENT=judge-sender" "${P}ROLE=thread" "$T" --session judge "$@"; }
+sender() { env "${P}AGENT=judge-sender" "${P}ROLE=thread" "${P}SCOPE=$SCOPE" "$T" "$@"; }
 
 echo "the quick brown fox 0xC0FFEE" | sender send fake; rc=$?
 check "send: exit 0 on agent_prompted" 0 "$rc"
@@ -16,7 +16,7 @@ settled fake
 echo "hello" | sender send nobody; rc=$?
 check "send: exit 4 on agent_not_found" 4 "$rc"
 
-echo "hello" | env "${P}AGENT=judge-sender" "$T" --session no-such-session send fake >/dev/null 2>&1; rc=$?
+echo "hello" | env "${P}AGENT=judge-sender" "$T" --scope no-such-scope send fake >/dev/null 2>&1; rc=$?
 check "send: exit 5 when herdr itself fails" 5 "$rc"
 
 # A slow rest of the message must not delay the first frame: with the gather

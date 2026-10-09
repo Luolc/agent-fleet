@@ -58,7 +58,7 @@ const (
 		"projects of the ticket's team (`atb linear set-project`). A ticket already in that " +
 		"project is left alone; one in another project is refused by atb.\n\n" +
 		"Exit: 0; 1 when the caller is not a thread agent or has no ticket (thread tickets are " +
-		"off for this target); 5 when atb fails."
+		"off for this scope); 5 when atb fails."
 	ThreadRelateAbout     = "Relate your thread ticket to an issue (thread agents only)"
 	ThreadRelateLongAbout = "Relate your thread ticket to an issue (thread agents only).\n\n" +
 		"Adds a `related` relation between FLEET_ISSUE and <ISSUE> (`atb linear relate`); a " +
@@ -106,15 +106,15 @@ func ThreadSlug(key string) string {
 
 // threadRow is a thread as the ledger records it.
 type threadRow struct {
-	Thread, Slug, Channel, Context, Ticket, TicketURL string
-	Sessions                                          int64
+	Thread, Slug, Channel, Context, Ticket, TicketURL, Mapping, Cwd string
+	Sessions                                                        int64
 }
 
-// threadByKey is the thread `key`, or nil when this target has not seen it.
+// threadByKey is the thread `key`, or nil when this scope has not seen it.
 func threadByKey(conn querier, key string) (*threadRow, error) {
 	var r threadRow
-	err := conn.QueryRow("SELECT thread, slug, channel, context, ticket, ticket_url, sessions FROM threads WHERE thread = ?1",
-		key).Scan(&r.Thread, &r.Slug, &r.Channel, &r.Context, &r.Ticket, &r.TicketURL, &r.Sessions)
+	err := conn.QueryRow("SELECT thread, slug, channel, context, ticket, ticket_url, mapping, cwd, sessions FROM threads WHERE thread = ?1",
+		key).Scan(&r.Thread, &r.Slug, &r.Channel, &r.Context, &r.Ticket, &r.TicketURL, &r.Mapping, &r.Cwd, &r.Sessions)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -147,22 +147,43 @@ func endRow(conn querier, name string) error {
 	return nil
 }
 
-// threadCwd is where a thread agent of `target` runs: ~/cross-repo/threads/
-// for the default target (made when missing), ~/dev/<target> otherwise
-// (which must exist).
-func threadCwd(home, target string) (string, error) {
-	if target == identity.DefaultTarget {
-		cwd := filepath.Join(home, "cross-repo", threadsWorkspace)
-		if err := os.MkdirAll(cwd, 0o777); err != nil {
-			return "", exit.IO(err)
+// generalMapping is the mapping of a direct message to the bot, and of
+// the channel of the same name.
+const generalMapping = "x-repo-general"
+
+// ChannelMapping is where a message's thread belongs: `x-repo-general` for
+// a direct message, else the channel's name when it is `repo-<R>` or
+// `x-repo-<I>`, else "": fleet serves no other channel.
+func ChannelMapping(channelName string, dm bool) string {
+	if dm {
+		return generalMapping
+	}
+	for _, prefix := range []string{"repo-", "x-repo-"} {
+		if rest, ok := strings.CutPrefix(channelName, prefix); ok && CheckRepo(rest) == nil {
+			return channelName
 		}
-		return cwd, nil
 	}
-	cwd := filepath.Join(home, "dev", target)
-	if info, err := os.Stat(cwd); err != nil || !info.IsDir() {
-		return "", exit.Environmentf("no checkout at %s for target %s; thread agents of a target run there", cwd, target)
+	return ""
+}
+
+// MappingDir is the directory a mapping's thread agents run in: the main
+// checkout ~/dev/<R> for `repo-<R>`, the checkout of the initiative's repo
+// ~/x-repo/<I> for `x-repo-<I>`. fleet never makes either.
+func MappingDir(home, mapping string) string {
+	if rest, ok := strings.CutPrefix(mapping, "x-repo-"); ok {
+		return filepath.Join(home, "x-repo", rest)
 	}
-	return cwd, nil
+	return filepath.Join(home, "dev", strings.TrimPrefix(mapping, "repo-"))
+}
+
+// crossRepoRoot is the directory the cross-repo jobs of a thread put their
+// leads' directories in: the thread's own for `x-repo-<I>`, ~/x-repo/general
+// for a `repo-<R>` thread.
+func crossRepoRoot(home, mapping string) string {
+	if strings.HasPrefix(mapping, "x-repo-") {
+		return MappingDir(home, mapping)
+	}
+	return MappingDir(home, generalMapping)
 }
 
 // tempFile writes `content` to a new file for an atb `--body-file` or
@@ -190,6 +211,9 @@ func tempFile(content string) (string, func(), error) {
 // job's conclusion.
 type inboundMessage struct {
 	Thread, Text, User, TS, Context string
+	// Mapping is the thread's mapping as the message gives it (empty for
+	// a question): used only for a thread the ledger does not know.
+	Mapping string
 	// Question is the asking agent's name; Conclusion marks a job's
 	// conclusion, which needs no answer.
 	Question   string
@@ -238,12 +262,13 @@ func (m inboundMessage) trigger() string {
 type threadStart struct {
 	h       *herdr.Herdr
 	conn    *sql.DB
-	target  string
-	cfg     *config.Target
+	cfg     *config.Scope
 	msg     inboundMessage
 	id      *identity.Identity
+	mapping string
 	cwd     string
-	known   *threadRow // nil for a thread this target has not seen
+	home    string
+	known   *threadRow // nil for a thread this scope has not seen
 	session int64
 	ticket  atb.Issue
 	notes   []string // for the prompt: earlier summaries
@@ -251,25 +276,40 @@ type threadStart struct {
 }
 
 // newThreadStart checks what a start needs before anything is written:
-// the thread's name, the target's checkout, and whether the thread is
-// known.
-func newThreadStart(h *herdr.Herdr, conn *sql.DB, target string, cfg *config.Target, msg inboundMessage) (*threadStart, error) {
+// the thread's name, whether the thread is known, and where it belongs: a
+// known thread keeps the mapping and directory recorded at its first
+// delivery, a new one takes them from the message.
+func newThreadStart(h *herdr.Herdr, conn *sql.DB, scope string, cfg *config.Scope, msg inboundMessage) (*threadStart, error) {
 	home, err := Home()
 	if err != nil {
 		return nil, err
 	}
-	s := &threadStart{h: h, conn: conn, target: target, cfg: cfg, msg: msg,
-		id: &identity.Identity{Agent: "thread-" + ThreadSlug(msg.Thread), Role: identity.Thread, Target: target, Thread: msg.Thread}}
+	s := &threadStart{h: h, conn: conn, cfg: cfg, msg: msg, home: home,
+		id: &identity.Identity{Agent: "thread-" + ThreadSlug(msg.Thread), Role: identity.Thread, Scope: scope, Thread: msg.Thread}}
 	if err := CheckAgentName(s.id.Agent); err != nil {
-		return nil, err
-	}
-	if s.cwd, err = threadCwd(home, target); err != nil {
 		return nil, err
 	}
 	if s.known, err = threadByKey(conn, msg.Thread); err != nil {
 		return nil, err
 	}
+	if err := s.belong(); err != nil {
+		return nil, err
+	}
 	return s, nil
+}
+
+// belong sets the thread's mapping and directory: the recorded ones of a
+// known thread, else the message's.
+func (s *threadStart) belong() error {
+	if s.known != nil && s.known.Mapping != "" {
+		s.mapping, s.cwd = s.known.Mapping, s.known.Cwd
+		return nil
+	}
+	if s.msg.Mapping == "" {
+		return exit.Environmentf("the ledger records no channel for thread %s", s.msg.Thread)
+	}
+	s.mapping, s.cwd = s.msg.Mapping, MappingDir(s.home, s.msg.Mapping)
+	return nil
 }
 
 // reserve writes the agent's row (`starting`) and counts the session on
@@ -289,10 +329,11 @@ func (s *threadStart) reserve() error {
 		}
 		return nil
 	}, func(q querier) error {
-		if _, err := q.Exec("INSERT INTO threads (thread, slug, channel, context, sessions, created_at) VALUES (?1, ?2, ?3, ?4, 1, ?5) "+
+		if _, err := q.Exec("INSERT INTO threads (thread, slug, channel, context, mapping, cwd, sessions, created_at) "+
+			"VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7) "+
 			"ON CONFLICT (thread) DO UPDATE SET sessions = sessions + 1, "+
 			"context = CASE WHEN excluded.context != '' THEN excluded.context ELSE context END",
-			s.msg.Thread, ThreadSlug(s.msg.Thread), s.msg.channel(), s.msg.Context, db.Now()); err != nil {
+			s.msg.Thread, ThreadSlug(s.msg.Thread), s.msg.channel(), s.msg.Context, s.mapping, s.cwd, db.Now()); err != nil {
 			return exit.Database(err)
 		}
 		if err := q.QueryRow("SELECT sessions FROM threads WHERE thread = ?1", s.msg.Thread).Scan(&s.session); err != nil {
@@ -314,7 +355,7 @@ func (s *threadStart) unreserve() error {
 	return nil
 }
 
-// linearSteps are the thread ticket's steps when the target has a Linear
+// linearSteps are the thread ticket's steps when the scope has a Linear
 // team: a new thread gets its ticket created (label `thread`, no project)
 // and claimed; a known thread gets its ticket claimed again, a `Session
 // <n> started` comment, and its earlier summaries read for the prompt.
@@ -353,7 +394,7 @@ func (s *threadStart) linearSteps() error {
 	if err := setIssue(s.conn, s.id.Agent, s.ticket.Identifier); err != nil {
 		return err
 	}
-	if err := atb.Claim(s.ticket.Identifier, s.id.Agent, s.msg.Thread, s.target+": thread "+s.msg.Thread); err != nil {
+	if err := atb.Claim(s.ticket.Identifier, s.id.Agent, s.msg.Thread, s.mapping+": thread "+s.msg.Thread); err != nil {
 		return err
 	}
 	if s.session == 1 {
@@ -412,10 +453,23 @@ func summaries(ticket string) ([]string, error) {
 	return notes, nil
 }
 
+// rules is how the thread agent decides between a single-repo and a
+// cross-repo job, by the thread's mapping.
+func (s *threadStart) rules() string {
+	if repo, ok := strings.CutPrefix(s.mapping, "repo-"); ok {
+		return fmt.Sprintf("This thread belongs to the repo %[1]s. Work asked for here is a single-repo job in %[1]s "+
+			"(`fleet job start <job> --repo %[1]s ...`), unless the people say it reaches other repos; then it is a "+
+			"cross-repo job (no `--repo`).", repo)
+	}
+	return fmt.Sprintf("This thread belongs to the cross-repo initiative %s; %s is its charter, read it first. "+
+		"Decide from the request whether the work touches one repo (`--repo <R>`) or several (a cross-repo job, "+
+		"no `--repo`); when unsure, ask in the thread.", strings.TrimPrefix(s.mapping, "x-repo-"), filepath.Join(s.cwd, "AGENTS.md"))
+}
+
 // prompt is the thread agent's first message: the built-in prompt, the
 // channel's context, the earlier summaries, and the message.
 func (s *threadStart) prompt() string {
-	post := "the fednet socket is not configured for this target (`fednet.socket` in its config file), so posting to the thread is off"
+	post := "the fednet socket is not configured for this scope (`fednet.socket` in its config file), so posting to the thread is off"
 	if s.cfg.FednetSocket != "" {
 		post = fmt.Sprintf("`fednet client post -socket %s -thread %s -- <text>` posts to the thread: progress, "+
 			"answers, and a lead's questions for the people there", s.cfg.FednetSocket, s.msg.Thread)
@@ -423,9 +477,10 @@ func (s *threadStart) prompt() string {
 	ticket := s.ticket.Identifier
 	note := " (your thread ticket, " + s.ticket.URL + ")"
 	if ticket == "" {
-		note = " (empty: thread tickets are off for this target)"
+		note = " (empty: thread tickets are off for this scope)"
 	}
-	text := strings.NewReplacer("{{thread}}", s.msg.Thread, "{{target}}", s.target, "{{agent}}", s.id.Agent,
+	text := strings.NewReplacer("{{thread}}", s.msg.Thread, "{{scope}}", s.id.Scope, "{{agent}}", s.id.Agent,
+		"{{mapping}}", s.mapping, "{{cwd}}", s.cwd, "{{rules}}", s.rules(), "{{xrepo}}", crossRepoRoot(s.home, s.mapping),
 		"{{ticket}}", ticket, "{{ticket_note}}", note, "{{post}}", post).Replace(threadPrompt)
 	context := s.msg.Context
 	if context == "" && s.known != nil {
@@ -481,10 +536,7 @@ func (s *threadStart) start() (exit.Code, error) {
 }
 
 // linearUnavailable is what `fleet inbox` does when a Linear step failed:
-// no agent (the reservation taken back), then one line posted to the
-// thread; only when the post succeeded is the message dropped. A post
-// that fails, or no socket to post with, is exit 5: the message stays
-// reserved and fednet runs the hook again.
+// no agent (the reservation taken back), then the thread is told.
 // An agent's question (`Question` set) gets the failure back instead of
 // a post: nobody in the thread asked anything.
 func (s *threadStart) linearUnavailable(cause error) error {
@@ -495,15 +547,43 @@ func (s *threadStart) linearUnavailable(cause error) error {
 	if s.msg.Question != "" {
 		return nil
 	}
+	return s.tell("Linear is unavailable right now, so no agent was started for this thread; please try again later.",
+		"Linear is unavailable")
+}
+
+// notHere is what a start does when the thread's directory is not on this
+// machine: nothing is reserved or started, and the thread is told. An
+// agent's question gets an error instead.
+func (s *threadStart) notHere() error {
+	what := "the repo " + strings.TrimPrefix(s.mapping, "repo-")
+	if strings.HasPrefix(s.mapping, "x-repo-") {
+		what = "the repo of " + s.mapping
+	}
+	if s.msg.Question != "" {
+		return exit.Environmentf("%s is not checked out at %s on this machine", what, s.cwd)
+	}
+	fmt.Fprintf(os.Stderr, "fleet: no checkout at %s, no thread agent started\n", s.cwd)
+	return s.tell(fmt.Sprintf("%s is not checked out on this machine (%s), so no agent was started for this thread.",
+		capitalize(what), s.cwd), "the checkout is missing")
+}
+
+// tell posts one line to the thread; only when the post succeeded is the
+// message dropped. A post that fails, or no socket to post with, is exit
+// 5: the message stays reserved and fednet runs the hook again.
+func (s *threadStart) tell(line, what string) error {
 	if s.cfg.FednetSocket == "" {
 		return exit.Environmentf("fednet.socket is not configured, so the thread cannot be told; the message is kept for a retry")
 	}
-	if err := fednet.Post(s.cfg.FednetSocket, s.msg.Thread,
-		"Linear is unavailable right now, so no agent was started for this thread; please try again later."); err != nil {
+	if err := fednet.Post(s.cfg.FednetSocket, s.msg.Thread, line); err != nil {
 		return exit.Environmentf("%v; the thread was not told, the message is kept for a retry", err)
 	}
-	fmt.Fprintln(os.Stdout, "posted to the thread that Linear is unavailable")
+	fmt.Fprintf(os.Stdout, "posted to the thread that %s\n", what)
 	return nil
+}
+
+// capitalize upper-cases the first letter of an ASCII sentence.
+func capitalize(text string) string {
+	return strings.ToUpper(text[:1]) + text[1:]
 }
 
 // resume finishes a start an earlier run was killed in, found as a live
@@ -511,7 +591,7 @@ func (s *threadStart) linearUnavailable(cause error) error {
 // input box, the earlier summaries are read again, and the full first
 // message is delivered, after which the row is active. Nothing new is
 // created.
-func resumeThreadStart(h *herdr.Herdr, conn *sql.DB, target string, cfg *config.Target, msg inboundMessage, name string) (exit.Code, error) {
+func resumeThreadStart(h *herdr.Herdr, conn *sql.DB, scope string, cfg *config.Scope, msg inboundMessage, name string) (exit.Code, error) {
 	fmt.Fprintf(os.Stderr, "note: %s is still starting from an earlier run; finishing that start\n", name)
 	home, err := Home()
 	if err != nil {
@@ -528,10 +608,10 @@ func resumeThreadStart(h *herdr.Herdr, conn *sql.DB, target string, cfg *config.
 	if err := conn.QueryRow("SELECT pane_id FROM agents WHERE name = ?1 AND state != 'ended'", name).Scan(&pane); err != nil {
 		return 0, exit.Database(err)
 	}
-	s := &threadStart{h: h, conn: conn, target: target, cfg: cfg, msg: msg, known: known, session: known.Sessions,
+	s := &threadStart{h: h, conn: conn, cfg: cfg, msg: msg, known: known, session: known.Sessions, home: home,
 		ticket: atb.Issue{Identifier: known.Ticket, URL: known.TicketURL},
-		id:     &identity.Identity{Agent: name, Role: identity.Thread, Target: target, Thread: msg.Thread, Issue: known.Ticket}}
-	if s.cwd, err = threadCwd(home, target); err != nil {
+		id:     &identity.Identity{Agent: name, Role: identity.Thread, Scope: scope, Thread: msg.Thread, Issue: known.Ticket}}
+	if err := s.belong(); err != nil {
 		return 0, err
 	}
 	if known.Ticket != "" && known.Sessions > 1 {
@@ -597,7 +677,7 @@ func ThreadEnd(h *herdr.Herdr, args ThreadEndArgs) (exit.Code, error) {
 	if strings.TrimSpace(string(summary)) == "" {
 		return 0, exit.Refusedf("the summary file is empty")
 	}
-	conn, err := db.Open(me.Target)
+	conn, err := db.Open(me.Scope)
 	if err != nil {
 		return 0, err
 	}
@@ -715,7 +795,7 @@ func ticketCaller() (*identity.Identity, error) {
 		return nil, err
 	}
 	if me.Issue == "" {
-		return nil, exit.Refusedf("FLEET_ISSUE is empty: this thread has no ticket (thread tickets are off for target %s)", me.Target)
+		return nil, exit.Refusedf("FLEET_ISSUE is empty: this thread has no ticket (thread tickets are off for scope %s)", me.Scope)
 	}
 	return me, nil
 }

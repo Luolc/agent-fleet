@@ -21,7 +21,7 @@ const (
 		"The job is FLEET_JOB. The worktree is ~/wt/<repo>/<job>, or ~/wt/<repo>/<job>-<name> " +
 		"with --name, on a new branch of the same name (no prefix) unless --branch is given. " +
 		"~/dev/<repo> runs `git fetch origin` and the branch starts at origin/HEAD, never at " +
-		"the local HEAD. The ledger of your target records the worktree for the job, so " +
+		"the local HEAD. The ledger of your scope records the worktree for the job, so " +
 		"`fleet job end` removes it.\n\n" +
 		"When the path already exists and the ledger records it for this job, the path is " +
 		"printed and nothing changes, so every agent of a job gets the same worktree. A path " +
@@ -97,7 +97,7 @@ func Worktree(args WorktreeArgs) (exit.Code, error) {
 	if err != nil {
 		return 0, err
 	}
-	conn, err := db.Open(me.Target)
+	conn, err := db.Open(me.Scope)
 	if err != nil {
 		return 0, err
 	}

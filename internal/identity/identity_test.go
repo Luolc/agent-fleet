@@ -2,37 +2,40 @@ package identity
 
 import "testing"
 
-func TestTheWorkOrderAndTargetTravelInTheEnvironment(t *testing.T) {
+func TestTheWorkOrderAndScopeTravelInTheEnvironment(t *testing.T) {
 	t.Setenv("FLEET_AGENT", "item-1-a")
 	t.Setenv("FLEET_ROLE", "worker")
 	t.Setenv("FLEET_ISSUE", "EX-7")
-	t.Setenv("FLEET_TARGET", "example-dataset")
+	t.Setenv("FLEET_SCOPE", "example")
 	id, err := FromEnv()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if id.Issue != "EX-7" || id.Target != "example-dataset" {
-		t.Errorf("Issue = %q, Target = %q", id.Issue, id.Target)
+	if id.Issue != "EX-7" || id.Scope != "example" {
+		t.Errorf("Issue = %q, Scope = %q", id.Issue, id.Scope)
 	}
 	pairs := id.EnvPairs()
 	if last := pairs[len(pairs)-1]; last != [2]string{"FLEET_ISSUE", "EX-7"} {
 		t.Errorf("last pair = %q, want FLEET_ISSUE=EX-7", last)
 	}
-	if pairs[3] != [2]string{"FLEET_TARGET", "example-dataset"} {
-		t.Errorf("target pair = %q", pairs[3])
+	if pairs[3] != [2]string{"FLEET_SCOPE", "example"} {
+		t.Errorf("scope pair = %q", pairs[3])
 	}
 }
 
-func TestTheTargetDefaultsAndIsADirectoryName(t *testing.T) {
-	t.Setenv("FLEET_TARGET", "")
-	if got, err := Target(); err != nil || got != DefaultTarget {
-		t.Errorf("empty FLEET_TARGET: %q, %v", got, err)
+func TestTheScopeDefaultsToMainAndNamesTheSession(t *testing.T) {
+	t.Setenv("FLEET_SCOPE", "")
+	if got, err := Scope(); err != nil || got != "main" {
+		t.Errorf("empty FLEET_SCOPE: %q, %v", got, err)
 	}
-	if got, err := CheckTarget("example-dataset"); err != nil || got != "example-dataset" {
+	if got, err := CheckScope("example-scope"); err != nil || got != "example-scope" {
 		t.Errorf("a name: %q, %v", got, err)
 	}
-	for _, bad := range []string{"a/b", ".", "..", "/"} {
-		if _, err := CheckTarget(bad); err == nil {
+	if got := Session("main"); got != "fleet-main" {
+		t.Errorf("Session(main) = %q", got)
+	}
+	for _, bad := range []string{"a/b", "..", "-x", "Main", "a_b"} {
+		if _, err := CheckScope(bad); err == nil {
 			t.Errorf("%q accepted", bad)
 		}
 	}

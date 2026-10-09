@@ -7,7 +7,7 @@ import (
 )
 
 func TestLedgerOpensInWALModeAndReopens(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "fleet", "example-dataset", "fleet.db")
+	path := filepath.Join(t.TempDir(), "fleet", "example.db")
 	conn, err := OpenAt(path)
 	if err != nil {
 		t.Fatal(err)
@@ -46,16 +46,16 @@ func TestLedgerOpensInWALModeAndReopens(t *testing.T) {
 	}
 }
 
-func TestLedgerPathUsesTheTargetUnderTheStateDir(t *testing.T) {
-	path, err := PathUnder("/state", "example-dataset")
+func TestLedgerPathIsTheScopeUnderTheStateDir(t *testing.T) {
+	path, err := PathUnder("/state", "example")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "/state/fleet/example-dataset/fleet.db"; path != want {
+	if want := "/state/fleet/example.db"; path != want {
 		t.Errorf("path = %q, want %q", path, want)
 	}
 	if _, err := PathUnder("/state", ""); err == nil {
-		t.Error("an empty target was accepted")
+		t.Error("an empty scope was accepted")
 	}
 }
 
@@ -63,13 +63,13 @@ func TestLedgerPathFallsBackToLocalStateWithoutXDGStateHome(t *testing.T) {
 	t.Setenv("HOME", "/home/example")
 	for _, xdg := range []string{"/xdg/state", ""} {
 		t.Setenv("XDG_STATE_HOME", xdg)
-		path, err := Path("example-dataset")
+		path, err := Path("example")
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := "/xdg/state/fleet/example-dataset/fleet.db"
+		want := "/xdg/state/fleet/example.db"
 		if xdg == "" {
-			want = "/home/example/.local/state/fleet/example-dataset/fleet.db"
+			want = "/home/example/.local/state/fleet/example.db"
 		}
 		if path != want {
 			t.Errorf("XDG_STATE_HOME=%q: path = %q, want %q", xdg, path, want)

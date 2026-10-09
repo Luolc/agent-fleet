@@ -1,5 +1,5 @@
-// Package db is the dispatch ledger of one target:
-// `$XDG_STATE_HOME/fleet/<target>/fleet.db` (docs/design.md). The binary is
+// Package db is the dispatch ledger of one scope:
+// `$XDG_STATE_HOME/fleet/<scope>.db` (docs/design.md). The binary is
 // its only reader and writer.
 package db
 
@@ -17,7 +17,7 @@ import (
 	"github.com/Luolc/agent-fleet/internal/exit"
 )
 
-const schemaVersion = 8
+const schemaVersion = 9
 
 // Version 1: the `agents` table. Ended rows are kept as history, so `name`
 // is unique only among rows that have not ended.
@@ -78,7 +78,7 @@ ALTER TABLE agents ADD COLUMN issue TEXT NOT NULL DEFAULT '';
 ALTER TABLE agents ADD COLUMN parent_issue TEXT NOT NULL DEFAULT '';
 `
 
-// Version 5: the `jobs` table, one row per job started in this target, and
+// Version 5: the `jobs` table, one row per job started in this scope, and
 // the agent's working directory (`cwd`, formerly `worktree`: fleet no
 // longer makes a worktree for an agent). A job is open until ended_at is
 // set; a name, and a non-empty key, are unique among open jobs, and a
@@ -120,7 +120,7 @@ CREATE TABLE steps (
 
 // Version 7: thread agents. `agents.thread` is the thread key of a thread
 // agent's row (empty for the other roles), and a thread has at most one
-// live thread agent. `threads` is one row per thread this target has
+// live thread agent. `threads` is one row per thread this scope has
 // seen: its slug (the agent is `thread-<slug>`), the channel's context
 // as it came with the first message, the thread ticket (empty with
 // Linear off) and how many sessions were started on it. `inbox` is one
@@ -170,13 +170,22 @@ CREATE TABLE questions (
 );
 `
 
-// migrations[v] upgrades a ledger at version v to v+1.
-var migrations = [schemaVersion]string{schema, schemaV2, schemaV3, schemaV4, schemaV5, schemaV6, schemaV7, schemaV8}
+// Version 9: where a thread belongs, fixed at its first delivery so a
+// renamed channel does not move it: `mapping` (`repo-<R>` or
+// `x-repo-<I>`; a direct message is `x-repo-general`) and `cwd`, the
+// directory its agents run in.
+const schemaV9 = `
+ALTER TABLE threads ADD COLUMN mapping TEXT NOT NULL DEFAULT '';
+ALTER TABLE threads ADD COLUMN cwd TEXT NOT NULL DEFAULT '';
+`
 
-// Path is where the ledger of `target` lives:
-// `$XDG_STATE_HOME/fleet/<target>/fleet.db`, with `~/.local/state` when
+// migrations[v] upgrades a ledger at version v to v+1.
+var migrations = [schemaVersion]string{schema, schemaV2, schemaV3, schemaV4, schemaV5, schemaV6, schemaV7, schemaV8, schemaV9}
+
+// Path is where the ledger of `scope` lives:
+// `$XDG_STATE_HOME/fleet/<scope>.db`, with `~/.local/state` when
 // XDG_STATE_HOME is unset or empty.
-func Path(target string) (string, error) {
+func Path(scope string) (string, error) {
 	state := os.Getenv("XDG_STATE_HOME")
 	if state == "" {
 		home := os.Getenv("HOME")
@@ -185,22 +194,22 @@ func Path(target string) (string, error) {
 		}
 		state = filepath.Join(home, ".local", "state")
 	}
-	return PathUnder(state, target)
+	return PathUnder(state, scope)
 }
 
 // PathUnder is Path with the state directory given, so no environment is
 // read.
-func PathUnder(state, target string) (string, error) {
-	if target == "" {
-		return "", exit.Refusedf("the target name is empty")
+func PathUnder(state, scope string) (string, error) {
+	if scope == "" {
+		return "", exit.Refusedf("the scope name is empty")
 	}
-	return filepath.Join(state, "fleet", target, "fleet.db"), nil
+	return filepath.Join(state, "fleet", scope+".db"), nil
 }
 
-// Open opens (creating if needed) the database of `target`: WAL mode, a
+// Open opens (creating if needed) the database of `scope`: WAL mode, a
 // 5 s busy timeout, and the schema at the current version.
-func Open(target string) (*sql.DB, error) {
-	path, err := Path(target)
+func Open(scope string) (*sql.DB, error) {
+	path, err := Path(scope)
 	if err != nil {
 		return nil, err
 	}
