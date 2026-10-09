@@ -171,8 +171,8 @@ func TestTheResourceCheckFollowsTheConfig(t *testing.T) {
 	defer func() { machineResources = saved }()
 	machineResources = func() error { return exit.Refusedf("the machine is busy") }
 	for _, on := range []bool{true, false} {
-		c := &checked{cfg: &config.Config{MaxAgentsPerJob: 4, ResourceCheck: on}}
-		if refused := c.resources() != nil; refused != on {
+		cfg := &config.Config{MaxAgentsPerJob: 4, ResourceCheck: on}
+		if refused := resources(cfg) != nil; refused != on {
 			t.Errorf("resource_check %v: refused %v", on, refused)
 		}
 	}

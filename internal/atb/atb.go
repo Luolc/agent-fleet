@@ -1,5 +1,5 @@
-// Package atb runs `atb linear`: create and claim an agent's work order,
-// write its worker report and release it.
+// Package atb runs `atb linear`: create and claim an issue, read a parent
+// issue's team and project, write a worker report and release an issue.
 package atb
 
 import (
@@ -26,14 +26,27 @@ type Issue struct {
 
 var identifierPattern = regexp.MustCompile(`^[A-Z][A-Z0-9]*-[0-9]+$`)
 
-// Create is `atb linear create --team <team> --project <project> --parent
-// <parent> --title <title> --description-file <file> --json`. Only an
-// identifier and an https URL are taken from its output; anything else
-// is a failure that does not show the output.
+// CheckIdentifier refuses what is not a Linear identifier such as ABC-12.
+func CheckIdentifier(issue string) error {
+	if !identifierPattern.MatchString(issue) {
+		return exit.Refusedf("%q is not a Linear issue identifier such as ABC-12", issue)
+	}
+	return nil
+}
+
+// Create is `atb linear create --team <team> --project <project> [--parent
+// <parent>] --title <title> --description-file <file> --json`; an empty
+// parent makes a top-level issue. Only an identifier and an https URL are
+// taken from its output; anything else is a failure that does not show
+// the output.
 func Create(team, project, parent, title, file string) (Issue, error) {
 	op := "atb linear create"
-	out, err := run(op, "linear", "create", "--team", team, "--project", project, "--parent", parent,
-		"--title", title, "--description-file", file, "--json")
+	argv := []string{"linear", "create", "--team", team, "--project", project}
+	if parent != "" {
+		argv = append(argv, "--parent", parent)
+	}
+	argv = append(argv, "--title", title, "--description-file", file, "--json")
+	out, err := run(op, argv...)
 	if err != nil {
 		return Issue{}, err
 	}
@@ -43,6 +56,49 @@ func Create(team, project, parent, title, file string) (Issue, error) {
 		return Issue{}, exit.Environmentf("%s printed no identifier and URL; its output is not shown", op)
 	}
 	return issue, nil
+}
+
+// TeamProject reads `issue`'s team key and project name with `atb linear
+// query`, for the work orders of a job whose parent issue decides where
+// they go. An issue without a project is refused (exit 1); a query that
+// fails or prints no team is exit 5.
+func TeamProject(issue string) (team, project string, err error) {
+	if err := CheckIdentifier(issue); err != nil {
+		return "", "", err
+	}
+	op := "atb linear query " + issue
+	out, err := run(op, "linear", "query", `{ issue(id: "`+issue+`") { team { key } project { name } } }`)
+	if err != nil {
+		return "", "", err
+	}
+	// The reply is the query's data, with or without a `data` wrapper.
+	var reply struct {
+		Data  *issueData `json:"data"`
+		Issue *issueNode `json:"issue"`
+	}
+	if json.Unmarshal(out, &reply) != nil {
+		return "", "", exit.Environmentf("%s printed no JSON; its output is not shown", op)
+	}
+	node := reply.Issue
+	if node == nil && reply.Data != nil {
+		node = reply.Data.Issue
+	}
+	if node == nil || node.Team == nil || node.Team.Key == "" {
+		return "", "", exit.Environmentf("%s printed no team for %s; its output is not shown", op, issue)
+	}
+	if node.Project == nil || node.Project.Name == "" {
+		return "", "", exit.Refusedf("%s has no project in Linear; a job's work orders go to its parent's project", issue)
+	}
+	return node.Team.Key, node.Project.Name, nil
+}
+
+type issueData struct {
+	Issue *issueNode `json:"issue"`
+}
+
+type issueNode struct {
+	Team    *struct{ Key string }  `json:"team"`
+	Project *struct{ Name string } `json:"project"`
 }
 
 // Claim is `atb linear claim <issue> --agent <agent> --source <source>

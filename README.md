@@ -1,11 +1,11 @@
 # agent-fleet
 
 `fleet` is a command-line tool that runs and coordinates coding agents. It
-starts agent sessions and jobs in [herdr](https://github.com/herdrdev/herdr),
+starts jobs (a lead and its workers) in [herdr](https://github.com/herdrdev/herdr),
 passes messages between agents, keeps a local SQLite ledger of what happened,
 and spots agents that look stuck.
 
-**Status:** being ported from an earlier tool; not usable yet.
+**Status:** under construction; the command surface is still changing.
 
 ## Build
 

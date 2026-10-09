@@ -39,6 +39,12 @@ type file struct {
 	Linear          *Linear `json:"linear"`
 }
 
+// Default is the config of a job that reads no file: a cross-repo job, or a
+// repo without `.fleet/config.json`.
+func Default() *Config {
+	return &Config{MaxAgentsPerJob: 4, ResourceCheck: true}
+}
+
 // Path is the config file of the main checkout `checkout`.
 func Path(checkout string) string {
 	return filepath.Join(checkout, ".fleet", "config.json")
@@ -51,7 +57,7 @@ func Load(checkout string) (*Config, error) {
 	path := Path(checkout)
 	data, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
-		return &Config{MaxAgentsPerJob: 4, ResourceCheck: true}, nil
+		return Default(), nil
 	}
 	if err != nil {
 		return nil, exit.Refusedf("cannot read %s: %v", path, err)
@@ -90,7 +96,7 @@ func Parse(data []byte) (*Config, error) {
 			return nil, errors.New(key + ": must not be null; leave the key out for the default")
 		}
 	}
-	c := &Config{MaxAgentsPerJob: 4, ResourceCheck: true}
+	c := Default()
 	if f.MaxAgentsPerJob != nil {
 		if *f.MaxAgentsPerJob < 1 {
 			return nil, errors.New("max_agents_per_job: must be at least 1")

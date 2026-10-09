@@ -1,5 +1,6 @@
-// Package db is the dispatch ledger:
-// `$XDG_STATE_HOME/fleet/<repo>/fleet.db` (docs/design.md). The binary is its only reader and writer.
+// Package db is the dispatch ledger of one target:
+// `$XDG_STATE_HOME/fleet/<target>/fleet.db` (docs/design.md). The binary is
+// its only reader and writer.
 package db
 
 import (
@@ -9,7 +10,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	_ "modernc.org/sqlite" // the "sqlite" driver
@@ -17,10 +17,10 @@ import (
 	"github.com/Luolc/agent-fleet/internal/exit"
 )
 
-const schemaVersion = 4
+const schemaVersion = 5
 
-// One table, `agents`. Ended rows are kept as history, so `name` is unique
-// only among rows that have not ended.
+// Version 1: the `agents` table. Ended rows are kept as history, so `name`
+// is unique only among rows that have not ended.
 const schema = `
 CREATE TABLE agents (
     id               INTEGER PRIMARY KEY,
@@ -44,9 +44,8 @@ CREATE TABLE agents (
 CREATE UNIQUE INDEX agents_live_name ON agents (name) WHERE state != 'ended';
 `
 
-// Version 2: which repo and herdr session this ledger belongs to. At most
-// one row. Nothing here reads or writes it; it is kept so the schema stays
-// the one the earlier implementation wrote.
+// Version 2: a table nothing reads or writes any more; it is kept so an
+// existing ledger upgrades through the same steps.
 const schemaV2 = `
 CREATE TABLE dataset (
     id      INTEGER PRIMARY KEY CHECK (id = 1),
@@ -56,8 +55,8 @@ CREATE TABLE dataset (
 `
 
 // Version 3: the worktrees `fleet worktree` made, each owned by a job, so
-// `close` can remove them. A row is live until removed_at is set; a path
-// has at most one live row.
+// ending the job can remove them. A row is live until removed_at is set; a
+// path has at most one live row.
 const schemaV3 = `
 CREATE TABLE worktrees (
     id         INTEGER PRIMARY KEY,
@@ -73,20 +72,44 @@ CREATE UNIQUE INDEX worktrees_live_path ON worktrees (path) WHERE removed_at IS 
 `
 
 // Version 4: the agent's work order and its job's parent issue, both
-// Linear identifiers; empty when the repo does not use Linear.
+// Linear identifiers; empty when the job does not use Linear.
 const schemaV4 = `
 ALTER TABLE agents ADD COLUMN issue TEXT NOT NULL DEFAULT '';
 ALTER TABLE agents ADD COLUMN parent_issue TEXT NOT NULL DEFAULT '';
 `
 
-// migrations[v] upgrades a ledger at version v to v+1.
-var migrations = [schemaVersion]string{schema, schemaV2, schemaV3, schemaV4}
+// Version 5: the `jobs` table, one row per job started in this target, and
+// the agent's working directory (`cwd`, formerly `worktree`: fleet no
+// longer makes a worktree for an agent). A job is open until ended_at is
+// set; a name, and a non-empty key, are unique among open jobs. `repo` is
+// empty for a cross-repo job; `home_thread` is reserved for the thread
+// the job reports to; `outcome` is set when the job ends.
+const schemaV5 = `
+ALTER TABLE agents RENAME COLUMN worktree TO cwd;
+CREATE TABLE jobs (
+    id           INTEGER PRIMARY KEY,
+    job          TEXT    NOT NULL,
+    parent_issue TEXT    NOT NULL DEFAULT '',
+    key          TEXT    NOT NULL DEFAULT '',
+    repo         TEXT    NOT NULL DEFAULT '',
+    lead_cwd     TEXT    NOT NULL,
+    home_thread  TEXT    NOT NULL DEFAULT '',
+    state        TEXT    NOT NULL CHECK (state IN ('open', 'ended')),
+    outcome      TEXT    NOT NULL DEFAULT '' CHECK (outcome IN ('', 'done', 'abandoned')),
+    started_at   INTEGER NOT NULL,
+    ended_at     INTEGER
+);
+CREATE UNIQUE INDEX jobs_open_job ON jobs (job) WHERE state = 'open';
+CREATE UNIQUE INDEX jobs_open_key ON jobs (key) WHERE state = 'open' AND key != '';
+`
 
-// Path is where the ledger of a repo lives:
-// `$XDG_STATE_HOME/fleet/<name>/fleet.db`, with `~/.local/state` when
-// XDG_STATE_HOME is unset or empty. `repo` may be `owner/name` or just
-// `name`; only the name part is used.
-func Path(repo string) (string, error) {
+// migrations[v] upgrades a ledger at version v to v+1.
+var migrations = [schemaVersion]string{schema, schemaV2, schemaV3, schemaV4, schemaV5}
+
+// Path is where the ledger of `target` lives:
+// `$XDG_STATE_HOME/fleet/<target>/fleet.db`, with `~/.local/state` when
+// XDG_STATE_HOME is unset or empty.
+func Path(target string) (string, error) {
 	state := os.Getenv("XDG_STATE_HOME")
 	if state == "" {
 		home := os.Getenv("HOME")
@@ -95,26 +118,22 @@ func Path(repo string) (string, error) {
 		}
 		state = filepath.Join(home, ".local", "state")
 	}
-	return PathUnder(state, repo)
+	return PathUnder(state, target)
 }
 
 // PathUnder is Path with the state directory given, so no environment is
 // read.
-func PathUnder(state, repo string) (string, error) {
-	name := repo
-	if i := strings.LastIndex(repo, "/"); i >= 0 {
-		name = repo[i+1:]
+func PathUnder(state, target string) (string, error) {
+	if target == "" {
+		return "", exit.Refusedf("the target name is empty")
 	}
-	if name == "" {
-		return "", exit.Refusedf("the repo name is empty")
-	}
-	return filepath.Join(state, "fleet", name, "fleet.db"), nil
+	return filepath.Join(state, "fleet", target, "fleet.db"), nil
 }
 
-// Open opens (creating if needed) the database for `repo`: WAL mode, a 5 s
-// busy timeout, and the schema at the current version.
-func Open(repo string) (*sql.DB, error) {
-	path, err := Path(repo)
+// Open opens (creating if needed) the database of `target`: WAL mode, a
+// 5 s busy timeout, and the schema at the current version.
+func Open(target string) (*sql.DB, error) {
+	path, err := Path(target)
 	if err != nil {
 		return nil, err
 	}

@@ -64,14 +64,7 @@ func newWatchWorld(t *testing.T) *watchWorld {
 		t.Fatal(err)
 	}
 	w.reply(`{"result":{"type":"agent_prompted"}}`)
-	path, err := db.PathUnder(filepath.Join(w.dir, "home", ".local", "state"), repo)
-	if err != nil {
-		t.Fatal(err)
-	}
-	w.ledger, err = db.OpenAt(path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	w.ledger = w.world.ledger()
 	t.Cleanup(func() { w.ledger.Close() })
 	return w
 }
@@ -165,105 +158,126 @@ func claude(transcript, timer, reset string) string {
 		"\n  Session: 9% | Reset: " + reset + "\n"
 }
 
-func TestWatchTellsTheOrchestraOnlyWhenTheSuspectSetChanges(t *testing.T) {
+func TestWatchTellsALeadOnlyWhenTheSuspectsAmongItsWorkersChange(t *testing.T) {
 	w := newWatchWorld(t)
 	anHourAgo := db.Now() - 3600
 	stuck := claude("⏺ Running the migration", "12m 3s", "2hr 59m")
-	// Stuck: the same status, seq and filtered screen as an hour ago.
-	w.insert(watchRow{name: "a-lead", role: "lead", job: "a", parent: "orchestra", startedAt: anHourAgo,
+	// a-lead is stuck itself: a suspect that is only printed.
+	w.insert(watchRow{name: "a-lead", role: "lead", job: "a", parent: "thread-1", startedAt: anHourAgo,
 		lastStatus: "working", lastSeq: 7, lastScreenHash: cmd.Hash(cmd.FilterClaudeScreen(stuck)), lastChangeAt: anHourAgo})
-	// Moving: an hour since the last change, but its screen has moved since.
+	// a-w1 is moving: an hour since the last change, but its screen moved.
 	w.insert(watchRow{name: "a-w1", role: "worker", job: "a", parent: "a-lead", startedAt: anHourAgo,
 		lastStatus: "working", lastSeq: 9, lastScreenHash: cmd.Hash("an older screen"), lastChangeAt: anHourAgo})
-	// Gone from herdr.
-	w.insert(watchRow{name: "b-lead", role: "lead", job: "b", parent: "orchestra", startedAt: anHourAgo})
-	// Not watched: the orchestra, idle for an hour, and an ended row.
-	w.insert(watchRow{name: "orchestra", role: "orchestra", startedAt: anHourAgo,
+	// a-w2 is stuck: the same status, seq and filtered screen as an hour ago.
+	w.insert(watchRow{name: "a-w2", role: "worker", job: "a", parent: "a-lead", startedAt: anHourAgo,
+		lastStatus: "working", lastSeq: 8, lastScreenHash: cmd.Hash(cmd.FilterClaudeScreen(stuck)), lastChangeAt: anHourAgo})
+	// b-w1 is gone from herdr; its lead b-lead is fine.
+	w.insert(watchRow{name: "b-lead", role: "lead", job: "b", parent: "thread-1", startedAt: anHourAgo})
+	w.insert(watchRow{name: "b-w1", role: "worker", job: "b", parent: "b-lead", startedAt: anHourAgo})
+	// Not watched: a thread agent idle for an hour, and an ended row.
+	w.insert(watchRow{name: "thread-1", role: "thread", startedAt: anHourAgo,
 		lastStatus: "idle", lastSeq: 1, lastScreenHash: cmd.Hash(""), lastChangeAt: anHourAgo})
 	w.insert(watchRow{name: "c-lead", role: "lead", job: "c", state: "ended", startedAt: anHourAgo})
-	w.herdrList("orchestra idle 1", "a-lead working 7", "a-w1 working 9")
-	w.screen("orchestra", "")
+	w.herdrList("thread-1 idle 1", "a-lead working 7", "a-w1 working 9", "a-w2 working 8", "b-lead working 2")
+	w.screen("thread-1", "")
 	w.screen("a-lead", stuck)
 	w.screen("a-w1", claude("⏺ Step 1\n⏺ Step 2", "3s", "2hr 59m"))
+	w.screen("a-w2", stuck)
+	w.screen("b-lead", claude("⏺ Planning", "1s", "2hr 59m"))
 
-	out := w.run("", []string{"watch", "--repo", repo})
+	out := w.run("", []string{"watch", "--target", target})
 	if out.code != 0 {
 		t.Fatalf("%+v", out)
 	}
-	if got := w.suspects(); got != "a-lead b-lead" {
+	if got := w.suspects(); got != "a-lead a-w2 b-w1" {
 		t.Errorf("suspects = %q", got)
 	}
-	prompts := w.prompts()
-	if len(prompts) != 1 {
-		t.Fatalf("%q", prompts)
-	}
-	to, text := prompts[0][0], prompts[0][1]
-	if to != "orchestra" {
-		t.Errorf("to = %q", to)
-	}
-	if !strings.HasPrefix(text, "[FROM: cron]\n") {
-		t.Errorf("%s", text)
-	}
 	for _, want := range []string{
-		"a-lead (lead, job a, parent orchestra): no change for 1h00m",
-		"Running the migration",
-		"b-lead (lead, job b, parent orchestra): gone from herdr",
+		"suspect: a-lead (lead, job a, parent thread-1): no change for 1h00m",
+		"suspect: a-w2 (worker, job a, parent a-lead): no change for 1h00m",
+		"suspect: b-w1 (worker, job b, parent b-lead): gone from herdr",
 	} {
-		if !strings.Contains(text, want) {
-			t.Errorf("%q missing from:\n%s", want, text)
+		if !strings.Contains(out.stdout, want) {
+			t.Errorf("%q missing from stdout:\n%s", want, out.stdout)
 		}
 	}
-	if strings.Contains(text, "a-w1") {
-		t.Errorf("%s", text)
+	prompts := w.prompts()
+	if len(prompts) != 2 {
+		t.Fatalf("%q", prompts)
+	}
+	if prompts[0][0] != "a-lead" || prompts[1][0] != "b-lead" {
+		t.Errorf("told %q and %q", prompts[0][0], prompts[1][0])
+	}
+	for i, want := range [][]string{
+		{"[FROM: cron]\n", "a-w2 (worker, job a, parent a-lead): no change for 1h00m", "Running the migration"},
+		{"[FROM: cron]\n", "b-w1 (worker, job b, parent b-lead): gone from herdr"},
+	} {
+		for _, needle := range want {
+			if !strings.Contains(prompts[i][1], needle) {
+				t.Errorf("%q missing from the notice to %s:\n%s", needle, prompts[i][0], prompts[i][1])
+			}
+		}
+	}
+	// The leads' own suspicion and the other lead's workers are never in a
+	// lead's notice.
+	for _, absent := range []string{"a-lead (lead", "a-w1", "b-w1"} {
+		if strings.Contains(prompts[0][1], absent) {
+			t.Errorf("%q in the notice to a-lead:\n%s", absent, prompts[0][1])
+		}
 	}
 
 	// Only the spinner timer and the footer countdown move: still stuck,
-	// the set is unchanged, and the orchestra is not told again.
+	// the sets are unchanged, and no lead is told again.
 	w.screen("a-lead", claude("⏺ Running the migration", "27m 40s", "2hr 44m"))
-	out = w.run("", []string{"watch", "--repo", repo})
+	w.screen("a-w2", claude("⏺ Running the migration", "27m 40s", "2hr 44m"))
+	out = w.run("", []string{"watch", "--target", target})
 	if out.code != 0 {
 		t.Fatalf("%+v", out)
 	}
-	if !strings.Contains(out.stdout, "suspect set unchanged (2 suspect)") {
+	if !strings.Contains(out.stdout, "suspect set unchanged for every lead (3 suspect)") {
 		t.Errorf("%s", out.stdout)
 	}
-	if got := len(w.prompts()); got != 1 {
+	if got := len(w.prompts()); got != 2 {
 		t.Errorf("%d prompts", got)
 	}
 
-	// b-lead is back. The set changes, but the orchestra is blocked: exit 3,
-	// and the flags are kept so the next run tells it.
-	w.herdrList("orchestra blocked 2", "a-lead working 7", "a-w1 working 9", "b-lead working 4")
-	w.screen("b-lead", claude("⏺ Back", "1s", "2hr 40m"))
+	// b-w1 is back. b-lead's set changes, but b-lead is blocked: exit 3,
+	// and b-w1's flag is kept so the next run tells b-lead. a-lead's set is
+	// unchanged, so it is not told (and not blocked by the fake).
+	w.herdrList("thread-1 idle 1", "a-lead working 7", "a-w1 working 9", "a-w2 working 8", "b-lead blocked 3", "b-w1 working 4")
+	w.screen("b-w1", claude("⏺ Back", "1s", "2hr 40m"))
 	w.reply(`{"error":{"code":"agent_blocked","message":"b"}}`)
-	out = w.run("", []string{"watch", "--repo", repo})
+	out = w.run("", []string{"watch", "--target", target})
 	if out.code != 3 {
 		t.Fatalf("%+v", out)
 	}
-	if got := w.suspects(); got != "a-lead b-lead" {
+	if got := w.suspects(); got != "a-lead a-w2 b-w1" {
 		t.Errorf("suspects = %q", got)
+	}
+	if prompts := w.prompts(); len(prompts) != 3 || prompts[2][0] != "b-lead" {
+		t.Errorf("%q", prompts)
 	}
 
 	w.reply(`{"result":{"type":"agent_prompted"}}`)
-	out = w.run("", []string{"watch", "--repo", repo})
+	out = w.run("", []string{"watch", "--target", target})
 	if out.code != 0 {
 		t.Fatalf("%+v", out)
 	}
-	if got := w.suspects(); got != "a-lead" {
+	if got := w.suspects(); got != "a-lead a-w2" {
 		t.Errorf("suspects = %q", got)
 	}
 	prompts = w.prompts()
-	if len(prompts) != 3 {
+	if len(prompts) != 4 || prompts[3][0] != "b-lead" {
 		t.Fatalf("%q", prompts)
 	}
-	if !strings.Contains(prompts[2][1], "No longer suspect: b-lead") {
-		t.Errorf("%s", prompts[2][1])
+	if !strings.Contains(prompts[3][1], "No longer suspect: b-w1") || !strings.Contains(prompts[3][1], "No worker of yours is a suspect now") {
+		t.Errorf("%s", prompts[3][1])
 	}
 }
 
-func TestWatchNeedsARepo(t *testing.T) {
+func TestWatchRefusesABadTarget(t *testing.T) {
 	w := newWatchWorld(t)
-	if out := w.run("", []string{"watch"}); out.code != 1 {
+	if out := w.run("", []string{"watch", "--target", "a/b"}); out.code != 1 {
 		t.Errorf("%+v", out)
 	}
 }

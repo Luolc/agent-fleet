@@ -1,7 +1,8 @@
 # Sourced by inside.sh after lifecycle.sh, which set up origin, ~/dev/$R and
 # ~/seed: `worktree` opens a worktree for the caller's job, and `close`
-# removes the ones recorded for the job. No agent of the job is spawned; the
-# binary runs from this shell with a job's identity variables.
+# removes the ones recorded for the job. No agent of the job is started; the
+# binary runs from this shell with a job's identity variables, and the jobs
+# have no row in the jobs table (close needs none).
 in_job() { local job=$1; shift; as "$job-a" worker "$job-lead" "$job" -- "$@"; }
 wt_rows() { ledger "SELECT path, repo, branch, job, created_by, removed_at IS NULL FROM worktrees WHERE job = '$1' ORDER BY id"; }
 
@@ -22,7 +23,7 @@ check "worktree: ledger records it for the job" "$WT/item-6|$R|item-6|item-6|ite
 check "worktree: created_at is now" "1 " \
   "$(ledger "SELECT abs(created_at - strftime('%s', 'now')) < 120 FROM worktrees WHERE job = 'item-6'")"
 
-out=$(as item-6-lead lead orchestra item-6 -- worktree "$R" 2>&1); rc=$?
+out=$(as item-6-lead lead thread-1 item-6 -- worktree "$R" 2>&1); rc=$?
 check "worktree: again in the same job, exit 0 with the same path" "0 $WT/item-6" "$rc $out"
 check "worktree: again in the same job, no new row" "1 " "$(ledger "SELECT count(*) FROM worktrees WHERE job = 'item-6'")"
 
@@ -49,10 +50,10 @@ rmdir "$WT/item-8"
 
 # close: an agent's cwd inside one of the job's worktrees, then an
 # uncommitted change, each keeps both worktrees.
-spane=$("${S[@]}" tab create --workspace "$("${S[@]}" pane get "$opane" | jq -r .result.pane.workspace_id)" \
+spane=$("${S[@]}" tab create --workspace "$("${S[@]}" pane get "$tpane" | jq -r .result.pane.workspace_id)" \
   --cwd "$WT/item-6-review" --label squatter-2 --no-focus | jq -r '.result.root_pane.pane_id')
 "${S[@]}" agent start squatter-2 --kind claude --pane "$spane" --timeout 20000 >/dev/null
-out=$(orch close item-6 2>&1); rc=$?
+out=$(thr close item-6 2>&1); rc=$?
 check "close: exit 5 while an agent's cwd is in a recorded worktree" 5 "$rc"
 has "close: names the agent in the recorded worktree" "$out" "agent squatter-2"
 check "close: recorded worktrees kept while one is in use" "yes yes" \
@@ -60,12 +61,12 @@ check "close: recorded worktrees kept while one is in use" "yes yes" \
 "${S[@]}" pane close "$spane" >/dev/null
 
 echo draft > "$WT/item-6-review/notes.txt"
-orch close item-6 >/dev/null 2>&1; rc=$?
+thr close item-6 >/dev/null 2>&1; rc=$?
 check "close: exit 5 when a recorded worktree has uncommitted changes" 5 "$rc"
 check "close: the uncommitted change is kept" draft "$(cat "$WT/item-6-review/notes.txt" 2>&1)"
 rm "$WT/item-6-review/notes.txt"
 
-out=$(orch close item-6 2>&1); rc=$?
+out=$(thr close item-6 2>&1); rc=$?
 check "close: recorded worktrees, exit 0 once nothing is in the way" 0 "$rc"
 [ "$rc" = 0 ] || printf '%s\n' "$out"
 check "close: recorded worktrees removed" "no no" \

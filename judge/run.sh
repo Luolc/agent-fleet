@@ -12,11 +12,11 @@
 #   JUDGE_ENV_PREFIX  prefix of the identity variables (default: FLEET_,
 #                     that is, JUDGE_NAME upper-cased plus an underscore)
 #   JUDGE_LEDGER      file name of the ledger under
-#                     ~/.local/state/<JUDGE_NAME>/<repo>/
+#                     ~/.local/state/<JUDGE_NAME>/<target>/
 #                     (default: <JUDGE_NAME>.db)
 #   JUDGE_IMAGE       use an image built elsewhere (CI) instead of building
 #
-# An earlier implementation of the same CLI runs under its own name:
+# Another implementation of the same CLI runs under its own name:
 #   JUDGE_NAME=<its name> judge/run.sh <path/to/its binary>
 # The suite is the same; only these parameters differ.
 set -euo pipefail

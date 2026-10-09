@@ -46,20 +46,16 @@ func TestLedgerOpensInWALModeAndReopens(t *testing.T) {
 	}
 }
 
-func TestLedgerPathUsesTheRepoNameUnderTheStateDir(t *testing.T) {
-	path, err := PathUnder("/state", "acme/example-dataset")
+func TestLedgerPathUsesTheTargetUnderTheStateDir(t *testing.T) {
+	path, err := PathUnder("/state", "example-dataset")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if want := "/state/fleet/example-dataset/fleet.db"; path != want {
 		t.Errorf("path = %q, want %q", path, want)
 	}
-	bare, err := PathUnder("/state", "example-dataset")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if bare != path {
-		t.Errorf("bare name gives %q, want %q", bare, path)
+	if _, err := PathUnder("/state", ""); err == nil {
+		t.Error("an empty target was accepted")
 	}
 }
 
@@ -67,7 +63,7 @@ func TestLedgerPathFallsBackToLocalStateWithoutXDGStateHome(t *testing.T) {
 	t.Setenv("HOME", "/home/example")
 	for _, xdg := range []string{"/xdg/state", ""} {
 		t.Setenv("XDG_STATE_HOME", xdg)
-		path, err := Path("acme/example-dataset")
+		path, err := Path("example-dataset")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -144,5 +140,76 @@ func TestAVersion3LedgerGainsTheIssueColumnsAndKeepsItsRows(t *testing.T) {
 	}
 	if name != "a-lead" || issue != "" || parentIssue != "" {
 		t.Errorf("row = %q %q %q", name, issue, parentIssue)
+	}
+}
+
+func TestAVersion4LedgerGainsTheJobsTableAndRenamesWorktreeToCwd(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fleet.db")
+	conn, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range []string{schema, schemaV2, schemaV3, schemaV4,
+		"INSERT INTO agents (name, role, state, started_at, worktree) VALUES ('a-lead', 'lead', 'active', 1, '/w/a')",
+		"PRAGMA user_version = 4"} {
+		if _, err := conn.Exec(step); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	conn, err = OpenAt(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	var cwd string
+	if err := conn.QueryRow("SELECT cwd FROM agents WHERE name = 'a-lead'").Scan(&cwd); err != nil {
+		t.Fatal(err)
+	}
+	if cwd != "/w/a" {
+		t.Errorf("cwd = %q", cwd)
+	}
+	var jobs, version int64
+	if err := conn.QueryRow("SELECT count(*) FROM jobs").Scan(&jobs); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if jobs != 0 || version != schemaVersion {
+		t.Errorf("jobs %d, version %d", jobs, version)
+	}
+}
+
+func TestAnOpenJobsNameAndKeyAreUnique(t *testing.T) {
+	conn, err := OpenAt(filepath.Join(t.TempDir(), "fleet.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	insert := func(job, key, state string) error {
+		_, err := conn.Exec("INSERT INTO jobs (job, key, lead_cwd, state, started_at) VALUES (?1, ?2, '/c', ?3, 1)",
+			job, key, state)
+		return err
+	}
+	if err := insert("a", "k1", "open"); err != nil {
+		t.Fatal(err)
+	}
+	if err := insert("a", "", "open"); err == nil {
+		t.Error("a second open job named a was accepted")
+	}
+	if err := insert("b", "k1", "open"); err == nil {
+		t.Error("a second open job with key k1 was accepted")
+	}
+	for _, ok := range []func() error{
+		func() error { return insert("b", "", "open") },
+		func() error { return insert("c", "", "open") },
+		func() error { return insert("a", "k1", "ended") },
+	} {
+		if err := ok(); err != nil {
+			t.Error(err)
+		}
 	}
 }

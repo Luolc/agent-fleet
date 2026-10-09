@@ -9,8 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/Luolc/agent-fleet/internal/db"
 )
 
 const dataset = "example-dataset"
@@ -55,14 +53,7 @@ func (w *world) worktree(job string, args ...string) result {
 // worktreeRows are the ledger's worktree rows, one string per row.
 func (w *world) worktreeRows() []string {
 	w.t.Helper()
-	path, err := db.PathUnder(filepath.Join(w.dir, "home", ".local", "state"), repo)
-	if err != nil {
-		w.t.Fatal(err)
-	}
-	conn, err := db.OpenAt(path)
-	if err != nil {
-		w.t.Fatal(err)
-	}
+	conn := w.ledger()
 	defer conn.Close()
 	rows, err := conn.Query("SELECT path, repo, branch, job, created_by, removed_at IS NULL, " +
 		"abs(created_at - strftime('%s', 'now')) < 120 FROM worktrees ORDER BY id")
@@ -147,7 +138,7 @@ func TestWorktreeAgainInTheSameJobReturnsThePathAndChangesNothing(t *testing.T) 
 	w.git("-C", seed, "commit", "-q", "--allow-empty", "-m", "newer still")
 	w.git("-C", seed, "push", "-q", "origin", "main")
 
-	out := w.asAgent("item-1-lead", "lead", "orchestra", "item-1", "worktree", dataset)
+	out := w.asAgent("item-1-lead", "lead", "thread-1", "item-1", "worktree", dataset)
 	if out.code != 0 || out.stdout != path+"\n" {
 		t.Fatalf("%+v", out)
 	}
@@ -244,7 +235,7 @@ func TestCloseRemovesTheJobsRecordedWorktreesWithTheSameChecks(t *testing.T) {
 	if out := w.worktree("item-2", dataset); out.code != 0 {
 		t.Fatalf("%+v", out)
 	}
-	close := func() result { return w.asAgent("orchestra", "orchestra", "", "", "close", "item-1") }
+	close := func() result { return w.asThread("close", "item-1") }
 
 	// An agent's cwd inside the second worktree blocks both removals.
 	w.closeHerdr(`{"name":"squatter","pane_id":"p1","cwd":"` + filepath.Join(wt, "item-1-b", "sub") + `"}`)

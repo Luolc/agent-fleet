@@ -29,8 +29,8 @@ const (
 		"When herdr reports the report as delivered, " +
 		"your row in the ledger is marked ended, so `fleet status` stops listing you as " +
 		"owing work. On any other outcome the row stays live and you may run `done` again.\n\n" +
-		"Exit: as `send`; 1 also when FLEET_PARENT is empty (the orchestra and " +
-		"human-interface have no parent), the report file cannot be read, FLEET_ISSUE is set " +
+		"Exit: as `send`; 1 also when FLEET_PARENT is empty (a thread agent has no parent), " +
+		"the report file cannot be read, FLEET_ISSUE is set " +
 		"and --report-file is not given, or --abandon is given while FLEET_ISSUE is empty; " +
 		"5 also when an atb step fails."
 )
@@ -95,7 +95,7 @@ func Done(h *herdr.Herdr, args DoneArgs) (exit.Code, error) {
 	if err != nil {
 		return 0, err
 	}
-	conn, err := db.Open(me.Repo)
+	conn, err := db.Open(me.Target)
 	if err != nil {
 		return 0, err
 	}

@@ -1,5 +1,5 @@
-// Command fleet runs and coordinates coding agents on a dataset machine
-// through herdr. This file is the command-line definition and dispatch.
+// Command fleet runs and coordinates coding agents through herdr. This file
+// is the command-line definition and dispatch.
 package main
 
 import (
@@ -19,11 +19,13 @@ import (
 // version is the fleet release version.
 const version = "0.0.0"
 
-const longAbout = "Runs and coordinates coding agents on a dataset machine through herdr.\n\n" +
-	"Every agent is started by fleet and carries its identity in FLEET_* " +
+const longAbout = "Runs and coordinates coding agents through herdr.\n\n" +
+	"A thread agent starts a job (`fleet job start`): its lead, which starts workers " +
+	"(`fleet spawn`). Every agent fleet starts carries its identity in FLEET_* " +
 	"environment variables; messages between agents go through `fleet send`, " +
-	"which adds the `[FROM: <agent>]` header. State lives in " +
-	"$XDG_STATE_HOME/fleet/<repo>/fleet.db (~/.local/state when XDG_STATE_HOME is unset).\n\n" +
+	"which adds the `[FROM: <agent>]` header. State lives in the ledger of the target, " +
+	"$XDG_STATE_HOME/fleet/<target>/fleet.db (~/.local/state when XDG_STATE_HOME is unset; " +
+	"the target is FLEET_TARGET, `default` when unset).\n\n" +
 	"Exit codes, shared by every command:\n" +
 	"  0  ok\n" +
 	"  1  usage error or precondition refused (role, cap, resources, empty body)\n" +
@@ -35,13 +37,18 @@ const longAbout = "Runs and coordinates coding agents on a dataset machine throu
 const sessionHelp = "herdr session to talk to. Inside a herdr pane this is not needed: herdr " +
 	"finds the pane's own session. Use it from cron or a plain shell"
 
+const targetHelp = "Target whose ledger to read; the ledger is $XDG_STATE_HOME/fleet/<target>/fleet.db " +
+	"(~/.local/state when XDG_STATE_HOME is unset). Defaults to FLEET_TARGET, which every agent has, " +
+	"then to `default`"
+
 const topUsage = "Usage: fleet [OPTIONS] <COMMAND>"
 
 var topHelp = longAbout + "\n\n" + topUsage + `
 
 Commands:
-  send      ` + cmd.SendAbout + `
+  job       ` + cmd.JobAbout + `
   spawn     ` + cmd.SpawnAbout + `
+  send      ` + cmd.SendAbout + `
   done      ` + cmd.DoneAbout + `
   status    ` + cmd.StatusAbout + `
   watch     ` + cmd.WatchAbout + `
@@ -68,19 +75,60 @@ Options:
   -h, --help            Print help
 `
 
-const spawnUsage = "Usage: fleet spawn [OPTIONS] --task-file <PATH> <NAME>"
+const jobUsage = "Usage: fleet job <COMMAND>"
+
+var jobHelp = cmd.JobAbout + ".\n\n" + jobUsage + `
+
+Commands:
+  start  ` + cmd.JobStartAbout + `
+  list   ` + cmd.JobListAbout + `
+
+Options:
+  -h, --help  Print help
+`
+
+const jobStartUsage = "Usage: fleet job start [OPTIONS] --task-file <PATH> <JOB>"
+
+var jobStartHelp = cmd.JobStartLongAbout + "\n\n" + jobStartUsage + `
+
+Arguments:
+  <JOB>  Job id; the lead is named <job>-lead. Only [a-z0-9-]
+
+Options:
+      --task-file <PATH>  File with the lead's task, delivered as its first message (with the header)
+      --parent-issue <ISSUE>
+                          The job's parent issue, such as ABC-12 (with Linear on; excludes --new-parent)
+      --new-parent <TITLE>
+                          Create the parent issue with this title first (single-repo jobs with Linear on)
+      --repo <REPO>       Directory name under ~/dev: a single-repo job, the lead runs there. Without
+                          it the job is cross-repo and the lead runs in ~/cross-repo/<job>/
+      --key <KEY>         Dedup key: refused when an open job of the target has the same key
+      --model <MODEL>     Model passed to the agent as --model. Default: the agent's own
+      --effort <EFFORT>   Effort passed to the agent as --effort. Default: the agent's own
+      --session <NAME>    ` + sessionHelp + `
+  -h, --help              Print help
+`
+
+const jobListUsage = "Usage: fleet job list [OPTIONS]"
+
+var jobListHelp = cmd.JobListLongAbout + "\n\n" + jobListUsage + `
+
+Options:
+      --target <TARGET>  ` + targetHelp + `
+      --json             Machine-readable output: a JSON array, one object per job
+  -h, --help             Print help
+`
+
+const spawnUsage = "Usage: fleet spawn [OPTIONS] --task-file <PATH> --cwd <DIR> <NAME>"
 
 var spawnHelp = cmd.SpawnLongAbout + "\n\n" + spawnUsage + `
 
 Arguments:
-  <NAME>  Job id (from the orchestra) or worker name (from a lead). Only [a-z0-9-]
+  <NAME>  Worker name within the job; the worker is named <job>-<NAME>. Only [a-z0-9-]
 
 Options:
-      --task-file <PATH>  File with the task, delivered as the agent's first message (with the header)
-      --branch <NAME>     Branch for the job's worktree (lead only). Default: data/<job>
-      --parent-issue <ISSUE>
-                          The job's parent issue, such as ABC-12 (lead only; required when the repo
-                          uses Linear, refused when it does not)
+      --task-file <PATH>  File with the task, delivered as the worker's first message (with the header)
+      --cwd <DIR>         Directory the worker runs in; must exist (typically a path from ` + "`fleet worktree`" + `)
       --model <MODEL>     Model passed to the agent as --model. Default: the agent's own
       --effort <EFFORT>   Effort passed to the agent as --effort. Default: the agent's own
       --session <NAME>    ` + sessionHelp + `
@@ -104,13 +152,11 @@ const statusUsage = "Usage: fleet status [OPTIONS]"
 var statusHelp = cmd.StatusLongAbout + "\n\n" + statusUsage + `
 
 Options:
-      --job <JOB>       Only this job's agents
-      --json            Machine-readable output: a JSON array, one object per agent
-      --repo <REPO>     Dataset repo whose ledger to read (` + "`owner/name` or `name`" + `); the ledger is
-                        $XDG_STATE_HOME/fleet/<name>/fleet.db (~/.local/state when XDG_STATE_HOME is
-                        unset). Defaults to FLEET_REPO, which every agent has
-      --session <NAME>  ` + sessionHelp + `
-  -h, --help            Print help
+      --job <JOB>        Only this job's agents
+      --json             Machine-readable output: a JSON array, one object per agent
+      --target <TARGET>  ` + targetHelp + `
+      --session <NAME>   ` + sessionHelp + `
+  -h, --help             Print help
 `
 
 const watchUsage = "Usage: fleet watch [OPTIONS]"
@@ -118,11 +164,9 @@ const watchUsage = "Usage: fleet watch [OPTIONS]"
 var watchHelp = cmd.WatchLongAbout + "\n\n" + watchUsage + `
 
 Options:
-      --repo <REPO>     Dataset repo whose ledger to read (` + "`owner/name` or `name`" + `); the ledger is
-                        $XDG_STATE_HOME/fleet/<name>/fleet.db (~/.local/state when XDG_STATE_HOME is
-                        unset). Defaults to FLEET_REPO; cron must pass it
-      --session <NAME>  ` + sessionHelp + `
-  -h, --help            Print help
+      --target <TARGET>  ` + targetHelp + `
+      --session <NAME>   ` + sessionHelp + `
+  -h, --help             Print help
 `
 
 const closeUsage = "Usage: fleet close [OPTIONS] <JOB>"
@@ -130,10 +174,10 @@ const closeUsage = "Usage: fleet close [OPTIONS] <JOB>"
 var closeHelp = cmd.CloseLongAbout + "\n\n" + closeUsage + `
 
 Arguments:
-  <JOB>  Job id, as given to ` + "`fleet spawn`" + `
+  <JOB>  Job id, as given to ` + "`fleet job start`" + `
 
 Options:
-      --force           Close even if agents are still recorded as live (the cleanup after a failed spawn)
+      --force           Close even if agents are still recorded as live (the cleanup after a failed start)
       --session <NAME>  ` + sessionHelp + `
   -h, --help            Print help
 `
@@ -220,6 +264,8 @@ func dispatch(args []string) (exit.Code, error) {
 	switch rest[0] {
 	case "help":
 		return help(rest[1:])
+	case "job":
+		return runJob(rest[1:], &session)
 	case "send":
 		return runSend(rest[1:], &session)
 	case "spawn":
@@ -241,10 +287,21 @@ func dispatch(args []string) (exit.Code, error) {
 
 // help is clap's implicit `help [COMMAND]` subcommand.
 func help(args []string) (exit.Code, error) {
-	helps := map[string]string{"send": sendHelp, "spawn": spawnHelp, "done": doneHelp, "status": statusHelp, "watch": watchHelp, "close": closeHelp, "worktree": worktreeHelp, "help": topHelp}
+	helps := map[string]string{"job": jobHelp, "send": sendHelp, "spawn": spawnHelp, "done": doneHelp,
+		"status": statusHelp, "watch": watchHelp, "close": closeHelp, "worktree": worktreeHelp, "help": topHelp}
 	if len(args) == 0 {
 		fmt.Fprint(os.Stdout, topHelp)
 		return exit.Ok, nil
+	}
+	if args[0] == "job" && len(args) > 1 {
+		switch args[1] {
+		case "start":
+			fmt.Fprint(os.Stdout, jobStartHelp)
+			return exit.Ok, nil
+		case "list":
+			fmt.Fprint(os.Stdout, jobListHelp)
+			return exit.Ok, nil
+		}
 	}
 	text, ok := helps[args[0]]
 	if !ok {
@@ -300,25 +357,78 @@ func runSend(args []string, session *cliargs.OptString) (exit.Code, error) {
 	return cmd.Send(herdr.New(session.Ptr()), cmd.SendArgs{To: got[0], File: file.Ptr()})
 }
 
+// runJob dispatches `fleet job <COMMAND>`.
+func runJob(args []string, session *cliargs.OptString) (exit.Code, error) {
+	if len(args) == 0 {
+		return 0, &usageError{"'fleet job' requires a subcommand but one was not provided", jobUsage}
+	}
+	switch args[0] {
+	case "-h", "--help", "help":
+		fmt.Fprint(os.Stdout, jobHelp)
+		return exit.Ok, nil
+	case "start":
+		return runJobStart(args[1:], session)
+	case "list":
+		return runJobList(args[1:], session)
+	default:
+		return 0, &usageError{fmt.Sprintf("unrecognized subcommand '%s'", args[0]), jobUsage}
+	}
+}
+
+func runJobStart(args []string, session *cliargs.OptString) (exit.Code, error) {
+	fs := flagSet("job start", session)
+	taskFile := cliargs.OptString{Name: "task-file", Placeholder: "PATH"}
+	parentIssue := cliargs.OptString{Name: "parent-issue", Placeholder: "ISSUE"}
+	newParent := cliargs.OptString{Name: "new-parent", Placeholder: "TITLE"}
+	repo := cliargs.OptString{Name: "repo", Placeholder: "REPO"}
+	key := cliargs.OptString{Name: "key", Placeholder: "KEY"}
+	model := cliargs.OptString{Name: "model", Placeholder: "MODEL"}
+	effort := cliargs.OptString{Name: "effort", Placeholder: "EFFORT"}
+	fs.Var(&taskFile, "task-file", "File with the lead's task")
+	fs.Var(&parentIssue, "parent-issue", "The job's parent issue")
+	fs.Var(&newParent, "new-parent", "Create the parent issue with this title")
+	fs.Var(&repo, "repo", "The job's repo under ~/dev")
+	fs.Var(&key, "key", "Dedup key")
+	fs.Var(&model, "model", "Model passed to the agent as --model")
+	fs.Var(&effort, "effort", "Effort passed to the agent as --effort")
+	got, helped, err := parse(fs, args, jobStartHelp, jobStartUsage, []string{"JOB"}, &taskFile)
+	if err != nil || helped {
+		return exit.Ok, err
+	}
+	return cmd.JobStart(herdr.New(session.Ptr()), cmd.JobStartArgs{
+		Job: got[0], TaskFile: taskFile.Value, ParentIssue: parentIssue.Ptr(), NewParent: newParent.Ptr(),
+		Repo: repo.Ptr(), Key: key.Ptr(), Model: model.Ptr(), Effort: effort.Ptr()})
+}
+
+func runJobList(args []string, session *cliargs.OptString) (exit.Code, error) {
+	fs := flagSet("job list", session)
+	target := cliargs.OptString{Name: "target", Placeholder: "TARGET"}
+	asJSON := cliargs.Bool{Name: "json"}
+	fs.Var(&target, "target", "Target whose ledger to read")
+	fs.Var(&asJSON, "json", "Machine-readable output")
+	_, helped, err := parse(fs, args, jobListHelp, jobListUsage, nil)
+	if err != nil || helped {
+		return exit.Ok, err
+	}
+	return cmd.JobList(cmd.JobListArgs{Target: target.Ptr(), JSON: asJSON.Value})
+}
+
 func runSpawn(args []string, session *cliargs.OptString) (exit.Code, error) {
 	fs := flagSet("spawn", session)
 	taskFile := cliargs.OptString{Name: "task-file", Placeholder: "PATH"}
-	branch := cliargs.OptString{Name: "branch", Placeholder: "NAME"}
+	cwd := cliargs.OptString{Name: "cwd", Placeholder: "DIR"}
 	model := cliargs.OptString{Name: "model", Placeholder: "MODEL"}
 	effort := cliargs.OptString{Name: "effort", Placeholder: "EFFORT"}
 	fs.Var(&taskFile, "task-file", "File with the task")
-	parentIssue := cliargs.OptString{Name: "parent-issue", Placeholder: "ISSUE"}
-	fs.Var(&branch, "branch", "Branch for the job's worktree (lead only)")
-	fs.Var(&parentIssue, "parent-issue", "The job's parent issue (lead only)")
+	fs.Var(&cwd, "cwd", "Directory the worker runs in")
 	fs.Var(&model, "model", "Model passed to the agent as --model")
 	fs.Var(&effort, "effort", "Effort passed to the agent as --effort")
-	got, helped, err := parse(fs, args, spawnHelp, spawnUsage, []string{"NAME"}, &taskFile)
+	got, helped, err := parse(fs, args, spawnHelp, spawnUsage, []string{"NAME"}, &taskFile, &cwd)
 	if err != nil || helped {
 		return exit.Ok, err
 	}
 	return cmd.Spawn(herdr.New(session.Ptr()), cmd.SpawnArgs{
-		Name: got[0], TaskFile: taskFile.Value, Branch: branch.Ptr(), Model: model.Ptr(), Effort: effort.Ptr(),
-		ParentIssue: parentIssue.Ptr()})
+		Name: got[0], TaskFile: taskFile.Value, Cwd: cwd.Value, Model: model.Ptr(), Effort: effort.Ptr()})
 }
 
 func runDone(args []string, session *cliargs.OptString) (exit.Code, error) {
@@ -338,27 +448,27 @@ func runDone(args []string, session *cliargs.OptString) (exit.Code, error) {
 func runStatus(args []string, session *cliargs.OptString) (exit.Code, error) {
 	fs := flagSet("status", session)
 	job := cliargs.OptString{Name: "job", Placeholder: "JOB"}
-	repo := cliargs.OptString{Name: "repo", Placeholder: "REPO"}
+	target := cliargs.OptString{Name: "target", Placeholder: "TARGET"}
 	asJSON := cliargs.Bool{Name: "json"}
 	fs.Var(&job, "job", "Only this job's agents")
 	fs.Var(&asJSON, "json", "Machine-readable output")
-	fs.Var(&repo, "repo", "Dataset repo whose ledger to read")
+	fs.Var(&target, "target", "Target whose ledger to read")
 	_, helped, err := parse(fs, args, statusHelp, statusUsage, nil)
 	if err != nil || helped {
 		return exit.Ok, err
 	}
-	return cmd.Status(herdr.New(session.Ptr()), cmd.StatusArgs{Job: job.Ptr(), JSON: asJSON.Value, Repo: repo.Ptr()})
+	return cmd.Status(herdr.New(session.Ptr()), cmd.StatusArgs{Job: job.Ptr(), JSON: asJSON.Value, Target: target.Ptr()})
 }
 
 func runWatch(args []string, session *cliargs.OptString) (exit.Code, error) {
 	fs := flagSet("watch", session)
-	repo := cliargs.OptString{Name: "repo", Placeholder: "REPO"}
-	fs.Var(&repo, "repo", "Dataset repo whose ledger to read")
+	target := cliargs.OptString{Name: "target", Placeholder: "TARGET"}
+	fs.Var(&target, "target", "Target whose ledger to read")
 	_, helped, err := parse(fs, args, watchHelp, watchUsage, nil)
 	if err != nil || helped {
 		return exit.Ok, err
 	}
-	return cmd.Watch(herdr.New(session.Ptr()), cmd.WatchArgs{Repo: repo.Ptr()})
+	return cmd.Watch(herdr.New(session.Ptr()), cmd.WatchArgs{Target: target.Ptr()})
 }
 
 func runClose(args []string, session *cliargs.OptString) (exit.Code, error) {
