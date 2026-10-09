@@ -383,15 +383,16 @@ func dirExists(path string) bool {
 
 // fakeAtb puts a stand-in for atb on PATH. Each call appends its argv, one
 // line, to <dir>/calls, with `key=set` when LINEAR_API_KEY reached it. The
-// subcommand named by failOn (`comment` or `release`) prints the key it
-// got to stdout and stderr and exits 4.
+// subcommand named by failOn (`comment`, `release`, or a subcommand with
+// its first argument such as `claim EX-12`) prints the key it got to
+// stdout and stderr and exits 4.
 func (w *world) fakeAtb(failOn string) {
 	w.t.Helper()
 	script := `#!/bin/sh
 key=unset
 [ -n "$LINEAR_API_KEY" ] && key=set
 echo "atb $* key=$key" >> "$(dirname "$0")/../calls"
-if [ "$2" = "` + failOn + `" ]; then
+if [ "$2" = "` + failOn + `" ] || [ "$2 $3" = "` + failOn + `" ]; then
   echo "error: refused: no holder, key $LINEAR_API_KEY" >&2
   echo "key $LINEAR_API_KEY"
   exit 4

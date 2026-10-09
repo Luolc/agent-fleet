@@ -52,12 +52,13 @@ const (
 		"Then the job is reserved: the job's row (open) and the lead's row (`starting`) are " +
 		"written in one transaction with the dedup checks, so two starts on the same name, " +
 		"key or parent cannot both pass. With Linear on, next and before anything else: the " +
-		"parent is created (--new-parent); the parent is claimed in the lead's name (`atb " +
-		"linear claim`, so Linear holds the same lock as the ledger); the lead's work order is " +
-		"created under the parent, titled with the task's first non-empty line without leading " +
-		"`#` (at most 80 characters) and described by the task file, and claimed in the lead's " +
-		"name; the lead's row gets the work order. If an atb step fails, nothing else is " +
-		"created; what was created is listed, with the cleanup command.\n\n" +
+		"parent is created (--new-parent) and written onto both rows at once; the parent is " +
+		"claimed in the lead's name (`atb linear claim`, so Linear holds the same lock as the " +
+		"ledger); the lead's work order is created under the parent, titled with the task's " +
+		"first non-empty line without leading `#` (at most 80 characters) and described by " +
+		"the task file, written onto the lead's row, and claimed in the lead's name. If an atb " +
+		"step fails, nothing else is created; what was created is listed, with the cleanup " +
+		"command, and the rows keep the identifiers written so far.\n\n" +
 		"Then the cross-repo directory is made, the workspace is created with the FLEET_* " +
 		"variables set (FLEET_TARGET, FLEET_JOB, FLEET_ISSUE), Claude Code is started as `fleet " +
 		"spawn` starts a worker, the task is delivered with the work order's URL, and the " +
@@ -355,9 +356,24 @@ func (c *jobChecked) reserve(conn *sql.DB) error {
 	})
 }
 
-// linearSteps creates the parent when asked, claims it for the lead, and
-// makes the lead's work order. Returns the work order (zero without Linear).
-func (c *jobChecked) linearSteps(args JobStartArgs, created *[]string) (atb.Issue, error) {
+// bindParent writes the parent issue onto the reserved job row and lead
+// row. The lead row's partial unique index refuses it when another live
+// lead already holds the parent.
+func (c *jobChecked) bindParent(conn querier) error {
+	if _, err := conn.Exec("UPDATE jobs SET parent_issue = ?1 WHERE job = ?2 AND state = 'open'", c.parent, c.id.Job); err != nil {
+		return exit.Database(err)
+	}
+	if _, err := conn.Exec("UPDATE agents SET parent_issue = ?1 WHERE name = ?2 AND state != 'ended'",
+		c.parent, c.id.Agent); err != nil {
+		return exit.Database(err)
+	}
+	return nil
+}
+
+// linearSteps creates the parent when asked and binds it to the reserved
+// rows at once, claims it for the lead, and makes the lead's work order.
+// Returns the work order (zero without Linear).
+func (c *jobChecked) linearSteps(conn querier, args JobStartArgs, created *[]string) (atb.Issue, error) {
 	if c.linear == nil {
 		return atb.Issue{}, nil
 	}
@@ -369,12 +385,15 @@ func (c *jobChecked) linearSteps(args JobStartArgs, created *[]string) (atb.Issu
 		}
 		c.parent = parent.Identifier
 		*created = append(*created, fmt.Sprintf("parent issue %s (%s)", parent.Identifier, parent.URL))
+		if err := c.bindParent(conn); err != nil {
+			return atb.Issue{}, err
+		}
 	}
 	if err := atb.Claim(c.parent, c.id.Agent, c.me.Agent, scope); err != nil {
 		return atb.Issue{}, err
 	}
 	*created = append(*created, fmt.Sprintf("parent issue %s claimed by %s", c.parent, c.id.Agent))
-	return workOrder(c.linear, c.parent, c.title, c.task, c.id.Agent, c.me.Agent, scope, created)
+	return workOrder(conn, c.linear, c.parent, c.title, c.task, c.id.Agent, c.me.Agent, scope, created)
 }
 
 // JobStart runs `job start`.
@@ -390,18 +409,11 @@ func JobStart(h *herdr.Herdr, args JobStartArgs) (exit.Code, error) {
 		return 0, err
 	}
 	created := []string{fmt.Sprintf("job %s (open)", job), fmt.Sprintf("ledger row %s (state starting)", c.id.Agent)}
-	issue, err := c.linearSteps(args, &created)
+	issue, err := c.linearSteps(conn, args, &created)
 	if err != nil {
 		return startFailed(c.id.Agent, err, 0, created, hint)
 	}
 	c.id.Issue = issue.Identifier
-	if err := setIssue(conn, c.id.Agent, issue.Identifier, c.parent); err != nil {
-		return startFailed(c.id.Agent, err, 0, created, hint)
-	}
-	// With --new-parent the job row learns its parent only now.
-	if _, err := conn.Exec("UPDATE jobs SET parent_issue = ?1 WHERE job = ?2 AND state = 'open'", c.parent, job); err != nil {
-		return startFailed(c.id.Agent, exit.Database(err), 0, created, hint)
-	}
 	if c.repo == "" {
 		if err := os.MkdirAll(c.cwd, 0o777); err != nil {
 			return startFailed(c.id.Agent, exit.IO(err), 0, created, hint)

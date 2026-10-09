@@ -240,9 +240,14 @@ func TestSpawnStopsWhenAnAtbStepFails(t *testing.T) {
 		if _, after, _ := strings.Cut(w.calls(), "atb linear "+step); strings.Contains(after, "herdr") {
 			t.Errorf("%s: herdr was called after atb: %q", step, w.calls())
 		}
-		// The reserved row stays, without a work order, for `close --force`.
-		if got := row(w, "item-1-a"); got != " EX-10 starting "+dir(w, "wt") {
-			t.Errorf("%s: row = %s", step, got)
+		// The reserved row stays for `close --force`, keeping the work order
+		// once that was created.
+		want := " EX-10 starting " + dir(w, "wt")
+		if step == "claim" {
+			want = "EX-12" + want
+		}
+		if got := row(w, "item-1-a"); got != want {
+			t.Errorf("%s: row = %s, want %s", step, got, want)
 		}
 		if !strings.Contains(out.stderr, "ledger row item-1-a (state starting)") || !strings.Contains(out.stderr, "close item-1 --force") {
 			t.Errorf("%s: the row and the cleanup are not listed: %q", step, out.stderr)
@@ -530,10 +535,10 @@ func TestJobStartStopsWhenAnAtbStepFails(t *testing.T) {
 	}
 }
 
-// gatedAtb is fakeAtbCreating whose claim of the parent EX-10 touches
-// <dir>/at-claim and then waits until <dir>/go exists, so a test can hold
-// a start between its reservation and its Linear steps.
-func (w *world) gatedAtb() {
+// gatedAtb is fakeAtbCreating whose claim of `held` touches <dir>/at-claim
+// and then waits until <dir>/go exists, so a test can hold a start between
+// its reservation and its Linear steps.
+func (w *world) gatedAtb(held string) {
 	w.t.Helper()
 	w.fakeAtbCreating("")
 	path := filepath.Join(w.dir, "fake-herdr", "atb")
@@ -541,7 +546,7 @@ func (w *world) gatedAtb() {
 	if err != nil {
 		w.t.Fatal(err)
 	}
-	gate := `if [ "$2" = claim ] && [ "$3" = EX-10 ]; then
+	gate := `if [ "$2" = claim ] && [ "$3" = ` + held + ` ]; then
   : > "$(dirname "$0")/../at-claim"
   while [ ! -e "$(dirname "$0")/../go" ]; do sleep 0.05; done
 fi
@@ -557,18 +562,37 @@ fi
 }
 
 func TestJobStartReservesTheLeadSoAConcurrentStartOnTheParentIsRefused(t *testing.T) {
+	for _, newParent := range []bool{false, true} {
+		t.Run(map[bool]string{false: "existing parent", true: "new parent"}[newParent], func(t *testing.T) {
+			concurrentStarts(t, newParent)
+		})
+	}
+}
+
+// concurrentStarts holds a start at its parent claim, with the parent given
+// (EX-10) or created by --new-parent (EX-11, bound to the rows as soon as
+// it exists), and starts a second job on that parent meanwhile.
+func concurrentStarts(t *testing.T, newParent bool) {
 	w := newWorld(t)
 	w.configure(withLinear)
 	w.useStartHerdr()
-	w.gatedAtb()
+	parent := "EX-10"
+	if newParent {
+		parent = "EX-11"
+	}
+	w.gatedAtb(parent)
 	taskFile := task(w, "task.md", "import\n")
-	start := func(job string) *exec.Cmd {
-		cmd := w.bin([]string{"job", "start", job, "--repo", "example-dataset", "--parent-issue", "EX-10", "--task-file", taskFile},
-			"FLEET_AGENT=thread-1", "FLEET_ROLE=thread", "FLEET_TARGET="+target, linearKey)
-		return cmd
+	start := func(job string, flags ...string) *exec.Cmd {
+		args := append([]string{"job", "start", job, "--repo", "example-dataset", "--task-file", taskFile}, flags...)
+		return w.bin(args, "FLEET_AGENT=thread-1", "FLEET_ROLE=thread", "FLEET_TARGET="+target, linearKey)
+	}
+	onParent := []string{"--parent-issue", parent}
+	alphaFlags := onParent
+	if newParent {
+		alphaFlags = []string{"--new-parent", "Import"}
 	}
 	// alpha reserves its rows and is held at the parent claim.
-	alpha := start("alpha")
+	alpha := start("alpha", alphaFlags...)
 	var alphaOut bytes.Buffer
 	alpha.Stdout, alpha.Stderr = &alphaOut, &alphaOut
 	if err := alpha.Start(); err != nil {
@@ -584,18 +608,24 @@ func TestJobStartReservesTheLeadSoAConcurrentStartOnTheParentIsRefused(t *testin
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+	if got := jobRow(w, "alpha"); got != parent+"  example-dataset "+filepath.Join(w.dir, "home", "dev", "example-dataset")+" open" {
+		t.Errorf("alpha's job row while held = %s", got)
+	}
 	// beta, on the same parent, while alpha is held: refused by the ledger,
 	// naming alpha's lead, without touching Linear.
-	beta := start("beta")
+	beta := start("beta", onParent...)
 	var betaOut bytes.Buffer
 	beta.Stdout, beta.Stderr = &betaOut, &betaOut
 	err := beta.Run()
 	var exitErr *exec.ExitError
-	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 || !strings.Contains(betaOut.String(), "alpha-lead is live on parent issue EX-10") {
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 || !strings.Contains(betaOut.String(), "alpha-lead is live on parent issue "+parent) {
 		t.Errorf("beta: err %v, output %q", err, betaOut.String())
 	}
 	if strings.Contains(w.calls(), "beta") {
 		t.Errorf("beta reached atb: %q", w.calls())
+	}
+	if strings.Contains(betaOut.String(), "parent issue "+parent+" (") {
+		t.Errorf("beta created a parent: %q", betaOut.String())
 	}
 	if got := jobRow(w, "beta"); got != "none" {
 		t.Errorf("beta's job row = %s", got)
@@ -607,7 +637,7 @@ func TestJobStartReservesTheLeadSoAConcurrentStartOnTheParentIsRefused(t *testin
 	if err := alpha.Wait(); err != nil {
 		t.Fatalf("alpha: %v, output %q", err, alphaOut.String())
 	}
-	if got := row(w, "alpha-lead"); !strings.HasPrefix(got, "EX-12 EX-10 active ") {
+	if got := row(w, "alpha-lead"); !strings.HasPrefix(got, "EX-12 "+parent+" active ") {
 		t.Errorf("alpha's row = %s", got)
 	}
 	// Control: once alpha's lead has ended, the parent is reused.
@@ -621,14 +651,53 @@ func TestJobStartReservesTheLeadSoAConcurrentStartOnTheParentIsRefused(t *testin
 		}
 	}
 	conn.Close()
-	gamma := start("gamma")
+	gamma := start("gamma", onParent...)
 	var gammaOut bytes.Buffer
 	gamma.Stdout, gamma.Stderr = &gammaOut, &gammaOut
 	if err := gamma.Run(); err != nil {
 		t.Fatalf("gamma: %v, output %q", err, gammaOut.String())
 	}
-	if got := row(w, "gamma-lead"); !strings.HasPrefix(got, "EX-12 EX-10 active ") {
+	if got := row(w, "gamma-lead"); !strings.HasPrefix(got, "EX-12 "+parent+" active ") {
 		t.Errorf("gamma's row = %s", got)
+	}
+}
+
+func TestJobStartKeepsTheIdentifiersWrittenBeforeAnAtbStepFailed(t *testing.T) {
+	checkout := filepath.Join("home", "dev", "example-dataset")
+	for _, c := range []struct {
+		failOn, jobParent, leadRow string
+		listed                     []string
+	}{
+		// The parent is created and bound, then its claim fails.
+		{"claim EX-11", "EX-11", " EX-11 starting ", []string{"parent issue EX-11 (https://linear.example.test/EX-11)"}},
+		// The parent is claimed and the work order created and bound, then
+		// its claim fails.
+		{"claim EX-12", "EX-11", "EX-12 EX-11 starting ", []string{"parent issue EX-11 claimed by item-2-lead",
+			"work order EX-12 (https://linear.example.test/EX-12), not claimed"}},
+	} {
+		w := newWorld(t)
+		w.configure(withLinear)
+		w.useStartHerdr()
+		w.fakeAtbCreating(c.failOn)
+		out := w.startJob("item-2", "--repo", "example-dataset", "--new-parent", "Import",
+			"--task-file", task(w, "task.md", "import\n"))
+		if out.code != 5 || !strings.Contains(out.stderr, "atb linear "+c.failOn+" failed") {
+			t.Errorf("%s: %+v", c.failOn, out)
+		}
+		if got := jobRow(w, "item-2"); got != c.jobParent+"  example-dataset "+filepath.Join(w.dir, checkout)+" open" {
+			t.Errorf("%s: job row = %s", c.failOn, got)
+		}
+		if got := row(w, "item-2-lead"); !strings.HasPrefix(got, c.leadRow) {
+			t.Errorf("%s: row = %q, want prefix %q", c.failOn, got, c.leadRow)
+		}
+		for _, want := range append(c.listed, "clean up with: fleet close item-2 --force") {
+			if !strings.Contains(out.stderr, want) {
+				t.Errorf("%s: %q missing from %q", c.failOn, want, out.stderr)
+			}
+		}
+		if strings.Contains(w.calls(), "herdr workspace create") {
+			t.Errorf("%s: the workspace was created", c.failOn)
+		}
 	}
 }
 

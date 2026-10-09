@@ -39,10 +39,10 @@ const (
 		"cap checks, so two spawns cannot both pass them. With Linear on, the work order is " +
 		"created next, before anything else: `atb linear create` under the job's parent issue, " +
 		"titled with the task's first non-empty line without leading `#` (at most 80 " +
-		"characters) and described by the task file, then `atb linear claim` in the worker's " +
-		"name; the row gets the work order. The worker gets FLEET_ISSUE and its task starts " +
-		"with a line naming the work order's URL. If an atb step fails, nothing else is " +
-		"created; an issue created but not claimed is listed.\n\n" +
+		"characters) and described by the task file, written onto the row, then `atb linear " +
+		"claim` in the worker's name. The worker gets FLEET_ISSUE and its task starts with a " +
+		"line naming the work order's URL. If an atb step fails, nothing else is created; an " +
+		"issue created but not claimed is listed, and the row keeps it.\n\n" +
 		"Then a tab is made in the job's workspace " +
 		"with the FLEET_* variables set, and Claude Code (the only supported agent) is started " +
 		"with `herdr agent start --kind claude` and fixed arguments (permission prompts " +
@@ -211,15 +211,12 @@ func Spawn(h *herdr.Herdr, args SpawnArgs) (exit.Code, error) {
 		return 0, err
 	}
 	created := []string{fmt.Sprintf("ledger row %s (state starting)", c.id.Agent)}
-	issue, err := workOrder(c.linear, c.job.ParentIssue, c.title, c.task, c.id.Agent, c.me.Agent,
+	issue, err := workOrder(conn, c.linear, c.job.ParentIssue, c.title, c.task, c.id.Agent, c.me.Agent,
 		scopeOf(c.job.Repo, c.me.Job), &created)
 	if err != nil {
 		return startFailed(c.id.Agent, err, 0, created, hint)
 	}
 	c.id.Issue = issue.Identifier
-	if err := setIssue(conn, c.id.Agent, issue.Identifier, c.job.ParentIssue); err != nil {
-		return startFailed(c.id.Agent, err, 0, created, hint)
-	}
 	place, err := CreateTab(h, c.workspace, args.Name, c.cwd, c.id)
 	if err != nil {
 		return startFailed(c.id.Agent, err, 0, created, hint)

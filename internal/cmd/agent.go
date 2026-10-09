@@ -612,10 +612,13 @@ func scopeOf(repo, job string) string {
 	return repo + ": job " + job
 }
 
-// workOrder creates `agent`'s work order under `parent` in the agent's
-// name and claims it, when the job uses Linear; otherwise it returns the
-// zero Issue. An issue that was created is in `created`, claimed or not.
-func workOrder(l *linear, parent, title, task, agent, source, scope string, created *[]string) (atb.Issue, error) {
+// workOrder creates `agent`'s work order under `parent` and claims it in
+// the agent's name, when the job uses Linear; otherwise it returns the
+// zero Issue. The identifier is written onto the agent's reserved row as
+// soon as the issue exists, before the claim, so a failure later leaves
+// it on the row. An issue that was created is in `created`, claimed or
+// not.
+func workOrder(conn querier, l *linear, parent, title, task, agent, source, scope string, created *[]string) (atb.Issue, error) {
 	if l == nil {
 		return atb.Issue{}, nil
 	}
@@ -624,6 +627,9 @@ func workOrder(l *linear, parent, title, task, agent, source, scope string, crea
 		return atb.Issue{}, err
 	}
 	*created = append(*created, fmt.Sprintf("work order %s (%s), not claimed", issue.Identifier, issue.URL))
+	if err := setIssue(conn, agent, issue.Identifier); err != nil {
+		return atb.Issue{}, err
+	}
 	if err := atb.Claim(issue.Identifier, agent, source, scope); err != nil {
 		return atb.Issue{}, err
 	}
@@ -673,9 +679,9 @@ func insertStarting(conn querier, id *identity.Identity, cwd, task, parentIssue 
 }
 
 // setIssue records the agent's work order on its reserved row.
-func setIssue(conn querier, agent, issue, parentIssue string) error {
-	if _, err := conn.Exec("UPDATE agents SET issue = ?1, parent_issue = ?2 WHERE name = ?3 AND state != 'ended'",
-		issue, parentIssue, agent); err != nil {
+func setIssue(conn querier, agent, issue string) error {
+	if _, err := conn.Exec("UPDATE agents SET issue = ?1 WHERE name = ?2 AND state != 'ended'",
+		issue, agent); err != nil {
 		return exit.Database(err)
 	}
 	return nil
