@@ -5,33 +5,65 @@ on:
   push:
     branches: [main]
 
+concurrency:
+  # Every main commit needs a result of its own, so each one gets its own
+  # group: a shared group would cancel a pending run when a newer one
+  # arrives. On a PR branch, a newer push cancels the older run.
+  group: ci-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 permissions:
   contents: read
 
 env:
   GOTOOLCHAIN: local
-  GITLEAKS_VERSION: 8.30.1
-  GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
   PRE_COMMIT_VERSION: 4.6.2
 
-# lint, race and the judge's shards run in parallel; check is the required
-# status check and passes only when all of them succeeded.
+# changes decides which of race and the judge a change needs; lint always
+# runs. check is the required status check: all-green passes it only when
+# every job succeeded or was skipped because changes said it need not run.
 jobs:
+  changes:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read # find the last green run of this workflow on main
+    outputs:
+      groups: ${{ steps.changes.outputs.groups }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      # Each group is named after the job it gates; docs has no job, so a
+      # docs-only change runs only lint. A path in no group runs everything.
+      - id: changes
+        uses: Luolc/ci-actions/changes@ad865a7a9c01b617b1becb685995ea590252d698 # main, 2026-10-10
+        with:
+          groups: |
+            race: cmd/** internal/** go.mod go.sum
+            judge: cmd/** internal/** go.mod go.sum judge/**
+            docs: docs/** *.md LICENSE
+          run-all-on: .github/** scripts/** tools/** .golangci.yml .pre-commit-config.yaml .fleet/**
+
   lint:
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pull-requests: read # gitleaks-action lists the commits of the PR
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
-      - name: gitleaks (full history)
-        run: |
-          dir=$(mktemp -d)
-          curl -sSfL -o "$dir/gitleaks.tar.gz" \
-            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
-          echo "${GITLEAKS_SHA256}  $dir/gitleaks.tar.gz" | sha256sum -c -
-          tar -xzf "$dir/gitleaks.tar.gz" -C "$dir" gitleaks
-          "$dir/gitleaks" git --redact --no-banner --verbose .
+      # Scans the commits of this PR or push; gitleaks.yml scans the whole
+      # history weekly.
+      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITLEAKS_VERSION: 8.30.1 # the rev of the hook in .pre-commit-config.yaml
+          # Commenting on the PR would need pull-requests: write; the job
+          # log and summary show the finding.
+          GITLEAKS_ENABLE_COMMENTS: false
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -47,6 +79,8 @@ jobs:
         run: scripts/check.sh
 
   race:
+    needs: changes
+    if: fromJSON(needs.changes.outputs.groups).race
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -60,8 +94,11 @@ jobs:
         run: go test -race ./...
 
   # The judge's suites in three shards, so the longest suite (lifecycle)
-  # sets the judge's time; together the shards run every suite once.
+  # sets the judge's time; together the shards run every suite once. The
+  # shards share the job id judge, which is what check and the group see.
   judge:
+    needs: changes
+    if: fromJSON(needs.changes.outputs.groups).judge
     name: judge (${{ matrix.suites }})
     strategy:
       fail-fast: false
@@ -104,18 +141,13 @@ jobs:
           judge/run.sh "$RUNNER_TEMP/fleet"
 
   check:
-    needs: [lint, race, judge]
+    needs: [changes, lint, race, judge]
     # Without always(), check is skipped when a job it needs fails, and
     # GitHub counts a skipped required check as passed. needs.judge.result
     # is success only when every shard succeeded.
     if: always()
     runs-on: ubuntu-24.04
     steps:
-      - name: require every job to succeed
-        env:
-          LINT: ${{ needs.lint.result }}
-          RACE: ${{ needs.race.result }}
-          JUDGE: ${{ needs.judge.result }}
-        run: |
-          echo "lint: $LINT, race: $RACE, judge: $JUDGE"
-          [ "$LINT" = success ] && [ "$RACE" = success ] && [ "$JUDGE" = success ]
+      - uses: Luolc/ci-actions/all-green@ad865a7a9c01b617b1becb685995ea590252d698 # main, 2026-10-10
+        with:
+          needs: ${{ toJSON(needs) }}
