@@ -91,12 +91,24 @@ const threadUsage = "Usage: fleet thread <COMMAND>"
 var threadHelp = cmd.ThreadAbout + ".\n\n" + threadUsage + `
 
 Commands:
+  post         ` + cmd.ThreadPostAbout + `
   end          ` + cmd.ThreadEndAbout + `
   set-project  ` + cmd.ThreadSetProjectAbout + `
   relate       ` + cmd.ThreadRelateAbout + `
 
 Options:
   -h, --help  Print help
+`
+
+const threadPostUsage = "Usage: fleet thread post [OPTIONS] --body-file <PATH>"
+
+var threadPostHelp = cmd.ThreadPostLongAbout + "\n\n" + threadPostUsage + `
+
+Options:
+      --body-file <PATH>  The text to post, standard Markdown, at most 100 KiB
+      --attach <PATH>     A file to upload with the text, passed to fednet as -file; repeatable
+      --scope <NAME>      ` + scopeHelp + `
+  -h, --help              Print help
 `
 
 const threadEndUsage = "Usage: fleet thread end [OPTIONS] --summary-file <PATH>"
@@ -137,7 +149,7 @@ const askHumanUsage = "Usage: fleet ask-human [OPTIONS] --file <PATH>"
 var askHumanHelp = cmd.AskHumanLongAbout + "\n\n" + askHumanUsage + `
 
 Options:
-      --file <PATH>     The question, delivered to the home thread's agent to post
+      --file <PATH>     The question, posted to the home thread and delivered to its agent
       --approval        Ask for an approval card; not supported yet, refused with exit 1
       --scope <NAME>    ` + scopeHelp + `
   -h, --help            Print help
@@ -479,7 +491,7 @@ func runInbox(args []string, scope *cliargs.OptString) (exit.Code, error) {
 	return cmd.Inbox(cmd.InboxArgs{File: got[0]})
 }
 
-var threadHelps = map[string]string{"end": threadEndHelp, "set-project": threadSetProjectHelp, "relate": threadRelateHelp}
+var threadHelps = map[string]string{"post": threadPostHelp, "end": threadEndHelp, "set-project": threadSetProjectHelp, "relate": threadRelateHelp}
 
 // runThread dispatches `fleet thread <COMMAND>`.
 func runThread(args []string, scope *cliargs.OptString) (exit.Code, error) {
@@ -490,6 +502,8 @@ func runThread(args []string, scope *cliargs.OptString) (exit.Code, error) {
 	case "-h", "--help", "help":
 		fmt.Fprint(os.Stdout, threadHelp)
 		return exit.Ok, nil
+	case "post":
+		return runThreadPost(args[1:], scope)
 	case "end":
 		fs := flagSet("thread end", scope)
 		summary := cliargs.OptString{Name: "summary-file", Placeholder: "PATH"}
@@ -528,6 +542,22 @@ func runThread(args []string, scope *cliargs.OptString) (exit.Code, error) {
 	default:
 		return 0, &usageError{fmt.Sprintf("unrecognized subcommand '%s'", args[0]), threadUsage}
 	}
+}
+
+func runThreadPost(args []string, scope *cliargs.OptString) (exit.Code, error) {
+	fs := flagSet("thread post", scope)
+	body := cliargs.OptString{Name: "body-file", Placeholder: "PATH"}
+	var attach cliargs.Strings
+	fs.Var(&body, "body-file", "The text to post")
+	fs.Var(&attach, "attach", "A file to upload with the text")
+	_, helped, err := parse(fs, args, threadPostHelp, threadPostUsage, nil, &body)
+	if err != nil || helped {
+		return exit.Ok, err
+	}
+	if _, err := scoped(scope); err != nil {
+		return 0, err
+	}
+	return cmd.ThreadPost(cmd.ThreadPostArgs{BodyFile: body.Value, Attach: attach.Values})
 }
 
 func runAskHuman(args []string, scope *cliargs.OptString) (exit.Code, error) {

@@ -31,7 +31,18 @@ import (
 // ThreadAbout, ThreadEndAbout and the others are the help texts of
 // `thread` and its subcommands.
 const (
-	ThreadAbout        = "What a thread agent does to its own thread: end the session, set the ticket's project, relate an issue"
+	ThreadAbout         = "What a thread agent does to its own thread: post to it, end the session, set the ticket's project, relate an issue"
+	ThreadPostAbout     = "Post to your thread in Slack (thread agents only)"
+	ThreadPostLongAbout = "Post to your thread in Slack (thread agents only).\n\n" +
+		"The text is read from --body-file and posted with `fednet client post` to the " +
+		"thread your row in the ledger records, through the socket in the scope's settings " +
+		"(`fednet.socket`); you never name either. Each --attach is passed to fednet as " +
+		"`-file`, unchanged, and uploaded with the text; the text goes as the file has it. fednet's stdout is printed; fleet " +
+		"does not retry.\n\n" +
+		"Exit: 0 when fednet took the post; 1 when the caller is not a live thread agent, the " +
+		"body file cannot be read, is empty (or only whitespace) or is over 100 KiB (102400 bytes), or the socket " +
+		"is not configured; fednet's own exit code, with its stderr as it is, when the post " +
+		"fails; 5 when fednet cannot be run or times out, or the settings or the database fail."
 	ThreadEndAbout     = "End this session of your thread: summary on the ticket, ticket released, tab closed (thread agents only)"
 	ThreadEndLongAbout = "End this session of your thread: summary on the ticket, ticket released, tab closed (thread agents only).\n\n" +
 		"Call it from your own pane when nothing is pending for you; a job you started keeps " +
@@ -238,10 +249,10 @@ func (m inboundMessage) sender() string {
 func (m inboundMessage) body() string {
 	if m.Conclusion {
 		return fmt.Sprintf("Conclusion of a job from %s for the people in thread %s. Post it to the thread with "+
-			"`fednet client post`; nothing is waiting for an answer.\n\n%s", m.Question, m.Thread, m.Text)
+			"`fleet thread post`; nothing is waiting for an answer.\n\n%s", m.Question, m.Thread, m.Text)
 	}
 	if m.Question != "" {
-		return fmt.Sprintf("Question from %s for the people in thread %s. Post it to the thread with `fednet client post`; "+
+		return fmt.Sprintf("Question from %s for the people in thread %s, already posted there by fleet; "+
 			"when they answer, pass the answer on with `fleet send %s --file <file>`.\n\n%s\n", m.Question, m.Thread, m.Question, m.Text)
 	}
 	return fmt.Sprintf("Message in thread %s from %s at %s:\n\n%s\n", m.Thread, m.User, m.TS, m.Text)
@@ -469,17 +480,17 @@ func (s *threadStart) rules() string {
 // prompt is the thread agent's first message: the built-in prompt, the
 // channel's context, the earlier summaries, and the message.
 func (s *threadStart) prompt() string {
-	post := "the fednet socket is not configured for this scope (`fednet.socket` in its config file), so posting to the thread is off"
+	post := "posting to the thread is off: the fednet socket is not configured for this scope (`fednet.socket` in its config file)"
 	if s.cfg.FednetSocket != "" {
-		post = fmt.Sprintf("`fednet client post -socket %s -thread %s -- <text>` posts to the thread: progress, "+
-			"answers, and a lead's questions for the people there", s.cfg.FednetSocket, s.msg.Thread)
+		post = "`fleet thread post --body-file <file> [--attach <path>]...` posts the file's text to your thread " +
+			"(fleet knows which thread and how), with the files to upload: progress, answers, a job's conclusion"
 	}
 	ticket := s.ticket.Identifier
 	note := " (your thread ticket, " + s.ticket.URL + ")"
 	if ticket == "" {
 		note = " (empty: thread tickets are off for this scope)"
 	}
-	text := strings.NewReplacer("{{thread}}", s.msg.Thread, "{{scope}}", s.id.Scope, "{{agent}}", s.id.Agent,
+	text := strings.NewReplacer("{{scope}}", s.id.Scope, "{{agent}}", s.id.Agent,
 		"{{mapping}}", s.mapping, "{{cwd}}", s.cwd, "{{rules}}", s.rules(), "{{xrepo}}", crossRepoRoot(s.home, s.mapping),
 		"{{ticket}}", ticket, "{{ticket_note}}", note, "{{post}}", post).Replace(threadPrompt)
 	context := s.msg.Context
@@ -627,6 +638,68 @@ func resumeThreadStart(h *herdr.Herdr, conn *sql.DB, scope string, cfg *config.S
 		return 0, exit.Database(err)
 	}
 	return exit.Ok, nil
+}
+
+// maxPostBytes is the largest body `thread post` takes.
+const maxPostBytes = 100 * 1024
+
+// ThreadPostArgs are the arguments of `thread post`.
+type ThreadPostArgs struct {
+	// BodyFile holds the text.
+	BodyFile string
+	// Attach are the files to upload with it, as fednet's `-file`.
+	Attach []string
+}
+
+// ThreadPost runs `thread post`: the thread comes from the caller's live
+// row, the socket from the scope's settings, the text only from the file;
+// fednet's output and exit code are handed back as they are.
+func ThreadPost(args ThreadPostArgs) (exit.Code, error) {
+	me, err := threadCaller()
+	if err != nil {
+		return 0, err
+	}
+	data, err := os.ReadFile(args.BodyFile)
+	if err != nil {
+		return 0, exit.Refusedf("cannot read %s: %v", args.BodyFile, err)
+	}
+	if len(data) > maxPostBytes {
+		return 0, exit.Refusedf("the body is %d bytes, over the limit of %d", len(data), maxPostBytes)
+	}
+	text := string(data)
+	if strings.TrimSpace(text) == "" {
+		return 0, exit.Refusedf("the body file is empty")
+	}
+	cfg, err := config.LoadScope(me.Scope)
+	if err != nil {
+		return 0, err
+	}
+	if cfg.FednetSocket == "" {
+		return 0, exit.Refusedf("fednet.socket is not configured for scope %s, so fleet cannot post to the thread", me.Scope)
+	}
+	conn, err := db.Open(me.Scope)
+	if err != nil {
+		return 0, err
+	}
+	defer conn.Close()
+	var thread string
+	err = conn.QueryRow("SELECT thread FROM agents WHERE name = ?1 AND role = 'thread' AND state != 'ended'", me.Agent).Scan(&thread)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, exit.Refusedf("the ledger has no live thread agent %s", me.Agent)
+	}
+	if err != nil {
+		return 0, exit.Database(err)
+	}
+	if thread != me.Thread {
+		return 0, exit.Refusedf("the ledger records thread %s for %s, not FLEET_THREAD %s", thread, me.Agent, me.Thread)
+	}
+	stdout, stderr, code, err := fednet.Relay(cfg.FednetSocket, thread, text, args.Attach)
+	_, _ = os.Stdout.Write(stdout)
+	_, _ = os.Stderr.Write(stderr)
+	if err != nil {
+		return 0, err
+	}
+	return exit.Code(code), nil
 }
 
 // ThreadEndArgs are the arguments of `thread end`.

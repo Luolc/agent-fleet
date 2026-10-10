@@ -1,11 +1,12 @@
 // `fleet ask-human`: a lead (or a thread agent) asks the people in the
-// job's home thread a question; the thread agent posts it and passes the
-// answer back.
+// job's home thread a question; fleet posts it, and the thread agent passes
+// the answer back.
 
 package cmd
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/Luolc/agent-fleet/internal/config"
 	"github.com/Luolc/agent-fleet/internal/db"
 	"github.com/Luolc/agent-fleet/internal/exit"
+	"github.com/Luolc/agent-fleet/internal/fednet"
 	"github.com/Luolc/agent-fleet/internal/herdr"
 	"github.com/Luolc/agent-fleet/internal/identity"
 )
@@ -22,25 +24,29 @@ const (
 	AskHumanAbout     = "Ask the people in your job's home thread a question (leads and thread agents)"
 	AskHumanLongAbout = "Ask the people in your job's home thread a question (leads and thread agents).\n\n" +
 		"A lead has no other way to talk to people. The question is read from --file; it is " +
-		"recorded as pending in the ledger (table `questions`), then delivered to the job's " +
+		"recorded as pending in the ledger (table `questions`), posted by fleet to the job's " +
 		"home thread (`jobs.home_thread`, the thread of the thread agent that started the " +
-		"job) as `fleet inbox` delivers a message: to the thread's live agent, headed `[FROM: " +
-		"<you>]`, or to a thread agent started for the thread (its ticket claimed again, the " +
-		"question as the session's first message). The thread agent posts the question " +
-		"(`fednet client post`) and, when a person answers in the thread, passes the answer " +
-		"on with `fleet send`. A person's message in the thread marks the thread's pending " +
-		"questions answered.\n\n" +
+		"job) with `fednet client post`, then delivered there as `fleet inbox` delivers a " +
+		"message: to the thread's live agent, headed `[FROM: <you>]`, or to a thread agent " +
+		"started for the thread (its ticket claimed again, the question as the session's " +
+		"first message). When a person answers in the thread, the thread agent passes the " +
+		"answer on with `fleet send`. A person's message in the thread marks the thread's " +
+		"pending questions answered.\n\n" +
+		"The post and the delivery are recorded in the ledger (table `steps`), so running it " +
+		"again with the same question while it is pending continues where it stopped and " +
+		"never posts it twice.\n\n" +
 		"Approval cards (fednet's request-approval) are not supported yet: --approval is " +
 		"refused. Ask for a go-ahead in plain text (\"reply yes to go ahead\").\n\n" +
-		"A thread agent asking records the question on its own thread and posts it itself; " +
-		"nothing is delivered.\n\n" +
-		"Exit: 0 when the thread agent has the question (or, for a thread agent, once it is " +
-		"recorded); 1 with --approval, when the caller is a worker, the file is unreadable or empty, the job " +
-		"is not open, or the job has no home thread (it was started by a caller without " +
-		"FLEET_THREAD); 2/3/4 as `send` for the delivery; 3 when a new thread agent stops " +
-		"at an unknown screen; 5 when herdr, atb or the database fails. Linear unavailable " +
-		"while a thread agent had to be started is exit 5 too: the question stays pending " +
-		"and is not posted, ask again later."
+		"A thread agent asking records the question on its own thread and fleet posts it " +
+		"there; nothing is delivered.\n\n" +
+		"Exit: 0 when the question is posted and the thread agent has it (a thread agent's " +
+		"own: once it is posted); 1 with --approval, when the caller is a worker, the file " +
+		"is unreadable or empty, the job is not open, the job has no home thread (it was " +
+		"started by a caller without FLEET_THREAD), or the scope has no fednet socket; " +
+		"2/3/4 as `send` for the delivery; 3 when a new thread agent stops at an unknown " +
+		"screen; 5 when the post fails, or herdr, atb or the database fails. Linear " +
+		"unavailable while a thread agent had to be started is exit 5 too. After a failure " +
+		"the question stays pending; ask again to finish."
 )
 
 // AskHumanArgs are the arguments of `ask-human`.
@@ -67,8 +73,9 @@ func AskHuman(h *herdr.Herdr, args AskHumanArgs) (exit.Code, error) {
 	if err != nil {
 		return 0, exit.Refusedf("cannot read %s: %v", args.File, err)
 	}
-	text := strings.TrimSpace(string(data))
-	if text == "" {
+	// Only the end is trimmed: an indented first line is Markdown.
+	text := strings.TrimRight(string(data), " \t\r\n")
+	if strings.TrimSpace(text) == "" {
 		return 0, exit.Refusedf("the question file is empty")
 	}
 	conn, err := db.Open(me.Scope)
@@ -76,40 +83,134 @@ func AskHuman(h *herdr.Herdr, args AskHumanArgs) (exit.Code, error) {
 		return 0, err
 	}
 	defer conn.Close()
-	thread, job := me.Thread, ""
-	if me.Role == identity.Lead {
-		if me.Job == "" {
-			return 0, exit.Refusedf("FLEET_JOB is not set")
-		}
-		row, err := openJob(conn, me.Job)
-		if err != nil {
-			return 0, err
-		}
-		if row == nil {
-			return 0, exit.Refusedf("job %s is not open in scope %s", me.Job, me.Scope)
-		}
-		if row.HomeThread == "" {
-			return 0, exit.Refusedf("job %s has no home thread: it was started by a caller without FLEET_THREAD, "+
-				"so there is no thread to ask in", me.Job)
-		}
-		thread, job = row.HomeThread, me.Job
-	} else if thread == "" {
-		return 0, exit.Refusedf("FLEET_THREAD is not set: a thread agent asks in its own thread")
-	}
-	if _, err := conn.Exec("INSERT INTO questions (job, thread, asked_by, text, approval, state, asked_at) "+
-		"VALUES (?1, ?2, ?3, ?4, 0, 'pending', ?5)", job, thread, me.Agent, text, db.Now()); err != nil {
-		return 0, exit.Database(err)
-	}
-	if me.Role == identity.Thread {
-		fmt.Fprintf(os.Stdout, "recorded a pending question in thread %s; post it there\n", thread)
-		return exit.Ok, nil
+	thread, job, err := askedIn(conn, me)
+	if err != nil {
+		return 0, err
 	}
 	cfg, err := config.LoadScope(me.Scope)
 	if err != nil {
 		return 0, err
 	}
+	if cfg.FednetSocket == "" {
+		return 0, exit.Refusedf("fednet.socket is not configured for scope %s, so fleet cannot post the question", me.Scope)
+	}
+	id, err := pendingQuestion(conn, job, thread, me.Agent, text)
+	if err != nil {
+		return 0, err
+	}
+	key := fmt.Sprintf("ask-human:%d", id)
+	posted, err := postQuestion(conn, key, cfg.FednetSocket, thread, text)
+	if err != nil {
+		return 0, err
+	}
+	if me.Role == identity.Thread {
+		if posted {
+			fmt.Fprintf(os.Stdout, "posted a pending question to thread %s\n", thread)
+		} else {
+			fmt.Fprintf(os.Stdout, "the question was already posted to thread %s; nothing done\n", thread)
+		}
+		return exit.Ok, nil
+	}
 	msg := inboundMessage{Thread: thread, Text: text, Question: me.Agent}
-	return toThread(h, conn, me.Scope, cfg, msg)
+	delivered, err := deliverQuestion(h, conn, key, me.Scope, cfg, msg)
+	if err != nil {
+		return 0, err
+	}
+	if !posted && !delivered {
+		fmt.Fprintf(os.Stdout, "the question was already posted to thread %s and delivered to its agent; nothing done\n", thread)
+		return exit.Ok, nil
+	}
+	fmt.Fprintf(os.Stdout, "posted the question to thread %s; its agent passes the answer on\n", thread)
+	return exit.Ok, nil
+}
+
+// postQuestion is the `post` step of an ask: true when it ran now, false
+// when an earlier run recorded it. fednet's output is not shown, and the
+// failure names only what the caller can do: ask again.
+func postQuestion(conn *sql.DB, key, socket, thread, text string) (bool, error) {
+	ran := false
+	err := runStep(conn, key, "post", func() error {
+		ran = true
+		_, _, code, err := fednet.Relay(socket, thread, text, nil)
+		if err == nil && code != 0 {
+			err = exit.Environmentf("fednet client post failed (exit status: %d)", code)
+		}
+		return err
+	})
+	var failure *exit.Failure
+	if errors.As(err, &failure) {
+		return false, exit.New(failure.Code, failure.Message+"; the question is recorded, run ask-human again to post it")
+	}
+	return ran, err
+}
+
+// deliverQuestion is the `deliver` step of a lead's ask: true when it ran
+// now, false when an earlier run recorded it. A failure says the question
+// is posted already, so asking again only delivers it.
+func deliverQuestion(h *herdr.Herdr, conn *sql.DB, key, scope string, cfg *config.Scope, msg inboundMessage) (bool, error) {
+	ran := false
+	err := runStep(conn, key, "deliver", func() error {
+		ran = true
+		code, err := toThread(h, conn, scope, cfg, msg)
+		if err == nil && code != exit.Ok {
+			err = exit.New(code, fmt.Sprintf("did not reach the agent of thread %s (exit %d)", msg.Thread, code))
+		}
+		return err
+	})
+	var failure *exit.Failure
+	if errors.As(err, &failure) {
+		return false, exit.New(failure.Code, failure.Message+"; the question is posted, run ask-human again to deliver it")
+	}
+	return ran, err
+}
+
+// askedIn is the thread the caller asks in, with the job (empty for a
+// thread agent): a lead's open job's home thread, a thread agent's own.
+func askedIn(conn *sql.DB, me *identity.Identity) (thread, job string, err error) {
+	if me.Role != identity.Lead {
+		if me.Thread == "" {
+			return "", "", exit.Refusedf("FLEET_THREAD is not set: a thread agent asks in its own thread")
+		}
+		return me.Thread, "", nil
+	}
+	if me.Job == "" {
+		return "", "", exit.Refusedf("FLEET_JOB is not set")
+	}
+	row, err := openJob(conn, me.Job)
+	if err != nil {
+		return "", "", err
+	}
+	if row == nil {
+		return "", "", exit.Refusedf("job %s is not open in scope %s", me.Job, me.Scope)
+	}
+	if row.HomeThread == "" {
+		return "", "", exit.Refusedf("job %s has no home thread: it was started by a caller without FLEET_THREAD, "+
+			"so there is no thread to ask in", me.Job)
+	}
+	return row.HomeThread, me.Job, nil
+}
+
+// pendingQuestion is the id of the pending question with this text from
+// this asker in this thread, recorded now unless an earlier run did.
+func pendingQuestion(conn *sql.DB, job, thread, by, text string) (int64, error) {
+	var id int64
+	err := conn.QueryRow("SELECT id FROM questions WHERE job = ?1 AND thread = ?2 AND asked_by = ?3 AND text = ?4 "+
+		"AND state = 'pending' ORDER BY id DESC LIMIT 1", job, thread, by, text).Scan(&id)
+	if err == nil {
+		return id, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return 0, exit.Database(err)
+	}
+	res, err := conn.Exec("INSERT INTO questions (job, thread, asked_by, text, approval, state, asked_at) "+
+		"VALUES (?1, ?2, ?3, ?4, 0, 'pending', ?5)", job, thread, by, text, db.Now())
+	if err != nil {
+		return 0, exit.Database(err)
+	}
+	if id, err = res.LastInsertId(); err != nil {
+		return 0, exit.Database(err)
+	}
+	return id, nil
 }
 
 // toThread takes an agent's message to a thread as `route` does, with a

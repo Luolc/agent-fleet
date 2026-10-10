@@ -106,3 +106,18 @@ func (o *OptString) Ptr() *string {
 	}
 	return &o.Value
 }
+
+// Strings is a repeatable string flag (clap `ArgAction::Append`): every
+// occurrence adds its value.
+type Strings struct {
+	Values []string
+}
+
+// String implements flag.Value.
+func (s *Strings) String() string { return fmt.Sprint(s.Values) }
+
+// Set implements flag.Value.
+func (s *Strings) Set(value string) error {
+	s.Values = append(s.Values, value)
+	return nil
+}

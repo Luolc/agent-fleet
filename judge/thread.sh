@@ -1,5 +1,5 @@
-# Sourced by inside.sh after worktree.sh: `inbox`, `thread end`, `thread
-# set-project` and `thread relate` against the real herdr, with a fake atb
+# Sourced by inside.sh after worktree.sh: `inbox`, `thread post`, `thread
+# end`, `thread set-project`, `thread relate` and `ask-human` against the real herdr, with a fake atb
 # and a fake fednet that log their arguments. Threads use the scope `main`
 # (a message without a scope): its ledger and the herdr session fleet-main.
 # A thread of the channel repo-$R runs in ~/dev/$R.
@@ -27,8 +27,9 @@ case "$2" in
   query) printf '%s\n' '{"issue":{"comments":{"nodes":[{"body":"Session 1 ended\n\nSummary 0xSUM1","createdAt":"2026-10-09T02:00:00Z"}]}}}' ;;
 esac
 ATB
-# The fake fednet fails while /home/agent/fednet-down exists.
-printf '#!/bin/sh\necho "$*" >> /home/agent/fednet.log\n[ -e /home/agent/fednet-down ] && exit 4\necho m-posted\n' > /home/agent/fake-thread/fednet
+# The fake fednet fails (exit 4, one line on stderr) while
+# /home/agent/fednet-down exists.
+printf '#!/bin/sh\necho "$*" >> /home/agent/fednet.log\n[ -e /home/agent/fednet-down ] && { echo "post: hub unreachable" >&2; exit 4; }\necho m-posted\n' > /home/agent/fake-thread/fednet
 # A herdr shim that kills the hook (its parent) at `pane rename` while
 # /home/agent/kill-at-rename exists: an inbox run interrupted after the
 # agent started and before its first message.
@@ -273,22 +274,75 @@ check "job start from a thread agent: exit 0" 0 "$rc"
 check "job start: the caller's thread is the job's home thread" "$K " "$(tledger "SELECT home_thread FROM jobs WHERE job = 'item-8'")"
 check "job start: the lead's process has no thread variable" "" "$(proc_env item-8-lead | grep -o "${P}THREAD=[^ ]*")"
 
-# The lead of item-8 asks the people in its home thread: the question
-# reaches the live thread agent; the next message in the thread answers it.
+# The lead of item-8 asks the people in its home thread: fleet posts the
+# question, and it reaches the thread agent; the next message in the
+# thread answers it. The first post fails: the question stays recorded and
+# goes nowhere, and asking again posts it once and delivers it.
 printf 'Which month should the import cover? 0xQ1\n' > /home/agent/tasks/q1.md
-out=$(PATH=/home/agent/fake-thread:$PATH env "${P}AGENT=item-8-lead" "${P}ROLE=lead" "${P}PARENT=$A" "${P}SCOPE=main" \
-  "${P}JOB=item-8" "${P}ISSUE=" "$T" ask-human --file /home/agent/tasks/q1.md 2>&1); rc=$?
+lead8() { PATH=/home/agent/fake-thread:$PATH env "${P}AGENT=item-8-lead" "${P}ROLE=lead" "${P}PARENT=$A" "${P}SCOPE=main" \
+  "${P}JOB=item-8" "${P}ISSUE=" "$T" "$@"; }
+: > /home/agent/fednet.log
+touch /home/agent/fednet-down
+out=$(lead8 ask-human --file /home/agent/tasks/q1.md 2>&1); rc=$?
+rm /home/agent/fednet-down
+check "ask-human: exit 5 when the post fails" 5 "$rc"
+check "ask-human: the failed post says only to ask again" \
+  "fleet: fednet client post failed (exit status: 4); the question is recorded, run ask-human again to post it" "$out"
+check "ask-human: the failed post starts no agent" agent_not_found "$(agent_field "$A" agent_status)"
+out=$(lead8 ask-human --file /home/agent/tasks/q1.md 2>&1); rc=$?
 check "ask-human: exit 0 from the lead" 0 "$rc"
 [ "$rc" = 0 ] || printf '%s\n' "$out"
 has "ask-human: delivered to the home thread's agent" "$out" "delivered to $A"
+check "ask-human: fleet posted the question to the home thread, the second attempt once" \
+  "client post -socket /home/agent/fednet.sock -thread $K -- Which month should the import cover? 0xQ1|client post -socket /home/agent/fednet.sock -thread $K -- Which month should the import cover? 0xQ1|" \
+  "$(tr '\n' '|' < /home/agent/fednet.log)"
 # The thread's agent had ended, so one is started with the question as
 # its first message; the prompt's head is above the fake's 20 lines.
 has "ask-human: question on the thread agent's screen" "$(screen "$A")" "Question from item-8-lead" "0xQ1"
 check "ask-human: pending in the ledger" "item-8|$K|item-8-lead|0|pending " \
   "$(tledger "SELECT job, thread, asked_by, approval, state FROM questions")"
 settled "$A"
-out=$(PATH=/home/agent/fake-thread:$PATH env "${P}AGENT=item-8-lead" "${P}ROLE=lead" "${P}PARENT=$A" "${P}SCOPE=main" \
-  "${P}JOB=item-8" "${P}ISSUE=" "$T" ask-human --file /home/agent/tasks/q1.md --approval 2>&1); rc=$?
+out=$(lead8 ask-human --file /home/agent/tasks/q1.md 2>&1); rc=$?
+check "ask-human: asking again after a success, exit 0" 0 "$rc"
+check "ask-human: asking again posts nothing more" 2 "$(wc -l < /home/agent/fednet.log)"
+has "ask-human: asking again says nothing was done" "$out" "and delivered to its agent; nothing done"
+
+# The thread agent posts to its thread through fleet: the thread and the
+# socket come from fleet, the text from the file, attachments as -file.
+printf 'Progress: half done. 0xPOST\n' > /home/agent/tasks/post.md
+: > /home/agent/fednet.log
+out=$(thra "$K" TH-5 -- thread post --body-file /home/agent/tasks/post.md --attach /home/agent/tasks/q1.md --attach rel/b.pdf 2>&1); rc=$?
+check "thread post: exit 0, fednet's stdout printed" "0 m-posted" "$rc $out"
+check "thread post: posted to the caller's thread through the scope's socket, attachments passed on" \
+  "client post -socket /home/agent/fednet.sock -thread $K -file /home/agent/tasks/q1.md -file rel/b.pdf -- Progress: half done. 0xPOST||" \
+  "$(tr '\n' '|' < /home/agent/fednet.log)"
+printf '    code 0xINDENT\nmore\n' > /home/agent/tasks/indented.md
+: > /home/agent/fednet.log
+thra "$K" TH-5 -- thread post --body-file /home/agent/tasks/indented.md >/dev/null 2>&1; rc=$?
+check "thread post: an indented first line reaches fednet unchanged" \
+  "0 client post -socket /home/agent/fednet.sock -thread $K --     code 0xINDENT|more||" "$rc $(tr '\n' '|' < /home/agent/fednet.log)"
+touch /home/agent/fednet-down
+out=$(thra "$K" TH-5 -- thread post --body-file /home/agent/tasks/post.md 2>&1); rc=$?
+rm /home/agent/fednet-down
+check "thread post: fednet's exit code and stderr handed back" "4 post: hub unreachable" "$rc $out"
+: > /home/agent/fednet.log
+printf ' \n' > /home/agent/tasks/empty.md
+head -c 102401 /dev/zero | tr '\0' x > /home/agent/tasks/big.md
+for arm in "empty:--body-file /home/agent/tasks/empty.md" "missing:--body-file /home/agent/tasks/none.md" \
+  "over 100 KiB:--body-file /home/agent/tasks/big.md"; do
+  # shellcheck disable=SC2086
+  thra "$K" TH-5 -- thread post ${arm#*:} >/dev/null 2>&1; rc=$?
+  check "thread post: exit 1 with a body file ${arm%%:*}" 1 "$rc"
+done
+lead8 thread post --body-file /home/agent/tasks/post.md >/dev/null 2>&1; rc=$?
+check "thread post: exit 1 from a lead" 1 "$rc"
+cp "/home/agent/.config/$T/main.json" /home/agent/main.json.keep
+echo '{"linear": {"team": "TH"}}' > "/home/agent/.config/$T/main.json"
+out=$(thra "$K" TH-5 -- thread post --body-file /home/agent/tasks/post.md 2>&1); rc=$?
+mv /home/agent/main.json.keep "/home/agent/.config/$T/main.json"
+check "thread post: exit 1 without a socket" 1 "$rc"
+check "thread post: the refusals post nothing" 0 "$(wc -l < /home/agent/fednet.log)"
+out=$(lead8 ask-human --file /home/agent/tasks/q1.md --approval 2>&1); rc=$?
 check "ask-human --approval: exit 1, not supported yet" 1 "$rc"
 has "ask-human --approval: says so" "$out" "approval cards are not supported yet"
 check "ask-human --approval: nothing recorded" "1 " "$(tledger "SELECT count(*) FROM questions")"
