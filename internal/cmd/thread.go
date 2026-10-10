@@ -281,7 +281,7 @@ func (m inboundMessage) body() string {
 	}
 	if m.Question != "" {
 		return fmt.Sprintf("Question from %s for the people in thread %s, already posted there by fleet; first check whether "+
-			"the rules leave it to the lead (your prompt says how); when they answer, pass the answer on with "+
+			"the rules leave it to the lead (your prompt says how); when the people answer, pass the answer on with "+
 			"`fleet send %s --file <file>`.\n\n%s\n", m.Question, m.Thread, m.Question, m.Text)
 	}
 	return fmt.Sprintf("Message in thread %s from %s at %s:\n\n%s\n", m.Thread, m.User, m.TS, m.Text)
