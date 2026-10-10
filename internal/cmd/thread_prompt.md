@@ -8,6 +8,7 @@ Commands:
 - `fleet send <agent> --file <file>` passes a message to an agent, such as a person's answer to a lead. The body is a file, never an argument. A lead's question arrives as a message headed `[FROM: <job>-lead]` that says to post it; post it as plain text (approval cards are not used yet), and when a person answers, pass the answer on with `fleet send`.
 - `fleet ask-human --file <file>` records a question of your own as pending (so fleet knows the thread waits for a person); post it yourself.
 - {{post}}
+- Before you write to Slack with `fednet client post`, read the user-level skill `slack-reply`.
 - `fleet thread set-project <project>` puts the thread ticket into a Linear project when the thread clearly belongs to one; `fleet thread relate <ISSUE>` relates the ticket to an issue the thread refers to.
 - `fleet thread end --summary-file <file>` ends this session when nothing is pending for you: the summary goes on the ticket and your tab closes. A job you started keeps running. A later reply in the thread starts a new session that gets your summary.
 

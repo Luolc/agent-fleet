@@ -16,8 +16,10 @@ import (
 )
 
 // threadHerdr is a fake herdr for the thread arms. It takes the
-// `--session` the hook adds (recorded in <dir>/session), lists a
-// `threads` workspace once <dir>/threads-workspace exists, says an agent
+// `--session` the hook adds (recorded in <dir>/session), says the server
+// is not running while <dir>/session-down exists, lists a `threads`
+// workspace once <dir>/threads-workspace exists (made by `workspace
+// create`) with a `shell` tab unless <dir>/no-shell exists, says an agent
 // exists when <dir>/has-<name> exists, and lets a start run to the end.
 const threadHerdr = `#!/bin/sh
 dir="$(dirname "$0")/.."
@@ -25,6 +27,11 @@ if [ "$1" = --session ]; then echo "$2" > "$dir/session"; shift 2; fi
 echo "herdr $1 $2" >> "$dir/calls"
 case "$1 $2" in
   "agent list") echo '{"result":{"agents":[]}}' ;;
+  "status server")
+    if [ -e "$dir/session-down" ]; then echo '{"status":"not_running","running":false}'; else echo '{"status":"running","running":true}'; fi ;;
+  "tab list")
+    if [ -e "$dir/no-shell" ]; then echo '{"result":{"tabs":[]}}'; else
+      echo '{"result":{"tabs":[{"label":"shell","tab_id":"t1"},{"label":"c1","tab_id":"t2"}]}}'; fi ;;
   "agent get")
     if [ -e "$dir/has-$3" ]; then
       echo '{"result":{"agent":{"agent_status":"idle","tab_id":"t9","pane_id":"p9"}}}'
@@ -39,6 +46,7 @@ case "$1 $2" in
     fi ;;
   "workspace create")
     printf '%s\n' "$@" > "$dir/workspace-argv"
+    : > "$dir/threads-workspace"
     echo '{"result":{"root_pane":{"workspace_id":"w7","tab_id":"t7","pane_id":"p7"}}}' ;;
   "tab create")
     printf '%s\n' "$@" > "$dir/tab-argv"
@@ -99,13 +107,22 @@ echo "fednet $*" >> "$dir/calls"
 echo m-posted
 `
 
-// threadWorld is a world with the three fakes on PATH, the scope `main`
+// threadSystemctl is a fake systemctl: every call logged; `start` brings
+// the fake herdr's session up.
+const threadSystemctl = `#!/bin/sh
+dir="$(dirname "$0")/.."
+echo "systemctl $*" >> "$dir/calls"
+rm -f "$dir/session-down"
+`
+
+// threadWorld is a world with the four fakes on PATH, the scope `main`
 // configured with a Linear team and a fednet socket, and the checkout of
 // the repo the events' channel names.
 func threadWorld(t *testing.T, atbFailOn string) *world {
 	t.Helper()
 	w := newWorld(t)
-	for name, script := range map[string]string{"herdr": threadHerdr, "atb": threadAtb(atbFailOn), "fednet": threadFednet} {
+	for name, script := range map[string]string{"herdr": threadHerdr, "atb": threadAtb(atbFailOn), "fednet": threadFednet,
+		"systemctl": threadSystemctl} {
 		if err := os.WriteFile(filepath.Join(w.dir, "fake-herdr", name), []byte(script), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -219,6 +236,7 @@ func TestInboxStartsAThreadAgentForANewThreadWithItsTicket(t *testing.T) {
 		t.Fatalf("%+v", out)
 	}
 	want := []string{
+		"herdr status server",
 		"atb linear create --team TH --label thread --title Please import the A table --description-file " +
 			"DESC --json key=set",
 		"atb linear claim TH-5 --agent thread-c0123-1700000000-123 --source " + threadKey +
@@ -226,6 +244,8 @@ func TestInboxStartsAThreadAgentForANewThreadWithItsTicket(t *testing.T) {
 		"herdr workspace list",
 		"herdr workspace create",
 		"herdr tab rename",
+		"herdr pane rename",
+		"herdr tab create",
 		"herdr agent start",
 		"herdr pane rename",
 		"herdr agent read",
@@ -246,19 +266,24 @@ func TestInboxStartsAThreadAgentForANewThreadWithItsTicket(t *testing.T) {
 		t.Errorf("session = %q, want fleet-main", got)
 	}
 	cwd := filepath.Join(w.dir, "home", "dev", "example-dataset")
-	argv := w.file("workspace-argv")
-	for _, want := range []string{"--label\nthreads\n", "--cwd\n" + cwd + "\n", "--env\nFLEET_AGENT=thread-c0123-1700000000-123\n",
+	if got, want := w.file("workspace-argv"), "workspace\ncreate\n--label\nthreads\n--no-focus\n--cwd\n"+
+		filepath.Join(w.dir, "home")+"\n"; got != want {
+		t.Errorf("workspace create argv = %q, want %q", got, want)
+	}
+	argv := w.file("tab-argv")
+	for _, want := range []string{"--workspace\nw7\n--label\nc0123-1700000000-123\n", "--cwd\n" + cwd + "\n", "--env\nFLEET_AGENT=thread-c0123-1700000000-123\n",
 		"--env\nFLEET_ROLE=thread\n", "--env\nFLEET_SCOPE=main\n", "--env\nFLEET_ISSUE=TH-5\n",
 		"--env\nFLEET_THREAD=" + threadKey + "\n"} {
 		if !strings.Contains(argv, want) {
-			t.Errorf("workspace create argv = %q, want %q in it", argv, want)
+			t.Errorf("tab create argv = %q, want %q in it", argv, want)
 		}
 	}
 	prompt := w.file("argv")
 	for _, want := range []string{"[FROM: inbox]\nYou are a thread agent",
 		"which belongs to repo-example-dataset (scope main). You run in " + cwd + ".",
 		"a single-repo job in example-dataset (`fleet job start <job> --repo example-dataset ...`)",
-		"read the `## Fleet` section of ~/dev/<R>/AGENTS.md", "FLEET_ISSUE=TH-5 (your thread ticket, https://linear.example.test/TH-5)",
+		"read the `## Fleet` section of ~/dev/<R>/AGENTS.md",
+		"Before you write to Slack with `fednet client post`, read the user-level skill `slack-reply`.", "FLEET_ISSUE=TH-5 (your thread ticket, https://linear.example.test/TH-5)",
 		"fednet client post -socket /run/fednet.sock -thread " + threadKey, "## Channel context\n\nThe data channel\n",
 		"## The message\n\nMessage in thread " + threadKey + " from U0ABC at 1700000001.000:\n\nPlease import the A table\n"} {
 		if !strings.Contains(prompt, want) {
@@ -293,7 +318,7 @@ func TestInboxStartsAThreadAgentForANewThreadWithItsTicket(t *testing.T) {
 	if out.code != 0 {
 		t.Fatalf("%+v", out)
 	}
-	if got := strings.TrimSpace(w.calls()); got != "herdr agent get\nherdr agent prompt" {
+	if got := strings.TrimSpace(w.calls()); got != "herdr status server\nherdr agent get\nherdr agent prompt" {
 		t.Errorf("calls = %q", got)
 	}
 	argv = w.file("argv")
@@ -326,11 +351,13 @@ func TestInboxReopensAKnownThreadWithItsSummariesWhenTheAgentIsGone(t *testing.T
 		t.Fatalf("%+v", out)
 	}
 	want := []string{
+		"herdr status server",
 		"atb linear claim TH-5 --agent thread-c0123-1700000000-123 --source " + threadKey +
 			" --scope repo-example-dataset: thread " + threadKey + " key=set",
 		"atb linear comment TH-5 --body-file BODY key=set",
 		`atb linear query { issue(id: "TH-5") { comments { nodes { body createdAt } } } } key=set`,
 		"herdr workspace list",
+		"herdr tab list",
 		"herdr tab create",
 		"herdr agent start",
 		"herdr pane rename",
@@ -373,7 +400,7 @@ func TestInboxReopensAKnownThreadWithItsSummariesWhenTheAgentIsGone(t *testing.T
 	if out.code != 0 || !strings.Contains(out.stderr, "gone from herdr") {
 		t.Fatalf("%+v", out)
 	}
-	if got := strings.TrimSpace(w.calls()); !strings.HasPrefix(got, "herdr agent get\natb linear claim") {
+	if got := strings.TrimSpace(w.calls()); !strings.HasPrefix(got, "herdr status server\nherdr agent get\nherdr status server\natb linear claim") {
 		t.Errorf("calls = %q", got)
 	}
 	conn = w.defaultLedger()
@@ -397,8 +424,8 @@ func TestInboxDropsTheMessageAndTellsTheThreadWhenLinearIsUnavailable(t *testing
 		t.Fatalf("%+v", out)
 	}
 	got := strings.Split(strings.TrimSpace(w.calls()), "\n")
-	if len(got) != 2 || !strings.HasPrefix(got[0], "atb linear create") ||
-		got[1] != "fednet client post -socket /run/fednet.sock -thread "+threadKey+" -- Linear is unavailable right now, "+
+	if len(got) != 3 || got[0] != "herdr status server" || !strings.HasPrefix(got[1], "atb linear create") ||
+		got[2] != "fednet client post -socket /run/fednet.sock -thread "+threadKey+" -- Linear is unavailable right now, "+
 			"so no agent was started for this thread; please try again later." {
 		t.Errorf("calls = %q", got)
 	}
@@ -482,8 +509,8 @@ func TestInboxRunsEachChannelKindInItsDirectory(t *testing.T) {
 			t.Fatalf("%s: %+v", c.label, out)
 		}
 		cwd := filepath.Join(w.dir, "home", c.dir)
-		if !strings.Contains(w.file("workspace-argv"), "--cwd\n"+cwd+"\n") {
-			t.Errorf("%s: workspace argv = %q", c.label, w.file("workspace-argv"))
+		if !strings.Contains(w.file("tab-argv"), "--cwd\n"+cwd+"\n") {
+			t.Errorf("%s: tab argv = %q", c.label, w.file("tab-argv"))
 		}
 		prompt := w.file("argv")
 		if !strings.Contains(prompt, c.rules) || !strings.Contains(prompt, "You run in "+cwd+".") {
@@ -534,19 +561,24 @@ func TestInboxKeepsAThreadWhereItsFirstMessagePutIt(t *testing.T) {
 }
 
 func TestInboxTellsTheThreadWhenItsCheckoutIsMissing(t *testing.T) {
-	for _, c := range []struct{ fields, line string }{
-		{`"channel_name":"repo-no-such"`, "The repo no-such is not checked out on this machine ("},
-		{`"channel_name":"x-repo-no-such"`, "The repo of x-repo-no-such is not checked out on this machine ("},
-		{`"trigger":"dm"`, "The repo of x-repo-general is not checked out on this machine ("},
+	for _, c := range []struct{ fields, line, dir string }{
+		{`"channel_name":"repo-no-such"`, "The repo no-such is not checked out on this machine (", "dev/no-such"},
+		{`"channel_name":"x-repo-no-such"`, "The repo of x-repo-no-such is not checked out on this machine (", "x-repo/no-such"},
+		{`"trigger":"dm"`, "The repo of x-repo-general is not checked out on this machine (", "x-repo/general"},
 	} {
+		// With the scope's session down: it is not started for a thread
+		// that gets no agent.
 		w := threadWorld(t, "")
-		out := w.inbox(w.eventIn("m1", "x", "", c.fields))
+		if err := os.WriteFile(filepath.Join(w.dir, "session-down"), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		out := w.run("", []string{"inbox", w.eventIn("m1", "x", "", c.fields)}, linearKey, "XDG_RUNTIME_DIR=/run/user/1000")
 		if out.code != 0 {
 			t.Fatalf("%s: %+v", c.fields, out)
 		}
 		calls := w.calls()
-		if !strings.HasPrefix(calls, "fednet client post -socket /run/fednet.sock -thread "+threadKey+" -- "+c.line) ||
-			strings.Contains(calls, "herdr") || strings.Contains(calls, "atb") {
+		if calls != "fednet client post -socket /run/fednet.sock -thread "+threadKey+" -- "+c.line+
+			filepath.Join(w.dir, "home", c.dir)+"), so no agent was started for this thread.\n" {
 			t.Errorf("%s: calls = %q", c.fields, calls)
 		}
 		if got := inboxRow(w, "m1"); got != "dropped" {
@@ -580,8 +612,8 @@ func TestInboxTakesTheScopeFromThePayload(t *testing.T) {
 	if got := strings.TrimSpace(w.file("session")); got != "fleet-example" {
 		t.Errorf("session = %q", got)
 	}
-	if !strings.Contains(w.file("workspace-argv"), "--env\nFLEET_SCOPE=example\n") {
-		t.Errorf("workspace argv = %q", w.file("workspace-argv"))
+	if !strings.Contains(w.file("tab-argv"), "--env\nFLEET_SCOPE=example\n") {
+		t.Errorf("tab argv = %q", w.file("tab-argv"))
 	}
 	// Its own config (no Linear), its own ledger; main's is untouched.
 	if strings.Contains(w.calls(), "atb") {
@@ -820,7 +852,7 @@ func TestInboxFinishesAStartItsEarlierRunWasKilledIn(t *testing.T) {
 	if out.code != 0 || !strings.Contains(out.stderr, "still starting from an earlier run") {
 		t.Fatalf("retry: %+v", out)
 	}
-	want := "herdr agent get\n" +
+	want := "herdr status server\nherdr agent get\n" +
 		`atb linear query { issue(id: "TH-5") { comments { nodes { body createdAt } } } } key=set` + "\n" +
 		"herdr pane rename\nherdr agent read\nherdr agent get\nherdr agent prompt"
 	if got := strings.TrimSpace(w.calls()); got != want {
@@ -1071,4 +1103,67 @@ func TestThreadEndClosesTheRecordedTabWhenTheAgentIsGone(t *testing.T) {
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+func TestInboxStartsTheScopesSessionWhenItIsNotRunning(t *testing.T) {
+	w := threadWorld(t, "")
+	w.scopeConfig("main", `{}`)
+	if err := os.WriteFile(filepath.Join(w.dir, "session-down"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Without XDG_RUNTIME_DIR systemctl --user cannot work: exit 5 naming
+	// both settings, nothing started, the message kept.
+	out := w.inbox(w.event("m0", "x", ""))
+	if out.code != 5 || !strings.Contains(out.stderr, "Environment=XDG_RUNTIME_DIR=/run/user/<uid>") ||
+		!strings.Contains(out.stderr, "-hook-env XDG_RUNTIME_DIR") || w.calls() != "herdr status server\n" {
+		t.Errorf("no XDG_RUNTIME_DIR: %+v, calls %q", out, w.calls())
+	}
+	if got := inboxRow(w, "m0"); got != "reserved" {
+		t.Errorf("inbox row = %q, want reserved", got)
+	}
+	_ = os.Remove(filepath.Join(w.dir, "calls"))
+	out = w.run("", []string{"inbox", w.event("m1", "x", "")}, linearKey, "XDG_RUNTIME_DIR=/run/user/1000")
+	if out.code != 0 || !strings.Contains(out.stdout, "started the herdr session of scope main (fleet-scope@main.service)") {
+		t.Fatalf("%+v", out)
+	}
+	calls := strings.Split(strings.TrimSpace(w.calls()), "\n")
+	if len(calls) < 4 || strings.Join(calls[:4], "\n") != "herdr status server\nsystemctl --user start fleet-scope@main.service\n"+
+		"herdr status server\nherdr workspace list" {
+		t.Errorf("calls = %q", calls)
+	}
+	// systemd refuses: exit 5 naming the unit, the message kept.
+	w2 := threadWorld(t, "")
+	for name, body := range map[string]string{"session-down": "", "fake-herdr/systemctl": "#!/bin/sh\nexit 1\n"} {
+		if err := os.WriteFile(filepath.Join(w2.dir, name), []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out = w2.run("", []string{"inbox", w2.event("m1", "x", "")}, linearKey, "XDG_RUNTIME_DIR=/run/user/1000")
+	if out.code != 5 || !strings.Contains(out.stderr, "systemctl --user start fleet-scope@main.service failed") {
+		t.Errorf("systemctl fails: %+v", out)
+	}
+	if got := inboxRow(w2, "m1"); got != "reserved" {
+		t.Errorf("inbox row = %q, want reserved", got)
+	}
+}
+
+func TestInboxRestoresTheShellTabOfTheThreadsWorkspace(t *testing.T) {
+	w := threadWorld(t, "")
+	w.scopeConfig("main", `{}`)
+	for _, marker := range []string{"threads-workspace", "no-shell"} {
+		if err := os.WriteFile(filepath.Join(w.dir, marker), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if out := w.inbox(w.event("m1", "x", "")); out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	if got := strings.TrimSpace(w.calls()); !strings.HasPrefix(got, "herdr status server\nherdr workspace list\nherdr tab list\n"+
+		"herdr tab create\nherdr pane rename\nherdr tab create\nherdr agent start") {
+		t.Errorf("calls = %q", got)
+	}
+	// The shell tab is made first; the thread's tab is the last one made.
+	if !strings.Contains(w.file("tab-argv"), "--label\nc0123-1700000000-123\n") {
+		t.Errorf("tab argv = %q", w.file("tab-argv"))
+	}
 }

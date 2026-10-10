@@ -257,6 +257,9 @@ func route(h *herdr.Herdr, conn *sql.DB, scope string, cfg *config.Scope, msg in
 		return 0, false, err
 	}
 	if name != "" {
+		if err := ensureSession(h, scope); err != nil {
+			return 0, false, err
+		}
 		present, err := herdrHas(h, name)
 		if err != nil {
 			return 0, false, err
@@ -290,6 +293,10 @@ func startThread(h *herdr.Herdr, conn *sql.DB, scope string, cfg *config.Scope, 
 	}
 	if info, err := os.Stat(s.cwd); err != nil || !info.IsDir() {
 		return exit.Ok, true, s.notHere()
+	}
+	// The session is started only for a thread that gets an agent.
+	if err := ensureSession(h, scope); err != nil {
+		return 0, false, err
 	}
 	if err := s.reserve(); err != nil {
 		return 0, false, err
