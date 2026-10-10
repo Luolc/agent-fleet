@@ -23,7 +23,7 @@ func TestTheRulesKnowTheOwnTrustDialogAndTheScreensNeverPressed(t *testing.T) {
 		"trust, another directory": {trust, "/w/y", unknownScreen},
 		"command confirmation":     {bashPrompt, "/w/x", unknownScreen},
 		"usage limit":              {limitMenu, "/w/x", handsOffScreen},
-		"model switch":             {rule + "\n Opus is overloaded\n ❯ 1. Switch to Sonnet\n   2. Keep current model\n", "/w/x", handsOffScreen},
+		"model switch":             {rule + "\n The model is overloaded\n ❯ 1. Switch to a smaller model\n   2. Keep current model\n", "/w/x", handsOffScreen},
 		// The transcript above the dialog does not decide.
 		"limit in the transcript": {"⏺ we hit a rate limit yesterday\n" + bashPrompt, "/w/x", unknownScreen},
 	} {
