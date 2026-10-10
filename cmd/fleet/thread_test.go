@@ -729,6 +729,96 @@ func TestThreadEndRefusalsAndAtbFailureChangeNothing(t *testing.T) {
 	}
 }
 
+// exec runs statements on the ledger of the scope `main`.
+func (w *world) exec(stmts ...string) {
+	w.t.Helper()
+	conn := w.defaultLedger()
+	defer conn.Close()
+	for _, stmt := range stmts {
+		if _, err := conn.Exec(stmt); err != nil {
+			w.t.Fatal(err)
+		}
+	}
+}
+
+func TestThreadEndIsRefusedWhileTheThreadWaitsUnlessAskedToEnd(t *testing.T) {
+	w := threadWorld(t, "")
+	if out := w.inbox(w.event("m1", "first", "")); out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	if err := os.WriteFile(filepath.Join(w.dir, "has-thread-c0123-1700000000-123"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	summary := task(w, "summary.md", "Asked which table first.\n")
+	refused := func(label string, wants []string, extra ...string) {
+		t.Helper()
+		_ = os.Remove(filepath.Join(w.dir, "calls"))
+		out := w.asThreadAgent("TH-5", append([]string{"thread", "end", "--summary-file", summary}, extra...)...)
+		if out.code != 1 {
+			t.Fatalf("%s: %+v", label, out)
+		}
+		for _, want := range append(wants, "--asked-to-end") {
+			if !strings.Contains(out.stderr, want) {
+				t.Errorf("%s: stderr lacks %q: %q", label, want, out.stderr)
+			}
+		}
+		if got := w.calls(); got != "" {
+			t.Errorf("%s: calls = %q, want none", label, got)
+		}
+		if got := stepsOf(w); got != "" {
+			t.Errorf("%s: steps = %q, want none", label, got)
+		}
+		if got := threadAgentRow(w); got != "TH-5 active" {
+			t.Errorf("%s: row = %q, want active", label, got)
+		}
+	}
+	w.exec("INSERT INTO questions (job, thread, asked_by, text, state, asked_at) VALUES ('', '" + threadKey +
+		"', 'thread-c0123-1700000000-123', 'Which table first?\nA or B.', 'pending', 0)")
+	refused("own question", []string{"question from thread-c0123-1700000000-123, pending: Which table first?"})
+	w.exec("UPDATE questions SET state = 'answered'",
+		"INSERT INTO questions (job, thread, asked_by, text, state, asked_at) VALUES ('item-1', '"+threadKey+
+			"', 'item-1-lead', 'Keep the old rows?', 'pending', 0)")
+	refused("a lead's question", []string{"question from item-1-lead, pending: Keep the old rows?"})
+	w.exec("UPDATE questions SET state = 'answered'",
+		"INSERT INTO jobs (job, lead_cwd, home_thread, state, started_at) VALUES ('item-1', '/example', '"+threadKey+"', 'open', 0)")
+	refused("open home job", []string{"job item-1, open, reporting to this thread"})
+	refused("--force is no way out", []string{"job item-1, open"}, "--force")
+
+	out := w.asThreadAgent("TH-5", "thread", "end", "--summary-file", summary, "--asked-to-end")
+	if out.code != 0 {
+		t.Fatalf("--asked-to-end: %+v", out)
+	}
+	if got := stepsOf(w); got != "comment release footer end-row" {
+		t.Errorf("steps = %q", got)
+	}
+	if got := threadAgentRow(w); got != "TH-5 ended" {
+		t.Errorf("row = %q", got)
+	}
+}
+
+func TestThreadEndGoesAheadWhenNothingInTheThreadWaits(t *testing.T) {
+	w := threadWorld(t, "")
+	if out := w.inbox(w.event("m1", "first", "")); out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	if err := os.WriteFile(filepath.Join(w.dir, "has-thread-c0123-1700000000-123"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Answered, ended, or another thread's: none of these waits on this one.
+	w.exec("INSERT INTO questions (job, thread, asked_by, text, state, asked_at) VALUES ('', '"+threadKey+
+		"', 'thread-c0123-1700000000-123', 'Which table first?', 'answered', 0)",
+		"INSERT INTO questions (job, thread, asked_by, text, state, asked_at) VALUES ('item-2', 'C0999/1.1', 'item-2-lead', 'Elsewhere?', 'pending', 0)",
+		"INSERT INTO jobs (job, lead_cwd, home_thread, state, outcome, started_at) VALUES ('item-1', '/example', '"+threadKey+"', 'ended', 'done', 0)",
+		"INSERT INTO jobs (job, lead_cwd, home_thread, state, started_at) VALUES ('item-2', '/example', 'C0999/1.1', 'open', 0)")
+	out := w.asThreadAgent("TH-5", "thread", "end", "--summary-file", task(w, "summary.md", "Done.\n"))
+	if out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	if got := threadAgentRow(w); got != "TH-5 ended" {
+		t.Errorf("row = %q", got)
+	}
+}
+
 func TestThreadSetProjectAndRelateActOnTheCallersTicket(t *testing.T) {
 	w := threadWorld(t, "")
 	out := w.asThreadAgent("TH-5", "thread", "set-project", "Example project")

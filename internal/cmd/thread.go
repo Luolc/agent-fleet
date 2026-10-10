@@ -63,8 +63,12 @@ const (
 		"or times out, or the settings or the database fail."
 	ThreadEndAbout     = "End this session of your thread: summary on the ticket, ticket released, a closing line in the thread, tab closed (thread agents only)"
 	ThreadEndLongAbout = "End this session of your thread: summary on the ticket, ticket released, a closing line in the thread, tab closed (thread agents only).\n\n" +
-		"Call it from your own pane when nothing is pending for you; a job you started keeps " +
-		"running. --summary-file is required and must not be empty. With a thread ticket " +
+		"Call it from your own pane once the conversation is over. While the thread waits (a " +
+		"question in it pending, yours or a lead's, or a job whose home thread it is still " +
+		"open) it is refused, naming each: the answer and the lead's messages reach the live " +
+		"session, an idle one costs nothing, and a new one starts cold. --asked-to-end ends " +
+		"it anyway; use it only when the people in the thread asked you to end. A job you " +
+		"started keeps running. --summary-file is required and must not be empty. With a thread ticket " +
 		"(FLEET_ISSUE), first the summary is written to it as a comment headed `Session <n> " +
 		"ended` (`atb linear comment`), then the ticket is released as done (`atb linear " +
 		"release`); a later message in the thread starts a new session that gets every such " +
@@ -82,8 +86,8 @@ const (
 		"to finish it by hand, a closing line that fails is skipped and said so, and the " +
 		"local cleanup (row, tab) is done anyway.\n\n" +
 		"Exit: 0 when the session ended (you will not see it: the tab closes); 1 when the " +
-		"caller is not a thread agent started by `fleet inbox` (FLEET_THREAD), or the summary " +
-		"file cannot be read or is empty; 5 when an atb step or the closing line fails without " +
+		"caller is not a thread agent started by `fleet inbox` (FLEET_THREAD), the summary " +
+		"file cannot be read or is empty, or the thread still waits without --asked-to-end; 5 when an atb step or the closing line fails without " +
 		"--force (the steps before it stay recorded), or herdr or the database fails."
 	ThreadSetProjectAbout     = "Put your thread ticket into a Linear project (thread agents only)"
 	ThreadSetProjectLongAbout = "Put your thread ticket into a Linear project (thread agents only).\n\n" +
@@ -829,6 +833,9 @@ type ThreadEndArgs struct {
 	// Force finishes the local cleanup even when a Linear step keeps
 	// failing; the steps not done are printed.
 	Force bool
+	// AskedToEnd ends the session even while the thread waits on a
+	// person or a job: only when the people in the thread asked for it.
+	AskedToEnd bool
 }
 
 // threadCaller is the caller as a thread agent started by `fleet inbox`;
@@ -877,6 +884,11 @@ func ThreadEnd(h *herdr.Herdr, args ThreadEndArgs) (exit.Code, error) {
 	e, err := newThreadEnding(conn, me, args.Force)
 	if err != nil {
 		return 0, err
+	}
+	if !args.AskedToEnd {
+		if err := stillWaiting(conn, e.thread); err != nil {
+			return 0, err
+		}
 	}
 	if err := e.linearSteps(me, string(summary)); err != nil {
 		return 0, err
@@ -934,6 +946,40 @@ func newThreadEnding(conn *sql.DB, me *identity.Identity, force bool) (*threadEn
 		e.footer = sessionEndedLine(row.Ticket, row.TicketURL)
 	}
 	return e, nil
+}
+
+// stillWaiting refuses an ending while the thread waits: a question in
+// it is pending (the thread agent's own or a lead's), or a job whose home
+// thread it is is open. The answer and the lead's messages reach the
+// session that is live, so ending it only makes the next one start cold.
+func stillWaiting(conn *sql.DB, thread string) error {
+	rows, err := conn.Query("SELECT 0, id, 'question from ' || asked_by || ', pending: ', text FROM questions "+
+		"WHERE thread = ?1 AND state = 'pending' "+
+		"UNION ALL SELECT 1, id, 'job ' || job || ', open, reporting to this thread', '' FROM jobs "+
+		"WHERE home_thread = ?1 AND state = 'open' ORDER BY 1, 2", thread)
+	if err != nil {
+		return exit.Database(err)
+	}
+	defer rows.Close()
+	var waits []string
+	for rows.Next() {
+		var kind, id int64
+		var what, text string
+		if err := rows.Scan(&kind, &id, &what, &text); err != nil {
+			return exit.Database(err)
+		}
+		waits = append(waits, what+WorkOrderTitle(text))
+	}
+	if err := rows.Err(); err != nil {
+		return exit.Database(err)
+	}
+	if len(waits) == 0 {
+		return nil
+	}
+	return exit.Refusedf("thread %s still waits, so this session stays:\n  - %s\n"+
+		"A person's answer and the lead's messages reach you in this session; staying idle costs nothing. "+
+		"End anyway with --asked-to-end only when the people in the thread asked you to end.",
+		thread, strings.Join(waits, "\n  - "))
 }
 
 // sessionEndedLine is the closing line: `会话已结束 · <ticket>`, the ticket
