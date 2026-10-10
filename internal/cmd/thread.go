@@ -507,7 +507,7 @@ func summaries(ticket string) ([]string, error) {
 // without asking.
 func (s *threadStart) rules() string {
 	return s.jobKind() + " Work you find while answering here (a fix you diagnosed, a follow-up a job's report " +
-		"names) is asked for when it serves what the people asked: start the job and say so in the thread; do not " +
+		"names) is asked for when it serves what the people asked in this thread: start the job and say so in the thread; do not " +
 		"ask whether to start it. Money, machines, risk controls and a release still need a person's yes."
 }
 
