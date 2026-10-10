@@ -76,7 +76,20 @@ transcript+=(" Welcome to fake Claude Code ($(pwd))")
 #   unknown-screen a screen the tool does not know; waits forever
 #   gateway-full   exits at once with a gateway's refusal, as when the
 #                  machine is at its session limit
+#   exit-once      removed, then exits at once as a PATH shim does while an
+#                  update has removed the real claude; the next start works
+#   slow-secs      sleeps that many seconds before anything else: alive in
+#                  the pane, but past herdr's start timeout
+# Every start appends a line to ~/.fake-claude/starts-<pane id>.
 fake=$HOME/.fake-claude
+mkdir -p "$fake"
+echo start >> "$fake/starts-${HERDR_PANE_ID:-$$}"
+if [ -e "$fake/exit-once" ]; then
+  rm -f "$fake/exit-once"
+  echo "claude (example shim): no claude in PATH besides this shim; not starting claude" >&2
+  exit 3
+fi
+[ -e "$fake/slow-secs" ] && sleep "$(cat "$fake/slow-secs")"
 if [ -e "$fake/gateway-full" ]; then
   echo "gateway: machine example-1 is at its limit of 2 sessions" >&2
   exit 1

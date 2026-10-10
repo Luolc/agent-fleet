@@ -9,7 +9,8 @@ tledger() { sqlite3 "$TDB" "$1" | tr '\n' ' '; }
 mkdir -p /home/agent/.config/$T /home/agent/fake-thread /home/agent/events
 echo '{"linear": {"team": "TH"}, "fednet": {"socket": "/home/agent/fednet.sock"}}' > "/home/agent/.config/$T/main.json"
 # The fake atb fails every call while /home/agent/linear-down exists;
-# `create` prints TH-5, `query` prints one earlier summary.
+# `create` prints TH-5, `query` prints the team and project of an issue
+# when asked for them, else one earlier summary.
 cat > /home/agent/fake-thread/atb <<'ATB'
 #!/bin/sh
 echo "$*" >> /home/agent/atb.log
@@ -24,7 +25,11 @@ fi
 case "$2" in
   create) echo '{"identifier":"TH-5","url":"https://linear.example.test/TH-5"}' ;;
   comment) cp "$5" "/home/agent/comment-$3.md" ;;
-  query) printf '%s\n' '{"issue":{"comments":{"nodes":[{"body":"Session 1 ended\n\nSummary 0xSUM1","createdAt":"2026-10-09T02:00:00Z"}]}}}' ;;
+  query)
+    case "$3" in
+      *"team { key }"*) printf '%s\n' '{"issue":{"team":{"key":"TH"},"project":{"name":"Example project"}}}' ;;
+      *) printf '%s\n' '{"issue":{"comments":{"nodes":[{"body":"Session 1 ended\n\nSummary 0xSUM1","createdAt":"2026-10-09T02:00:00Z"}]}}}' ;;
+    esac ;;
 esac
 ATB
 # The fake fednet fails (exit 4, one line on stderr) while
@@ -537,6 +542,35 @@ check "job end --force: the job's directory removed, the checkout kept" "no yes"
   "$([ -e /home/agent/x-repo/example-init/wire-x ] && echo yes || echo no) $([ -d /home/agent/x-repo/example-init ] && echo yes || echo no)"
 thra "$K" TH-5 -- job end item-9 --force >/dev/null 2>&1; rc=$?
 check "job end --force of the repo job: exit 0" 0 "$rc"
+
+# Ending a job gives back fleet's claim on the parent issue without closing
+# it, so a later job takes the same parent; --close-parent closes it.
+printf 'Did part of it. 0xREPORTP\n' > /home/agent/tasks/report-par.md
+parjob() { thra "$X" "" -- job start "$1" --parent-issue EX-20 --task-file "$(task "$1" "part of EX-20 0x$1")" 2>&1; }
+parend() { # <job> [flags...]: `job end` as the job's lead
+  local job=$1
+  shift
+  PATH=/home/agent/fake-thread:$PATH env "${P}AGENT=$job-lead" "${P}ROLE=lead" "${P}PARENT=$AX" "${P}SCOPE=main" \
+    "${P}JOB=$job" "${P}ISSUE=TH-5" "$T" job end --report-file /home/agent/tasks/report-par.md "$@" 2>&1
+}
+for job in par-a par-b; do
+  flags=()
+  want="linear release EX-20 --agent par-a-lead --reason job par-a ended"
+  if [ "$job" = par-b ]; then
+    flags=(--close-parent done)
+    want="linear release EX-20 --agent par-b-lead --reason done --done"
+  fi
+  : > /home/agent/atb.log
+  out=$(parjob "$job"); rc=$?
+  check "job start of $job on the parent EX-20: exit 0" 0 "$rc"
+  [ "$rc" = 0 ] || printf '%s\n' "$out"
+  settled "$AX"
+  out=$(parend "$job" "${flags[@]}"); rc=$?
+  check "job end of $job [${flags[*]}]: exit 0" 0 "$rc"
+  [ "$rc" = 0 ] || printf '%s\n' "$out"
+  check "job end of $job [${flags[*]}]: the parent's release" "$want" "$(grep '^linear release EX-20 ' /home/agent/atb.log)"
+  settled "$AX"
+done
 
 # Sessions on demand. The container has no systemd: a fake systemctl starts
 # the server the unit would (`herdr --session fleet-%i server`) in a session

@@ -123,13 +123,91 @@ func CreateTab(h *herdr.Herdr, workspaceID, label, cwd string, id *identity.Iden
 	return placeFrom(result)
 }
 
+// startAttempts bounds the starts of one agent, and startPause is the wait
+// before the second. Each failed start costs herdr's whole start timeout,
+// so two attempts keep a start run from a Bash tool within its 2 minutes.
+const (
+	startAttempts = 2
+	startPause    = 3 * time.Second
+)
+
 // StartAgent starts the agent (Claude Code) as `name` in `paneID`, renames
 // the pane, and gets the agent to its input box: the folder-trust dialog
 // for `cwd`, the directory fleet chose for it, is accepted; any other
 // screen is a failure with exit 3 that carries the screen. A start that
-// herdr reports as failed (the gateway refusing the session ends up here,
-// as a timeout) is exit 5 with the pane's text; it is not retried.
+// herdr reports as failed (an agent that exits at once, as when a gateway
+// refuses the session or an update has removed claude for a moment, ends up
+// here, as a timeout) is exit 5 with the pane's text. A start that failed
+// with no agent left in the pane is made once more in the same pane; an
+// exit 3 screen is not.
 func StartAgent(h *herdr.Herdr, name, paneID, cwd string, model, effort *string) error {
+	start := func() error { return startOnce(h, name, paneID, cwd, model, effort) }
+	return startAgain(h, name, paneID, start, start)
+}
+
+// ResumeAgent is SettleAgent for an agent an earlier run started in
+// `paneID`, with StartAgent's second start (no model or effort, as a
+// thread agent has) when it exits before its input box.
+func ResumeAgent(h *herdr.Herdr, name, paneID, cwd string) error {
+	return startAgain(h, name, paneID,
+		func() error { return SettleAgent(h, name, paneID, cwd) },
+		func() error { return startOnce(h, name, paneID, cwd, nil, nil) })
+}
+
+// startAgain is retryStart on herdr, with a note on stderr before the
+// second start.
+func startAgain(h *herdr.Herdr, name, paneID string, first, again func() error) error {
+	return retryStart(first, again,
+		func() (bool, error) { return paneHasNoAgent(h, paneID) },
+		func(err error, attempt int) {
+			fmt.Fprintf(os.Stderr, "note: %s did not start (attempt %d of %d) and the pane has no agent; "+
+				"starting it again in %v: %v\n", name, attempt, startAttempts, startPause, err)
+			time.Sleep(startPause)
+		},
+	)
+}
+
+// retryStart runs `first`, then `again` until a start succeeds,
+// startAttempts times in all at most. A failure is retried only when it is
+// not an exit 3 screen and `gone` says the agent's process has left the
+// pane, so the pane is a shell again and a new start cannot run beside the
+// old agent; `pause` comes before each retry. The last failure is
+// returned.
+func retryStart(first, again func() error, gone func() (bool, error), pause func(err error, attempt int)) error {
+	start := first
+	for attempt := 1; ; attempt++ {
+		err := start()
+		var failure *exit.Failure
+		if err == nil || attempt == startAttempts || errors.As(err, &failure) && failure.Code == exit.Blocked {
+			return err
+		}
+		empty, goneErr := gone()
+		if goneErr != nil || !empty {
+			return err
+		}
+		pause(err, attempt)
+		start = again
+	}
+}
+
+// paneHasNoAgent is whether herdr sees no agent process in the pane: its
+// `agent` is null once the process has exited, and "claude" while it runs,
+// even before it is ready.
+func paneHasNoAgent(h *herdr.Herdr, paneID string) (bool, error) {
+	pane, err := h.CallOK("pane", "get", paneID)
+	if err != nil {
+		return false, err
+	}
+	inner, ok := herdr.Lookup(pane, "pane").(map[string]any)
+	if !ok {
+		return false, exit.Environmentf("herdr reply has no pane")
+	}
+	return inner["agent"] == nil, nil
+}
+
+// startOnce is one `herdr agent start` and, when it got that far, the
+// settling of the agent.
+func startOnce(h *herdr.Herdr, name, paneID, cwd string, model, effort *string) error {
 	args := []string{"agent", "start", name, "--kind", "claude", "--pane", paneID,
 		"--timeout", startTimeoutMS, "--"}
 	args = append(args, ClaudeArgs(model, effort)...)
@@ -150,8 +228,8 @@ func StartAgent(h *herdr.Herdr, name, paneID, cwd string, model, effort *string)
 }
 
 // SettleAgent renames the pane after the started agent `name` and gets it
-// to its input box, as StartAgent does after the start; also what a retry
-// of an interrupted start runs. `cwd` is the agent's directory, the only
+// to its input box, as StartAgent does after the start; also what
+// ResumeAgent runs first. `cwd` is the agent's directory, the only
 // one whose trust dialog is accepted.
 func SettleAgent(h *herdr.Herdr, name, paneID, cwd string) error {
 	if _, err := h.CallOK("pane", "rename", paneID, name); err != nil {

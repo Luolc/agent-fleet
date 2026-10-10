@@ -136,6 +136,50 @@ func TestReadyNeedsTheInputBoxAndHerdrOutOfBlocked(t *testing.T) {
 	}
 }
 
+func TestAStartIsMadeOnceMoreOnlyWhenItsAgentLeftThePane(t *testing.T) {
+	// run plays the attempts' outcomes in order and says whether the pane
+	// is left without an agent; it returns the attempts made and the error.
+	run := func(outcomes []error, gone bool) (int, error) {
+		starts, firsts, pauses := 0, 0, 0
+		start := func() error {
+			starts++
+			return outcomes[min(starts, len(outcomes))-1]
+		}
+		err := retryStart(
+			func() error { firsts++; return start() },
+			start,
+			func() (bool, error) { return gone, nil },
+			func(error, int) { pauses++ },
+		)
+		if pauses != starts-1 || firsts != 1 {
+			t.Errorf("%d pauses for %d starts, %d of them first", pauses, starts, firsts)
+		}
+		return starts, err
+	}
+	exited := exit.Environmentf("agent x did not start: herdr: timeout")
+	if starts, err := run([]error{exited, nil}, true); err != nil || starts != 2 {
+		t.Errorf("exited, then started: %v after %d starts", err, starts)
+	}
+	if starts, err := run([]error{nil}, true); err != nil || starts != 1 {
+		t.Errorf("started: %v after %d starts", err, starts)
+	}
+	// Never starts: the last failure, after startAttempts.
+	last := exit.Environmentf("the second failure")
+	if starts, err := run([]error{exited, last}, true); err != last || starts != startAttempts {
+		t.Errorf("never starts: %v after %d starts", err, starts)
+	}
+	// The agent is still in the pane (slow, not gone): no second start
+	// beside it.
+	if starts, err := run([]error{exited, nil}, false); err != exited || starts != 1 {
+		t.Errorf("agent still in the pane: %v after %d starts", err, starts)
+	}
+	// A screen fleet must not press is not retried.
+	screen := exit.New(exit.Blocked, "x is not ready at its input box")
+	if starts, err := run([]error{screen, nil}, true); code(err) != exit.Blocked || starts != 1 {
+		t.Errorf("exit 3 screen: %v after %d starts", err, starts)
+	}
+}
+
 func TestInputBoxIsRecognisedAndMenusAreNot(t *testing.T) {
 	rule := strings.Repeat("─", 40)
 	idle := " Welcome\n\n" + rule + "\n❯ \n" + rule + "\n  ? for shortcuts\n"

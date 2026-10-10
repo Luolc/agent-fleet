@@ -304,18 +304,19 @@ echo "$*" >> /home/agent/atb.log
 [ "$2 $3" = "$(cat /home/agent/atb-fail 2>/dev/null)" ] && { echo "error: refused: no holder" >&2; exit 4; }
 exit 0
 ATB
+# The job is abandoned and so is its parent (--close-parent abandoned).
 # First the parent's release fails: exit 5, nothing changed but the steps
 # done, which the retry does not repeat (the fake then refuses the work
 # order's release, as atb does for an issue nobody holds). The failing
 # step is read from a file: the runner's allow-list passes no variable.
 echo "release QT-10" > /home/agent/atb-fail
-out=$(PATH=/home/agent/fake-atb:$PATH ISSUE=QT-12 as wire-lead lead thread-1 wire -- job end --report-file /home/agent/tasks/wire.md --abandon 2>&1); rc=$?
+out=$(PATH=/home/agent/fake-atb:$PATH ISSUE=QT-12 as wire-lead lead thread-1 wire -- job end --report-file /home/agent/tasks/wire.md --abandon --close-parent abandoned 2>&1); rc=$?
 check "job end cross-repo: exit 5 when the parent's release fails" 5 "$rc"
 has "job end cross-repo: names the failed step" "$out" "atb linear release QT-10 failed"
 check "job end cross-repo: job and lead still live, workspace kept" "open active 1" \
   "$(ledger "SELECT state FROM jobs WHERE job = 'wire'")$(ledger "SELECT state FROM agents WHERE name = 'wire-lead'")$("${S[@]}" workspace list | jq '[.result.workspaces[] | select(.label == "wire")] | length')"
 echo "release QT-12" > /home/agent/atb-fail
-out=$(PATH=/home/agent/fake-atb:$PATH ISSUE=QT-12 as wire-lead lead thread-1 wire -- job end --report-file /home/agent/tasks/wire.md --abandon 2>&1); rc=$?
+out=$(PATH=/home/agent/fake-atb:$PATH ISSUE=QT-12 as wire-lead lead thread-1 wire -- job end --report-file /home/agent/tasks/wire.md --abandon --close-parent abandoned 2>&1); rc=$?
 check "job end cross-repo: exit 0 on the retry" 0 "$rc"
 [ "$rc" = 0 ] || printf '%s\n' "$out"
 check "job end cross-repo: report to the work order, released; conclusion to the parent, released once each, the retry only releasing the parent" \
@@ -404,11 +405,41 @@ check "job end --force: half-made job cleaned up, exit 0" 0 "$rc"
 check "job end --force: half-made lead's row and job ended" "ended ended " \
   "$(ledger "SELECT state FROM agents WHERE name = 'item-2-lead'")$(ledger "SELECT state FROM jobs WHERE job = 'item-2'")"
 
-# A gateway that refuses the session is a failed start: exit 5, no retry.
+starts() { cat "$fake/starts-$(ledger "SELECT pane_id FROM agents WHERE name = '$1'" | tr -d ' ')" 2>/dev/null | wc -l; }
+# A claude that exits at once (a PATH shim while an update has removed the
+# real one) leaves the pane a shell again: the start is made once more in
+# the same pane, and the agent gets its task.
+touch "$fake/exit-once"
+out=$(thr job start item-10 --task-file "$(task item-10 'started on the second try')" 2>&1); rc=$?
+rm -f "$fake/exit-once"
+check "job start: exit 0 when claude exits at once on the first start only" 0 "$rc"
+has "job start: the second start is announced" "$out" "item-10-lead did not start (attempt 1 of 2)"
+check "job start: two starts, in one pane, one live row" "2 1 active" \
+  "$(starts item-10-lead) $("${S[@]}" pane list | jq --arg w "$(agent_field item-10-lead workspace_id)" '[.result.panes[] | select(.workspace_id == $w)] | length') $(ledger "SELECT state FROM agents WHERE name = 'item-10-lead'" | tr -d ' ')"
+has "job start: the lead got its task after the second start" "$(received item-10-lead)" "started on the second try"
+thr job end item-10 --force >/dev/null 2>&1; rc=$?
+check "job end --force: after a second start, exit 0" 0 "$rc"
+
+# A claude that is alive but slow, its screen still blank, is not started
+# again beside itself. herdr may call it started (the process is there) and
+# the blank screen is then exit 3, or time out (exit 5); either way, one
+# start.
+echo 40 > "$fake/slow-secs"
+out=$(thr job start item-11 --task-file "$(task item-11 'never delivered')" 2>&1); rc=$?
+rm "$fake/slow-secs"
+check "job start: exit 3 or 5 when claude is still starting" yes "$(case $rc in 3|5) echo yes ;; *) echo "no ($rc)" ;; esac)"
+check "job start: a slow claude is started once" 1 "$(starts item-11-lead)"
+lacks "job start: no second start beside a slow claude" "$out" "attempt 1 of 2"
+thr job end item-11 --force >/dev/null 2>&1; rc=$?
+check "job end --force: after a slow start, exit 0" 0 "$rc"
+
+# A gateway that refuses the session every time is a failed start: one
+# more start, then exit 5 with the refusal.
 touch "$fake/gateway-full"
 out=$(thr job start item-3 --task-file "$(task item-3 'never delivered')" 2>&1); rc=$?
 rm "$fake/gateway-full"
 check "job start: exit 5 when the gateway refuses the session" 5 "$rc"
+check "job start: a refused start is made twice, then given up" 2 "$(starts item-3-lead)"
 has "job start: gateway refusal printed with the cleanup command" "$out" \
   "machine example-1 is at its limit" "$T job end item-3 --force"
 thr job end item-3 --force >/dev/null 2>&1; rc=$?
