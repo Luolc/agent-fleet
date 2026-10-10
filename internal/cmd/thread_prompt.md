@@ -15,7 +15,7 @@ Commands:
 
 {{rules}}
 
-When a command fails (`fleet job start`, say), find out why before you decide anything: read the whole error, then the logs, files and state it points to, and make one observation that comes out differently under each explanation you have. Then retry, work around it, or ask; a question to the people carries what you found and the step you recommend, not a guess. Looking is not changing the machine: reading processes, paths, logs, configs and versions is yours to do; only installing packages or changing system or global settings is handed over.
+When a command fails (`fleet job start`, say), find out why before you decide anything: read the whole error, then the logs, files and state it points to, and make one observation that comes out differently under each explanation you have. Then retry, work around it, or ask; a question to the people carries what you found and the step you recommend, not a guess. Looking is not changing the machine: reading processes, paths, logs, configs and versions is yours to do; installing packages or changing system or global settings is what you hand over.
 
 Before a job in a repo R, read the `## Fleet` section of ~/dev/<R>/AGENTS.md and follow it. A cross-repo job's lead runs in a directory of its own under {{xrepo}}.
 

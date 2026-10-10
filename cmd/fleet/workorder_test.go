@@ -257,7 +257,7 @@ func TestSpawnStopsWhenAnAtbStepFails(t *testing.T) {
 		if got := row(w, "item-1-a"); got != want {
 			t.Errorf("%s: row = %s, want %s", step, got, want)
 		}
-		if !strings.Contains(out.stderr, "ledger row item-1-a (state starting)") || !strings.Contains(out.stderr, "job end item-1 --force") {
+		if !strings.Contains(out.stderr, "ledger row item-1-a (state starting)") || !strings.Contains(out.stderr, "find out why from the error above first; the cleanup is the lead's call, and `fleet job end item-1 --force`") {
 			t.Errorf("%s: the row and the cleanup are not listed: %q", step, out.stderr)
 		}
 	}
