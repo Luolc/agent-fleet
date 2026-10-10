@@ -324,8 +324,10 @@ const t0 int64 = 1_800_000_000
 // watchThreadWorld is a watch world with a fednet socket configured, a fake
 // fednet and a fake atb next to the fake herdr. The fake fednet logs its
 // argv to <dir>/fednet.log; `read-thread <key>` answers one message whose
-// ts is in <dir>/threads/<key with / as _>, and `post` prints a msg_id.
-// The fake atb logs its argv to <dir>/atb.log.
+// ts is in <dir>/threads/<key with / as _> (exit 1 without one), and
+// `post` prints a msg_id; while <dir>/fednet-down exists it exits 4. The
+// fake atb logs its argv to <dir>/atb.log, and fails while <dir>/atb-down
+// exists.
 func watchThreadWorld(t *testing.T) *watchWorld {
 	t.Helper()
 	w := newWatchWorld(t)
@@ -333,6 +335,7 @@ func watchThreadWorld(t *testing.T) *watchWorld {
 	fednet := `#!/bin/sh
 dir='` + w.dir + `'
 printf '%s\n' "$*" >> "$dir/fednet.log"
+[ -e "$dir/fednet-down" ] && { echo "hub unreachable" >&2; exit 4; }
 case "$2" in
   read-thread)
     for last; do :; done
@@ -345,6 +348,8 @@ esac
 `
 	atb := `#!/bin/sh
 printf '%s\n' "$*" >> '` + w.dir + `/atb.log'
+[ -e '` + w.dir + `/atb-down' ] && exit 1
+exit 0
 `
 	config := filepath.Join(w.dir, "home", ".config", "fleet")
 	for path, body := range map[string]string{filepath.Join(fake, "fednet"): fednet, filepath.Join(fake, "atb"): atb,
@@ -644,13 +649,67 @@ func TestWatchEndsTheSessionOfAThreadAgentGoneFromHerdr(t *testing.T) {
 	}
 }
 
-func TestWatchDoesNothingWhenItCannotReadAThread(t *testing.T) {
+func TestWatchSkipsAThreadFednetCannotGiveAndStopsWhenFednetIsDown(t *testing.T) {
 	w := watchThreadWorld(t)
-	w.exec("INSERT INTO agents (name, role, thread, pane_id, state, started_at) VALUES ('thread-c5', 'thread', 'C5/5.0', 'p5', 'active', 0)")
+	// C5's session ended with its question pending, and fednet has no C5.
+	w.exec("INSERT INTO agents (name, role, thread, pane_id, state, started_at) VALUES ('thread-c5', 'thread', 'C5/5.0', 'p5', 'ended', 0)",
+		"INSERT INTO questions (job, thread, asked_by, text, state, asked_at) VALUES ('', 'C5/5.0', 'thread-c5', 'Q?', 'pending', 0)")
+	w.insert(watchRow{name: "n-lead", role: "lead", job: "n", parent: "thread-1"})
 	w.insert(watchRow{name: "n-w", role: "worker", job: "n", parent: "n-lead"})
+	w.herdrList("n-lead idle 1")
+	w.screen("n-lead", claude("⏺ Waiting", "1s", "2hr 59m"))
+
+	// fednet unreachable: nothing done.
+	if err := os.WriteFile(filepath.Join(w.dir, "fednet-down"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	out := w.watchAt(time.Minute, 5)
 	if !strings.Contains(out.stderr, "fednet client read-thread") || len(w.prompts()) != 0 || w.suspects() != "" {
 		t.Errorf("%+v %q %q", out, w.prompts(), w.suspects())
+	}
+	// fednet answers, but not for C5: the thread is skipped, the rest runs.
+	if err := os.Remove(filepath.Join(w.dir, "fednet-down")); err != nil {
+		t.Fatal(err)
+	}
+	out = w.watchAt(2*time.Minute, 5)
+	if !strings.Contains(out.stderr, "thread C5/5.0 skipped: fednet client read-thread C5/5.0 failed (exit status: 1): no thread C5/5.0") {
+		t.Errorf("%+v", out)
+	}
+	if prompts := w.prompts(); len(prompts) != 1 || prompts[0][0] != "n-lead" || w.suspects() != "n-w" {
+		t.Errorf("%q %q", prompts, w.suspects())
+	}
+}
+
+func TestWatchPostsNothingWhenItCannotStartAThreadAgent(t *testing.T) {
+	w := watchThreadWorld(t)
+	checkout := filepath.Join(w.dir, "home", "dev", "r")
+	w.exec("INSERT INTO threads (thread, slug, mapping, cwd, created_at) VALUES ('C6/6.0', 'c6-6-0', 'repo-r', '"+checkout+"', 0)",
+		"INSERT INTO jobs (job, lead_cwd, home_thread, state, started_at) VALUES ('o', '/c', 'C6/6.0', 'open', 0)")
+	if err := os.WriteFile(filepath.Join(w.dir, "home", ".config", "fleet", scope+".json"),
+		[]byte(`{"linear": {"team": "EX"}, "fednet": {"socket": "/run/example/fednet.sock"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	w.lastMessage("C6/6.0", t0)
+	// No checkout on this machine, then Linear down: no agent, no post.
+	out := w.watchAt(30*time.Minute, 5)
+	if !strings.Contains(out.stderr, "is not checked out at") {
+		t.Errorf("%+v", out)
+	}
+	if err := os.MkdirAll(checkout, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(w.dir, "atb-down"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out = w.watchAt(31*time.Minute, 5)
+	if !strings.Contains(out.stderr, "Linear is unavailable") || !strings.Contains(w.log("atb.log"), "linear create --team EX") {
+		t.Errorf("%+v %s", out, w.log("atb.log"))
+	}
+	if got := w.log("fednet.log"); strings.Contains(got, "client post") {
+		t.Errorf("posted: %s", got)
+	}
+	if got := w.query("SELECT quiet_asked || ' ' || sessions FROM threads"); got != " 0" {
+		t.Errorf("thread row %q", got)
 	}
 }
 

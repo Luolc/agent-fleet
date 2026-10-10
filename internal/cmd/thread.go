@@ -270,6 +270,12 @@ func (m inboundMessage) channel() string {
 	return channel
 }
 
+// fromFleet is whether the message came from an agent or from watch, not
+// from a person in the thread.
+func (m inboundMessage) fromFleet() bool {
+	return m.Question != "" || m.Watch
+}
+
 // sender is the header name the message is delivered under.
 func (m inboundMessage) sender() string {
 	if m.Watch {
@@ -608,14 +614,14 @@ func (s *threadStart) start() (exit.Code, error) {
 
 // linearUnavailable is what `fleet inbox` does when a Linear step failed:
 // no agent (the reservation taken back), then the thread is told.
-// An agent's question (`Question` set) gets the failure back instead of
-// a post: nobody in the thread asked anything.
+// What an agent or watch sent (`fromFleet`) gets the failure back instead
+// of a post: nobody in the thread asked anything.
 func (s *threadStart) linearUnavailable(cause error) error {
 	fmt.Fprintf(os.Stderr, "fleet: Linear is unavailable, no thread agent started: %v\n", cause)
 	if err := s.unreserve(); err != nil {
 		return err
 	}
-	if s.msg.Question != "" {
+	if s.msg.fromFleet() {
 		return nil
 	}
 	return s.tell("Linear is unavailable right now, so no agent was started for this thread; please try again later.",
@@ -623,14 +629,14 @@ func (s *threadStart) linearUnavailable(cause error) error {
 }
 
 // notHere is what a start does when the thread's directory is not on this
-// machine: nothing is reserved or started, and the thread is told. An
-// agent's question gets an error instead.
+// machine: nothing is reserved or started, and the thread is told. What
+// an agent or watch sent gets an error instead.
 func (s *threadStart) notHere() error {
 	what := "the repo " + strings.TrimPrefix(s.mapping, s.cfg.Channels.RepoPrefix)
 	if strings.HasPrefix(s.mapping, s.cfg.Channels.InitiativePrefix) {
 		what = "the repo of " + s.mapping
 	}
-	if s.msg.Question != "" {
+	if s.msg.fromFleet() {
 		return exit.Environmentf("%s is not checked out at %s on this machine", what, s.cwd)
 	}
 	fmt.Fprintf(os.Stderr, "fleet: no checkout at %s, no thread agent started\n", s.cwd)

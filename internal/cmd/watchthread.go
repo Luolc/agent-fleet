@@ -68,11 +68,16 @@ type watchedThread struct {
 	// first.
 	questions []question
 	jobs      []*watchedJob
+	// unread is why fednet could not give this thread (it answered for
+	// others): its rules are skipped this run.
+	unread error
 }
 
 // readThreads reads every thread watch may act on: one with a live
 // thread agent, an open job reporting to it or a pending question. on is
-// false without a fednet socket: the thread rules are off.
+// false without a fednet socket: the thread rules are off. fednet that
+// cannot be reached or is busy fails the read; one thread fednet answers
+// it cannot give is kept with `unread` set.
 func readThreads(conn *sql.DB, cfg *config.Scope, inHerdr map[string]InHerdr, limits map[string]config.Watch) (
 	threads []*watchedThread, on bool, err error) {
 	if cfg.FednetSocket == "" {
@@ -138,8 +143,9 @@ func readThreads(conn *sql.DB, cfg *config.Scope, inHerdr map[string]InHerdr, li
 			!errors.Is(err, sql.ErrNoRows) {
 			return nil, false, exit.Database(err)
 		}
-		if t.lastTS, t.lastAt, err = fednet.Latest(cfg.FednetSocket, t.key); err != nil {
-			return nil, false, err
+		t.lastTS, t.lastAt, t.unread = fednet.Latest(cfg.FednetSocket, t.key)
+		if t.unread != nil && !errors.Is(t.unread, fednet.ErrThread) {
+			return nil, false, t.unread
 		}
 	}
 	return threads, true, nil
@@ -177,6 +183,10 @@ func (r *watchRun) threads(threads []*watchedThread, all []watched) error {
 	for _, t := range threads {
 		if r.outOfTime() {
 			break
+		}
+		if t.unread != nil {
+			r.failed(fmt.Errorf("thread %s skipped: %w", t.key, t.unread))
+			continue
 		}
 		if err := r.thread(t, all); err != nil {
 			r.failed(fmt.Errorf("thread %s: %w", t.key, err))
@@ -238,10 +248,8 @@ func (r *watchRun) questions(t *watchedThread, all []watched) error {
 		}
 	}
 	if len(expired) > 0 {
-		if err := r.closeQuestions(expired); err != nil {
-			return err
-		}
-		t.questions = left
+		// Asked first: a failed ask leaves the question pending, so the
+		// next run asks again.
 		q := expired[0]
 		if a := t.agent; a != nil && !a.reclaimAt.Valid {
 			why := fmt.Sprintf("your question in thread %s has had no answer for %s (asked at %s), so fleet closed it: %s",
@@ -250,6 +258,10 @@ func (r *watchRun) questions(t *watchedThread, all []watched) error {
 				return err
 			}
 		}
+		if err := r.closeQuestions(expired); err != nil {
+			return err
+		}
+		t.questions = left
 	}
 	for _, j := range slices.Clone(t.jobs) {
 		if err := r.leadQuestion(t, j, all); err != nil {

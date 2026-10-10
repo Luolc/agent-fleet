@@ -8,8 +8,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os/exec"
 	"strconv"
+	"strings"
 
 	"github.com/Luolc/agent-fleet/internal/exit"
 	"github.com/Luolc/agent-fleet/internal/herdr"
@@ -71,18 +73,27 @@ func PostID(socket, thread, text string) (string, error) {
 	return string(bytes.TrimSpace(stdout)), nil
 }
 
+// ErrThread marks a failure of one thread's read: fednet answered, but
+// not with that thread (its exit 1 or 2, a thread it does not have, say),
+// unlike fednet unreachable or busy (exit 4 or 5).
+var ErrThread = errors.New("fednet could not read this thread")
+
 // Latest is the newest message of a thread (`fednet client read-thread
 // -json`, which the hub reads from Slack): its Slack timestamp and the
 // same in whole seconds. A thread with no message, or a reply that is
-// not fednet's, is an environment failure.
+// not fednet's, is an environment failure; one fednet answered with exit
+// 1 or 2 also wraps ErrThread.
 func Latest(socket, thread string) (ts string, secs int64, err error) {
 	const op = "fednet client read-thread"
-	stdout, _, code, err := relay(op, []string{"client", "read-thread", "-socket", socket, "-json", thread})
-	if err == nil && code != 0 {
-		err = exit.Environmentf("%s %s failed (exit status: %d)", op, thread, code)
-	}
-	if err != nil {
+	stdout, stderr, code, err := relay(op, []string{"client", "read-thread", "-socket", socket, "-json", thread})
+	switch {
+	case err != nil:
 		return "", 0, err
+	case code == 1 || code == 2:
+		return "", 0, fmt.Errorf("%s %s failed (exit status: %d): %s: %w", op, thread, code,
+			strings.TrimSpace(string(stderr)), ErrThread)
+	case code != 0:
+		return "", 0, exit.Environmentf("%s %s failed (exit status: %d)", op, thread, code)
 	}
 	var reply struct {
 		Messages []struct {

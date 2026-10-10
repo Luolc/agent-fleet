@@ -45,7 +45,9 @@ const (
 		"needs: the ledger, `herdr agent list`, the visible screen of every live lead and worker, " +
 		"the config files, and, with a fednet socket configured, the newest message of every " +
 		"thread that has a live thread agent, an open job reporting to it or a pending question " +
-		"(`fednet client read-thread`). A failed read is exit 5 with nothing done. Then it acts; " +
+		"(`fednet client read-thread`). A failed read is exit 5 with nothing done, except a " +
+		"thread fednet answers it cannot give (its exit 1 or 2): that thread's rules are skipped, " +
+		"saying so, and the exit is 5. Then it acts; " +
 		"whatever it sends an agent goes through the same path as `fleet send`, headed `[FROM: " +
 		"watch]`, naming the rule and its evidence. It never calls a model and never sends keys.\n\n" +
 		"Jobs: a lead's or worker's status, `state_change_seq` and screen hash (the screen with the " +
