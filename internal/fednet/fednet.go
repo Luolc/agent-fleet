@@ -1,5 +1,6 @@
-// Package fednet runs `fednet client post`: what fleet itself says in a
-// thread, and what a thread agent posts through `fleet thread post`.
+// Package fednet runs `fednet client`: `post` for what fleet itself says
+// in a thread and what a thread agent posts through `fleet thread post`,
+// and `progress` for a thread agent's progress card.
 package fednet
 
 import (
@@ -10,8 +11,8 @@ import (
 	"github.com/Luolc/agent-fleet/internal/herdr"
 )
 
-// argv is `client post -socket <socket> -thread <thread> [-file <f>]... -- <text>`.
-func argv(socket, thread, text string, files []string) []string {
+// postArgv is `client post -socket <socket> -thread <thread> [-file <f>]... -- <text>`.
+func postArgv(socket, thread, text string, files []string) []string {
 	args := []string{"client", "post", "-socket", socket, "-thread", thread}
 	for _, f := range files {
 		args = append(args, "-file", f)
@@ -19,13 +20,42 @@ func argv(socket, thread, text string, files []string) []string {
 	return append(args, "--", text)
 }
 
+// progressArgv is `client progress -socket <socket> -thread <thread>
+// [-done] [-title <title>] [-item <item>]...`: the card is replaced whole
+// each time, so the title and items are all of it; with done they are the
+// closed card's wording, when given.
+func progressArgv(socket, thread, title string, items []string, done bool) []string {
+	args := []string{"client", "progress", "-socket", socket, "-thread", thread}
+	if done {
+		args = append(args, "-done")
+	}
+	if title != "" {
+		args = append(args, "-title", title)
+	}
+	for _, item := range items {
+		args = append(args, "-item", item)
+	}
+	return args
+}
+
 // Post is `fednet client post -socket <socket> -thread <thread> -- <text>`,
 // through herdr's runner (deadline, process group, environment
 // allow-list). A non-zero exit is an environment failure that names the
 // step and fednet's status, never its output.
 func Post(socket, thread, text string) error {
-	op := "fednet client post"
-	_, _, err := herdr.Exec(op, nil, "fednet", argv(socket, thread, text, nil)...)
+	return hidden("fednet client post", postArgv(socket, thread, text, nil))
+}
+
+// Footer is `fednet client post -socket <socket> -thread <thread> -footer
+// -- <text>`: one line of small grey text (a context block) in the
+// thread, its `[text](url)` links kept, what fleet says when a session
+// ends. As Post, fednet's output is hidden.
+func Footer(socket, thread, text string) error {
+	return hidden("fednet client post", []string{"client", "post", "-socket", socket, "-thread", thread, "-footer", "--", text})
+}
+
+func hidden(op string, argv []string) error {
+	_, _, err := herdr.Exec(op, nil, "fednet", argv...)
 	var failure *exit.Failure
 	if errors.As(err, &failure) {
 		return failure
@@ -42,8 +72,18 @@ func Post(socket, thread, text string) error {
 // exit code when it exited non-zero (0 otherwise). A fednet that could not
 // be run, hit the deadline or was killed by a signal is a *exit.Failure.
 func Relay(socket, thread, text string, files []string) (stdout, stderr []byte, code int, err error) {
-	op := "fednet client post"
-	stdout, stderr, err = herdr.Exec(op, nil, "fednet", argv(socket, thread, text, files)...)
+	return relay("fednet client post", postArgv(socket, thread, text, files))
+}
+
+// Progress is Relay for an agent's progress card: `fednet client progress`
+// with the whole card (title and items, each `<text>:<doing|done|error>`),
+// or `-done` to complete it, with the closed card's wording when given.
+func Progress(socket, thread, title string, items []string, done bool) (stdout, stderr []byte, code int, err error) {
+	return relay("fednet client progress", progressArgv(socket, thread, title, items, done))
+}
+
+func relay(op string, argv []string) (stdout, stderr []byte, code int, err error) {
+	stdout, stderr, err = herdr.Exec(op, nil, "fednet", argv...)
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) && exitErr.ExitCode() > 0 {
 		return stdout, stderr, exitErr.ExitCode(), nil

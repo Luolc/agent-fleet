@@ -57,7 +57,7 @@ Use only made-up values: `example.test` domains, documentation IP ranges
 
 For leads and workers that `fleet` starts in this repo.
 
-- Open your own worktree with `fleet worktree agent-fleet --branch <type>/<short-desc>`, or work in the one your lead names.
+- Open your own worktree with `fleet worktree agent-fleet --branch <type>/<short-desc>`, or work in the one your lead names. A reviewer's checkout of a PR head is `fleet worktree agent-fleet --name <name> --detach <head-sha>`, never a bare `git worktree add`: fleet removes what it recorded at `fleet job end`.
 - Worker report (`fleet done --report-file`): what was done, the PR and its merge commit, the judge line (`judge: N ok, M failed`) and the checks run, why done or abandoned, and follow-ups left.
 - Done means the PR is merged with the required check green. Abandoned means you stop without a merge and say why. The lead reads the reports and decides what comes next.
 - This repo has no natural key for a job. Before starting one, look at `fleet job list` and the open issues, and ask in the thread when unsure.

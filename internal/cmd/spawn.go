@@ -20,7 +20,8 @@ const (
 	SpawnAbout     = "Start a worker in your job (lead only) and hand it a task"
 	SpawnLongAbout = "Start a worker in your job (lead only) and hand it a task.\n\n" +
 		"The worker is named `<job>-<NAME>` and runs in --cwd, an existing directory: typically " +
-		"a worktree from `fleet worktree`, which several workers may share. A job is started " +
+		"a worktree from `fleet worktree` (`--detach <ref>` for a reviewer's checkout of a PR " +
+		"head), which several workers may share. A job is started " +
 		"by a thread agent with `fleet job start`; workers cannot spawn.\n\n" +
 		"Settings come from .fleet/config.json in ~/dev/<repo> of the job's repo: " +
 		"`max_agents_per_job` (default 4), `resource_check` (default true) and `linear` " +
@@ -211,7 +212,7 @@ func Spawn(h *herdr.Herdr, args SpawnArgs) (exit.Code, error) {
 		return 0, err
 	}
 	created := []string{fmt.Sprintf("ledger row %s (state starting)", c.id.Agent)}
-	issue, err := workOrder(conn, c.linear, c.job.ParentIssue, c.title, c.task, c.id.Agent, c.me.Agent,
+	issue, err := workOrder(conn, c.linear, c.job.ParentIssue, c.title, c.task, c.id, c.me.Agent,
 		scopeOf(c.job.Repo, c.me.Job), &created)
 	if err != nil {
 		return startFailed(c.id.Agent, err, 0, created, hint)
@@ -222,7 +223,7 @@ func Spawn(h *herdr.Herdr, args SpawnArgs) (exit.Code, error) {
 		return startFailed(c.id.Agent, err, 0, created, hint)
 	}
 	created = append(created, fmt.Sprintf("tab %s (%s)", args.Name, place.TabID))
-	code, err := startAndDeliver(h, conn, c.id, place, args.Model, args.Effort, c.me.Agent, c.body, issue.URL, &created)
+	code, err := startAndDeliver(h, conn, c.id, place, c.cwd, args.Model, args.Effort, c.me.Agent, c.body, issue.URL, &created)
 	if err != nil || code != exit.Ok {
 		return startFailed(c.id.Agent, err, code, created, hint)
 	}

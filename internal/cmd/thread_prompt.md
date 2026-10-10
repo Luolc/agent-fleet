@@ -8,6 +8,7 @@ Commands:
 - `fleet send <agent> --file <file>` passes a message to an agent, such as a person's answer to a lead. The body is a file, never an argument. A lead's question arrives as a message headed `[FROM: <job>-lead]`, already posted to the thread by fleet; when a person answers, pass the answer on with `fleet send`.
 - `fleet ask-human --file <file>` records a question of your own as pending (so fleet knows the thread waits for a person) and posts it to the thread; do not post it again.
 - {{post}}
+- {{progress}}
 - Before you write to Slack, read the user-level skill `slack-reply`: it covers the Markdown the text is in. Post only with `fleet thread post`, never with `fednet` directly.
 - `fleet thread set-project <project>` puts the thread ticket into a Linear project when the thread clearly belongs to one; `fleet thread relate <ISSUE>` relates the ticket to an issue the thread refers to.
 - `fleet thread end --summary-file <file>` ends this session when nothing is pending for you: the summary goes on the ticket and your tab closes. A job you started keeps running. A later reply in the thread starts a new session that gets your summary.
@@ -17,3 +18,8 @@ Commands:
 Before a job in a repo R, read the `## Fleet` section of ~/dev/<R>/AGENTS.md and follow it. A cross-repo job's lead runs in a directory of its own under {{xrepo}}.
 
 Messages from people reach you headed `[FROM: inbox]`, with the thread, the sender and the time; messages from agents carry their own `[FROM: <agent>]` header. Write to people in their language, as prose.
+
+When a person's message arrives, do these in order, so the thread shows what is happening:
+1. Post one short line saying what you are about to do (`fleet thread post`), before anything else.
+2. Open a progress card: `fleet thread progress --title <status>` with a title of about 10 to 20 characters. Update it as you work, giving the whole card each time (the title now, a few items as `<text>:<doing|done|error>`; merge, drop or rewrite earlier items, keep them few).
+3. When you are done, post the real reply with `fleet thread post`: the answer, the question you have, or the summary. Posting completes the card; `fleet thread progress --done` is only for when no reply follows.

@@ -92,6 +92,7 @@ var threadHelp = cmd.ThreadAbout + ".\n\n" + threadUsage + `
 
 Commands:
   post         ` + cmd.ThreadPostAbout + `
+  progress     ` + cmd.ThreadProgressAbout + `
   end          ` + cmd.ThreadEndAbout + `
   set-project  ` + cmd.ThreadSetProjectAbout + `
   relate       ` + cmd.ThreadRelateAbout + `
@@ -109,6 +110,18 @@ Options:
       --attach <PATH>     A file to upload with the text, passed to fednet as -file; repeatable
       --scope <NAME>      ` + scopeHelp + `
   -h, --help              Print help
+`
+
+const threadProgressUsage = "Usage: fleet thread progress [OPTIONS] --title <TEXT> [--item <TEXT:STATE>]...\n       fleet thread progress [OPTIONS] --done [--title <TEXT>] [--item <TEXT:STATE>]..."
+
+var threadProgressHelp = cmd.ThreadProgressLongAbout + "\n\n" + threadProgressUsage + `
+
+Options:
+      --title <TEXT>        The card's status now, about 10 to 20 characters
+      --item <TEXT:STATE>   An item of the card, STATE one of doing, done, error; the whole card each call
+      --done                Complete the card; --title and --item, when given, are the closed card's wording
+      --scope <NAME>        ` + scopeHelp + `
+  -h, --help                Print help
 `
 
 const threadEndUsage = "Usage: fleet thread end [OPTIONS] --summary-file <PATH>"
@@ -276,6 +289,7 @@ Arguments:
 Options:
       --name <NAME>     Another worktree of the job in this repo: ~/wt/<repo>/<job>-<name>. Only [a-z0-9-]
       --branch <NAME>   Branch to create. Default: <job>, or <job>-<name> with --name
+      --detach <REF>    Check out <REF> (a commit, such as a PR's head SHA) detached, no branch; not with --branch
       --scope <NAME>    ` + scopeHelp + `
   -h, --help            Print help
 `
@@ -491,7 +505,8 @@ func runInbox(args []string, scope *cliargs.OptString) (exit.Code, error) {
 	return cmd.Inbox(cmd.InboxArgs{File: got[0]})
 }
 
-var threadHelps = map[string]string{"post": threadPostHelp, "end": threadEndHelp, "set-project": threadSetProjectHelp, "relate": threadRelateHelp}
+var threadHelps = map[string]string{"post": threadPostHelp, "progress": threadProgressHelp, "end": threadEndHelp,
+	"set-project": threadSetProjectHelp, "relate": threadRelateHelp}
 
 // runThread dispatches `fleet thread <COMMAND>`.
 func runThread(args []string, scope *cliargs.OptString) (exit.Code, error) {
@@ -504,6 +519,8 @@ func runThread(args []string, scope *cliargs.OptString) (exit.Code, error) {
 		return exit.Ok, nil
 	case "post":
 		return runThreadPost(args[1:], scope)
+	case "progress":
+		return runThreadProgress(args[1:], scope)
 	case "end":
 		fs := flagSet("thread end", scope)
 		summary := cliargs.OptString{Name: "summary-file", Placeholder: "PATH"}
@@ -558,6 +575,24 @@ func runThreadPost(args []string, scope *cliargs.OptString) (exit.Code, error) {
 		return 0, err
 	}
 	return cmd.ThreadPost(cmd.ThreadPostArgs{BodyFile: body.Value, Attach: attach.Values})
+}
+
+func runThreadProgress(args []string, scope *cliargs.OptString) (exit.Code, error) {
+	fs := flagSet("thread progress", scope)
+	title := cliargs.OptString{Name: "title", Placeholder: "TEXT"}
+	var items cliargs.Strings
+	done := cliargs.Bool{Name: "done"}
+	fs.Var(&title, "title", "The card's status now")
+	fs.Var(&items, "item", "An item of the card, <text>:<state>")
+	fs.Var(&done, "done", "Complete the card")
+	_, helped, err := parse(fs, args, threadProgressHelp, threadProgressUsage, nil)
+	if err != nil || helped {
+		return exit.Ok, err
+	}
+	if _, err := scoped(scope); err != nil {
+		return 0, err
+	}
+	return cmd.ThreadProgress(cmd.ThreadProgressArgs{Title: title.Ptr(), Items: items.Values, Done: done.Value})
 }
 
 func runAskHuman(args []string, scope *cliargs.OptString) (exit.Code, error) {
@@ -740,8 +775,10 @@ func runWorktree(args []string, scope *cliargs.OptString) (exit.Code, error) {
 	fs := flagSet("worktree", scope)
 	name := cliargs.OptString{Name: "name", Placeholder: "NAME"}
 	branch := cliargs.OptString{Name: "branch", Placeholder: "NAME"}
+	detach := cliargs.OptString{Name: "detach", Placeholder: "REF"}
 	fs.Var(&name, "name", "Another worktree of the job in this repo")
 	fs.Var(&branch, "branch", "Branch to create")
+	fs.Var(&detach, "detach", "Check out a commit detached")
 	got, helped, err := parse(fs, args, worktreeHelp, worktreeUsage, []string{"REPO"})
 	if err != nil || helped {
 		return exit.Ok, err
@@ -749,5 +786,5 @@ func runWorktree(args []string, scope *cliargs.OptString) (exit.Code, error) {
 	if _, err := scoped(scope); err != nil {
 		return 0, err
 	}
-	return cmd.Worktree(cmd.WorktreeArgs{Repo: got[0], Name: name.Ptr(), Branch: branch.Ptr()})
+	return cmd.Worktree(cmd.WorktreeArgs{Repo: got[0], Name: name.Ptr(), Branch: branch.Ptr(), Detach: detach.Ptr()})
 }

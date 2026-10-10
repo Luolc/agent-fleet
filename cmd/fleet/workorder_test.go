@@ -178,7 +178,7 @@ func TestSpawnCreatesAndClaimsTheWorkOrderBeforeAnythingElse(t *testing.T) {
 	want := []string{
 		"herdr agent list",
 		"herdr workspace list",
-		"atb linear create --team EX --project Example project --parent EX-10 --title Import the A table " +
+		"atb linear create --team EX --project Example project --parent EX-10 --label worker --title Import the A table " +
 			"--description-file " + resolved + " --json key=set",
 		"atb linear claim EX-12 --agent item-1-a --source item-1-lead --scope example-dataset: job item-1 key=set",
 		"herdr tab create",
@@ -322,7 +322,7 @@ func TestJobStartCreatesTheParentClaimsItAndMakesTheWorkOrderFirst(t *testing.T)
 		"herdr workspace list",
 		"atb linear create --team EX --project Example project --title Import B --description-file " + resolved + " --json key=set",
 		"atb linear claim EX-11 --agent item-2-lead --source thread-1 --scope example-dataset: job item-2 key=set",
-		"atb linear create --team EX --project Example project --parent EX-11 --title Import the B table " +
+		"atb linear create --team EX --project Example project --parent EX-11 --label lead --title Import the B table " +
 			"--description-file " + resolved + " --json key=set",
 		"atb linear claim EX-12 --agent item-2-lead --source thread-1 --scope example-dataset: job item-2 key=set",
 		"herdr workspace create",
@@ -412,7 +412,7 @@ func TestJobStartOfACrossRepoJobReadsTheParentsTeamAndProject(t *testing.T) {
 		"herdr workspace list",
 		"atb linear query { issue(id: \"EX-10\") { team { key } project { name } } } key=set",
 		"atb linear claim EX-10 --agent wire-lead --source thread-1 --scope cross-repo: job wire key=set",
-		"atb linear create --team QT --project Queried project --parent EX-10 --title Wire the two repos " +
+		"atb linear create --team QT --project Queried project --parent EX-10 --label lead --title Wire the two repos " +
 			"--description-file " + resolved + " --json key=set",
 		"atb linear claim EX-12 --agent wire-lead --source thread-1 --scope cross-repo: job wire key=set",
 		"herdr workspace create",
@@ -453,7 +453,7 @@ func TestJobStartOfACrossRepoJobReadsTheParentsTeamAndProject(t *testing.T) {
 		"herdr agent list",
 		"herdr workspace list",
 		"atb linear query { issue(id: \"EX-10\") { team { key } project { name } } } key=set",
-		"atb linear create --team QT --project Queried project --parent EX-10 --title Wire the two repos " +
+		"atb linear create --team QT --project Queried project --parent EX-10 --label worker --title Wire the two repos " +
 			"--description-file " + resolved + " --json key=set",
 		"atb linear claim EX-12 --agent wire-a --source wire-lead --scope cross-repo: job wire key=set",
 		"herdr tab create",

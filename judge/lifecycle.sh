@@ -243,7 +243,7 @@ check "job start cross-repo: exit 0" 0 "$rc"
 [ "$rc" = 0 ] || printf '%s\n' "$out"
 has "job start cross-repo: reports the cross-repo directory" "$out" "started wire-lead in job wire (/home/agent/x-repo/general/wire)"
 check "job start cross-repo: the parent is read last, claimed, then the work order created and claimed" \
-  "linear query { issue(id: \"QT-10\") { team { key } project { name } } }|linear claim QT-10 --agent wire-lead --source thread-1 --scope cross-repo: job wire|linear create --team QT --project Queried project --parent QT-10 --title Wire the repos 0xWIRE --description-file /home/agent/tasks/wire.md --json|linear claim QT-12 --agent wire-lead --source thread-1 --scope cross-repo: job wire|" \
+  "linear query { issue(id: \"QT-10\") { team { key } project { name } } }|linear claim QT-10 --agent wire-lead --source thread-1 --scope cross-repo: job wire|linear create --team QT --project Queried project --parent QT-10 --label lead --title Wire the repos 0xWIRE --description-file /home/agent/tasks/wire.md --json|linear claim QT-12 --agent wire-lead --source thread-1 --scope cross-repo: job wire|" \
   "$(tr '\n' '|' < /home/agent/atb.log)"
 check "job start cross-repo: agent cwd is the cross-repo directory" /home/agent/x-repo/general/wire "$(agent_field wire-lead cwd)"
 check "job start cross-repo: identity variables carry the work order" \
@@ -264,7 +264,7 @@ out=$(PATH=/home/agent/fake-atb:$PATH as wire-lead lead thread-1 wire -- spawn a
 check "spawn in a cross-repo job: exit 0" 0 "$rc"
 [ "$rc" = 0 ] || printf '%s\n' "$out"
 check "spawn in a cross-repo job: the parent is queried, the work order created under it and claimed" \
-  "linear query { issue(id: \"QT-10\") { team { key } project { name } } }|linear create --team QT --project Queried project --parent QT-10 --title wire worker --description-file /home/agent/tasks/wirea.md --json|linear claim QT-12 --agent wire-a --source wire-lead --scope cross-repo: job wire|" \
+  "linear query { issue(id: \"QT-10\") { team { key } project { name } } }|linear create --team QT --project Queried project --parent QT-10 --label worker --title wire worker --description-file /home/agent/tasks/wirea.md --json|linear claim QT-12 --agent wire-a --source wire-lead --scope cross-repo: job wire|" \
   "$(tr '\n' '|' < /home/agent/atb.log)"
 # The lead ends the cross-repo job: its own work order gets the report
 # and is released, the parent gets the conclusion and is released, the
@@ -347,6 +347,22 @@ check "job start: job with a leftover directory refused with exit 1" 1 "$rc"
 has "job start: leftover refusal names the cleanup" "$out" "$T job end item-6 --force"
 check "job start: leftover refusal wrote no row" "0 " "$(ledger "SELECT count(*) FROM agents WHERE name = 'item-6-lead'")"
 rmdir /home/agent/x-repo/general/item-6
+
+# A folder-trust prompt naming another directory is not fleet's to answer:
+# exit 3 naming both directories, nothing pressed, the prompt still up.
+rm -f "$fake/trusted"
+touch "$fake/trust"
+echo /home/agent/elsewhere > "$fake/trust-path"
+out=$(thr job start item-7 --repo "$R" --task-file "$(task item-7 'never delivered')" 2>&1); rc=$?
+rm "$fake/trust" "$fake/trust-path"
+check "job start: exit 3 at a trust prompt for another directory" 3 "$rc"
+has "job start: names the directory the prompt is for and the agent's own" "$out" \
+  "folder-trust dialog for /home/agent/elsewhere, not its own directory $DEV" "nothing pressed" "$T job end item-7 --force"
+check "job start: nothing pressed, the cursor still on the cancel option" yes \
+  "$(case "$("${S[@]}" agent read item-7-lead --source visible)" in *"❯ No, exit"*) echo yes ;; *) echo no ;; esac)"
+check "job start: the directory was not trusted" no "$([ -e "$fake/trusted" ] && echo yes || echo no)"
+thr job end item-7 --force >/dev/null 2>&1; rc=$?
+check "job end --force: cleans up the lead stuck at the prompt" 0 "$rc"
 
 # An unknown start-up screen stops the start with exit 3 and the screen.
 touch "$fake/unknown-screen"

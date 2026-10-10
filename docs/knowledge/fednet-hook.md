@@ -24,7 +24,7 @@ A scope is one fleet on the machine: the herdr session `fleet-<scope>`, the ledg
 {"linear": {"team": "ABC"}, "fednet": {"socket": "/run/fednet/client.sock"}}
 ```
 
-`linear.team` is the team thread tickets are created in; without it, threads run without tickets. `fednet.socket` is the client's `-socket`. fleet posts through it whenever something goes to a thread: the line telling a thread why no agent was started, a question from `fleet ask-human`, and a thread agent's own posts, which go through `fleet thread post --body-file <file>`. Thread agents are never told the socket or their thread's key; without the setting, nothing can be posted.
+`linear.team` is the team thread tickets are created in; without it, threads run without tickets. `fednet.socket` is the client's `-socket`. fleet posts through it whenever something goes to a thread: the line telling a thread why no agent was started, a question from `fleet ask-human`, a thread agent's own posts and progress card, which go through `fleet thread post --body-file <file>` and `fleet thread progress`, and the closing line `会话已结束 · <ticket>` that `fleet thread end` posts as small grey text. Thread agents are never told the socket or their thread's key; without the setting, nothing can be posted and sessions end without the line. The card and the grey line need a fednet with `client progress` and `client post -footer` (merged into fednet on 2026-10-09); an older client refuses them, which comes back to the agent as fednet's exit code.
 
 Which messages start agents depends on the channel, through two optional payload fields that newer fednet versions send: `channel_name` (absent in a direct message) and `trigger` (`dm` for a direct message to the bot). Until the client's fednet sends them, every message is ignored except in threads the ledger already knows.
 
@@ -60,6 +60,10 @@ What the machine needs before the hook can start agents; fleet itself creates no
 Checked by hand on 2026-10-09 on a development machine where the client runs as a system service under the agent user, with linger on. In an environment like the hook's (only `PATH`, `HOME` and `XDG_RUNTIME_DIR`), `systemctl --user is-system-running` printed `running` (exit 0); without `XDG_RUNTIME_DIR` it failed with `Failed to connect to bus: No medium found` (exit 1). A transient unit started from such an environment (`systemd-run --user`) stayed active after its starter's process group was killed. Not covered: a run from inside the client's own service (it needs root), and the unit template itself, which was not installed at the time.
 
 The judge has no systemd. Its fake `systemctl` starts the same server detached, so it covers what fleet does around the start, not the unit.
+
+## What fleet presses on its own
+
+Claude Code asks once per directory whether to trust it (the folder-trust dialog, "Quick safety check"), and remembers the answer per directory. Nobody is at the pane of an agent fleet starts, so the first start in a fresh checkout (a new repo or initiative, a fresh machine) would otherwise stay blocked at that dialog; it did, on 2026-10-09, for the first thread agent of a new initiative. So at every start (a thread agent, a lead, a worker, and the retry of a start an earlier run was interrupted in) fleet reads the visible screen and, when it is this dialog and the directory it names is exactly the agent's own (the one fleet chose: the channel's checkout, `~/dev/<repo>`, the cross-repo job's directory, a worker's `--cwd`), moves the cursor to "Yes, I trust this folder" and confirms, one key per press, reading where the cursor is before each press; then it waits for the input box. That directory is fleet's own choice, so trusting it adds nothing to what starting the agent there already does. A dialog naming any other directory, or any other screen, is left alone: the start fails with exit 3 and the screen in the message, and `fleet job end <job> --force` cleans up.
 
 ## What to expect
 
