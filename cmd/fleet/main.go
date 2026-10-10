@@ -52,6 +52,7 @@ Commands:
   send      ` + cmd.SendAbout + `
   done      ` + cmd.DoneAbout + `
   status    ` + cmd.StatusAbout + `
+  report    ` + cmd.ReportAbout + `
   watch     ` + cmd.WatchAbout + `
   worktree  ` + cmd.WorktreeAbout + `
   help      Print this message or the help of the given subcommand(s)
@@ -275,6 +276,16 @@ Options:
   -h, --help             Print help
 `
 
+const reportUsage = "Usage: fleet report [OPTIONS]"
+
+var reportHelp = cmd.ReportLongAbout + "\n\n" + reportUsage + `
+
+Options:
+      --json             Machine-readable output: {"jobs": [...], "threads": [...], "total": {...}}
+      --scope <NAME>     ` + scopeHelp + `
+  -h, --help             Print help
+`
+
 const watchUsage = "Usage: fleet watch [OPTIONS]"
 
 var watchHelp = cmd.WatchLongAbout + "\n\n" + watchUsage + `
@@ -402,6 +413,8 @@ func dispatch(args []string) (exit.Code, error) {
 		return runDone(rest[1:], &scope)
 	case "status":
 		return runStatus(rest[1:], &scope)
+	case "report":
+		return runReport(rest[1:], &scope)
 	case "watch":
 		return runWatch(rest[1:], &scope)
 	case "worktree":
@@ -414,7 +427,7 @@ func dispatch(args []string) (exit.Code, error) {
 // help is clap's implicit `help [COMMAND]` subcommand.
 func help(args []string) (exit.Code, error) {
 	helps := map[string]string{"inbox": inboxHelp, "thread": threadHelp, "job": jobHelp, "ask-human": askHumanHelp, "send": sendHelp, "spawn": spawnHelp, "done": doneHelp,
-		"status": statusHelp, "watch": watchHelp, "worktree": worktreeHelp, "help": topHelp}
+		"status": statusHelp, "report": reportHelp, "watch": watchHelp, "worktree": worktreeHelp, "help": topHelp}
 	if len(args) == 0 {
 		fmt.Fprint(os.Stdout, topHelp)
 		return exit.Ok, nil
@@ -739,6 +752,20 @@ func runStatus(args []string, scope *cliargs.OptString) (exit.Code, error) {
 		return 0, err
 	}
 	return cmd.Status(h, cmd.StatusArgs{Job: job.Ptr(), JSON: asJSON.Value})
+}
+
+func runReport(args []string, scope *cliargs.OptString) (exit.Code, error) {
+	fs := flagSet("report", scope)
+	asJSON := cliargs.Bool{Name: "json"}
+	fs.Var(&asJSON, "json", "Machine-readable output")
+	_, helped, err := parse(fs, args, reportHelp, reportUsage, nil)
+	if err != nil || helped {
+		return exit.Ok, err
+	}
+	if _, err := scoped(scope); err != nil {
+		return 0, err
+	}
+	return cmd.AttentionReport(cmd.ReportArgs{JSON: asJSON.Value})
 }
 
 func runWatch(args []string, scope *cliargs.OptString) (exit.Code, error) {
