@@ -1190,8 +1190,17 @@ func TestThreadPostPostsToTheCallersThreadThroughTheScopesSocket(t *testing.T) {
 		t.Errorf("post: %+v", out)
 	}
 	if got := w.calls(); got != "fednet client post -socket /run/fednet.sock -thread "+threadKey+
-		" -file /r/a.png -file b c.pdf -- Import started.\n" {
+		" -file /r/a.png -file b c.pdf -- Import started.\n\n" {
 		t.Errorf("calls = %q", got)
+	}
+	// The text goes as the file has it: an indented first line is a code block.
+	_ = os.Remove(filepath.Join(w.dir, "calls"))
+	code := task(w, "code.md", "    code\nmore\n")
+	if out := w.asThreadAgent("TH-5", "thread", "post", "--body-file", code); out.code != 0 {
+		t.Errorf("indented: %+v", out)
+	}
+	if got := w.file("calls"); got != "fednet client post -socket /run/fednet.sock -thread "+threadKey+" --     code\nmore\n\n" {
+		t.Errorf("indented calls = %q", got)
 	}
 	// fednet's failure comes back as it is: its exit code and stderr.
 	if err := os.WriteFile(filepath.Join(w.dir, "fednet-down"), nil, 0o644); err != nil {

@@ -286,7 +286,8 @@ touch /home/agent/fednet-down
 out=$(lead8 ask-human --file /home/agent/tasks/q1.md 2>&1); rc=$?
 rm /home/agent/fednet-down
 check "ask-human: exit 5 when the post fails" 5 "$rc"
-has "ask-human: says to ask again" "$out" "run ask-human again to post it"
+check "ask-human: the failed post says only to ask again" \
+  "fleet: fednet client post failed (exit status: 4); the question is recorded, run ask-human again to post it" "$out"
 check "ask-human: the failed post starts no agent" agent_not_found "$(agent_field "$A" agent_status)"
 out=$(lead8 ask-human --file /home/agent/tasks/q1.md 2>&1); rc=$?
 check "ask-human: exit 0 from the lead" 0 "$rc"
@@ -304,6 +305,7 @@ settled "$A"
 out=$(lead8 ask-human --file /home/agent/tasks/q1.md 2>&1); rc=$?
 check "ask-human: asking again after a success, exit 0" 0 "$rc"
 check "ask-human: asking again posts nothing more" 2 "$(wc -l < /home/agent/fednet.log)"
+has "ask-human: asking again says nothing was done" "$out" "and delivered to its agent; nothing done"
 
 # The thread agent posts to its thread through fleet: the thread and the
 # socket come from fleet, the text from the file, attachments as -file.
@@ -314,6 +316,11 @@ check "thread post: exit 0, fednet's stdout printed" "0 m-posted" "$rc $out"
 check "thread post: posted to the caller's thread through the scope's socket, attachments passed on" \
   "client post -socket /home/agent/fednet.sock -thread $K -file /home/agent/tasks/q1.md -file rel/b.pdf -- Progress: half done. 0xPOST|" \
   "$(tr '\n' '|' < /home/agent/fednet.log)"
+printf '    code 0xINDENT\nmore\n' > /home/agent/tasks/indented.md
+: > /home/agent/fednet.log
+thra "$K" TH-5 -- thread post --body-file /home/agent/tasks/indented.md >/dev/null 2>&1; rc=$?
+check "thread post: an indented first line reaches fednet unchanged" \
+  "0 client post -socket /home/agent/fednet.sock -thread $K --     code 0xINDENT|more||" "$rc $(tr '\n' '|' < /home/agent/fednet.log)"
 touch /home/agent/fednet-down
 out=$(thra "$K" TH-5 -- thread post --body-file /home/agent/tasks/post.md 2>&1); rc=$?
 rm /home/agent/fednet-down

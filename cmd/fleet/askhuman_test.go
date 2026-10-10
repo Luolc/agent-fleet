@@ -86,7 +86,8 @@ func TestAskHumanReachesTheLiveThreadAgentAndIsAnsweredByTheNextMessage(t *testi
 	}
 	// The same question again while pending: done already, nothing repeated.
 	_ = os.Remove(filepath.Join(w.dir, "calls"))
-	if out := w.askHuman("--file", question); out.code != 0 || w.calls() != "" {
+	if out := w.askHuman("--file", question); out.code != 0 || w.calls() != "" ||
+		!strings.Contains(out.stdout, "already posted to thread "+threadKey+" and delivered to its agent; nothing done") {
 		t.Errorf("again: %+v, calls %q", out, w.calls())
 	}
 	out = w.askHuman("--file", task(w, "a.md", "May I delete the old table?\n"), "--approval")
@@ -228,6 +229,18 @@ func TestAskHumanRefusalsAndLinearDown(t *testing.T) {
 	if got := questions(w); got != " "+threadKey+" thread-c0123-1700000000-123 plain pending" {
 		t.Errorf("questions = %q", got)
 	}
+	// Only the end of the question is trimmed; asking again does nothing.
+	_ = os.Remove(filepath.Join(w.dir, "calls"))
+	indented := task(w, "i.md", "    SELECT 1;\nIs this right?\n\n")
+	if out := w.asThreadAgent("TH-5", "ask-human", "--file", indented); out.code != 0 ||
+		w.calls() != "fednet client post -socket /run/fednet.sock -thread "+threadKey+" --     SELECT 1;\nIs this right?\n" {
+		t.Errorf("indented: %+v, calls %q", out, w.calls())
+	}
+	_ = os.Remove(filepath.Join(w.dir, "calls"))
+	if out := w.asThreadAgent("TH-5", "ask-human", "--file", indented); out.code != 0 || w.calls() != "" ||
+		!strings.Contains(out.stdout, "already posted to thread "+threadKey+"; nothing done") {
+		t.Errorf("indented again: %+v, calls %q", out, w.calls())
+	}
 
 	// A lead whose home thread needs a new agent while Linear is down:
 	// exit 5, the question posted and pending, no agent started.
@@ -241,7 +254,8 @@ func TestAskHumanRefusalsAndLinearDown(t *testing.T) {
 	}
 	conn.Close()
 	out = w2.askHuman("--file", task(w2, "q.md", "Which month?\n"))
-	if out.code != 5 || !strings.Contains(out.stderr, "Linear is unavailable") {
+	if out.code != 5 || !strings.Contains(out.stderr, "Linear is unavailable") ||
+		!strings.Contains(out.stderr, "the question is posted, run ask-human again to deliver it") {
 		t.Errorf("Linear down: %+v", out)
 	}
 	if strings.Count(w2.calls(), "fednet client post") != 1 || strings.Contains(w2.calls(), "agent start") {
@@ -267,7 +281,7 @@ func TestAskHumanContinuesAfterAFailedPost(t *testing.T) {
 	_ = os.Remove(filepath.Join(w.dir, "argv"))
 	question := task(w, "q.md", "Which month? 0xQ2\n")
 	out := w.askHuman("--file", question)
-	if out.code != 5 || !strings.Contains(out.stderr, "run ask-human again to post it") {
+	if out.code != 5 || out.stderr != "fleet: fednet client post failed (exit status: 4); the question is recorded, run ask-human again to post it\n" {
 		t.Errorf("failed post: %+v", out)
 	}
 	if strings.Contains(w.calls(), "agent prompt") {

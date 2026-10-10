@@ -37,10 +37,10 @@ const (
 		"The text is read from --body-file and posted with `fednet client post` to the " +
 		"thread your row in the ledger records, through the socket in the scope's settings " +
 		"(`fednet.socket`); you never name either. Each --attach is passed to fednet as " +
-		"`-file`, unchanged, and uploaded with the text. fednet's stdout is printed; fleet " +
+		"`-file`, unchanged, and uploaded with the text; the text goes as the file has it. fednet's stdout is printed; fleet " +
 		"does not retry.\n\n" +
 		"Exit: 0 when fednet took the post; 1 when the caller is not a live thread agent, the " +
-		"body file cannot be read, is empty or is over 100 KiB (102400 bytes), or the socket " +
+		"body file cannot be read, is empty (or only whitespace) or is over 100 KiB (102400 bytes), or the socket " +
 		"is not configured; fednet's own exit code, with its stderr as it is, when the post " +
 		"fails; 5 when fednet cannot be run or times out, or the settings or the database fail."
 	ThreadEndAbout     = "End this session of your thread: summary on the ticket, ticket released, tab closed (thread agents only)"
@@ -666,8 +666,8 @@ func ThreadPost(args ThreadPostArgs) (exit.Code, error) {
 	if len(data) > maxPostBytes {
 		return 0, exit.Refusedf("the body is %d bytes, over the limit of %d", len(data), maxPostBytes)
 	}
-	text := strings.TrimSpace(string(data))
-	if text == "" {
+	text := string(data)
+	if strings.TrimSpace(text) == "" {
 		return 0, exit.Refusedf("the body file is empty")
 	}
 	cfg, err := config.LoadScope(me.Scope)

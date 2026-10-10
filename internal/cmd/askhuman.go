@@ -73,8 +73,9 @@ func AskHuman(h *herdr.Herdr, args AskHumanArgs) (exit.Code, error) {
 	if err != nil {
 		return 0, exit.Refusedf("cannot read %s: %v", args.File, err)
 	}
-	text := strings.TrimSpace(string(data))
-	if text == "" {
+	// Only the end is trimmed: an indented first line is Markdown.
+	text := strings.TrimRight(string(data), " \t\r\n")
+	if strings.TrimSpace(text) == "" {
 		return 0, exit.Refusedf("the question file is empty")
 	}
 	conn, err := db.Open(me.Scope)
@@ -98,30 +99,69 @@ func AskHuman(h *herdr.Herdr, args AskHumanArgs) (exit.Code, error) {
 		return 0, err
 	}
 	key := fmt.Sprintf("ask-human:%d", id)
-	if err := runStep(conn, key, "post", func() error { return fednet.Post(cfg.FednetSocket, thread, text) }); err != nil {
-		var failure *exit.Failure
-		if errors.As(err, &failure) {
-			return 0, exit.New(failure.Code, failure.Message+"; the question is recorded, run ask-human again to post it")
-		}
+	posted, err := postQuestion(conn, key, cfg.FednetSocket, thread, text)
+	if err != nil {
 		return 0, err
 	}
 	if me.Role == identity.Thread {
-		fmt.Fprintf(os.Stdout, "posted a pending question to thread %s\n", thread)
+		if posted {
+			fmt.Fprintf(os.Stdout, "posted a pending question to thread %s\n", thread)
+		} else {
+			fmt.Fprintf(os.Stdout, "the question was already posted to thread %s; nothing done\n", thread)
+		}
 		return exit.Ok, nil
 	}
 	msg := inboundMessage{Thread: thread, Text: text, Question: me.Agent}
-	if err := runStep(conn, key, "deliver", func() error {
-		code, err := toThread(h, conn, me.Scope, cfg, msg)
-		if err == nil && code != exit.Ok {
-			err = exit.New(code, fmt.Sprintf("the question is posted but did not reach the agent of thread %s (exit %d); "+
-				"run ask-human again to deliver it", thread, code))
-		}
-		return err
-	}); err != nil {
+	delivered, err := deliverQuestion(h, conn, key, me.Scope, cfg, msg)
+	if err != nil {
 		return 0, err
+	}
+	if !posted && !delivered {
+		fmt.Fprintf(os.Stdout, "the question was already posted to thread %s and delivered to its agent; nothing done\n", thread)
+		return exit.Ok, nil
 	}
 	fmt.Fprintf(os.Stdout, "posted the question to thread %s; its agent passes the answer on\n", thread)
 	return exit.Ok, nil
+}
+
+// postQuestion is the `post` step of an ask: true when it ran now, false
+// when an earlier run recorded it. fednet's output is not shown, and the
+// failure names only what the caller can do: ask again.
+func postQuestion(conn *sql.DB, key, socket, thread, text string) (bool, error) {
+	ran := false
+	err := runStep(conn, key, "post", func() error {
+		ran = true
+		_, _, code, err := fednet.Relay(socket, thread, text, nil)
+		if err == nil && code != 0 {
+			err = exit.Environmentf("fednet client post failed (exit status: %d)", code)
+		}
+		return err
+	})
+	var failure *exit.Failure
+	if errors.As(err, &failure) {
+		return false, exit.New(failure.Code, failure.Message+"; the question is recorded, run ask-human again to post it")
+	}
+	return ran, err
+}
+
+// deliverQuestion is the `deliver` step of a lead's ask: true when it ran
+// now, false when an earlier run recorded it. A failure says the question
+// is posted already, so asking again only delivers it.
+func deliverQuestion(h *herdr.Herdr, conn *sql.DB, key, scope string, cfg *config.Scope, msg inboundMessage) (bool, error) {
+	ran := false
+	err := runStep(conn, key, "deliver", func() error {
+		ran = true
+		code, err := toThread(h, conn, scope, cfg, msg)
+		if err == nil && code != exit.Ok {
+			err = exit.New(code, fmt.Sprintf("did not reach the agent of thread %s (exit %d)", msg.Thread, code))
+		}
+		return err
+	})
+	var failure *exit.Failure
+	if errors.As(err, &failure) {
+		return false, exit.New(failure.Code, failure.Message+"; the question is posted, run ask-human again to deliver it")
+	}
+	return ran, err
 }
 
 // askedIn is the thread the caller asks in, with the job (empty for a
