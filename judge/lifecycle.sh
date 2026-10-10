@@ -348,6 +348,22 @@ has "job start: leftover refusal names the cleanup" "$out" "$T job end item-6 --
 check "job start: leftover refusal wrote no row" "0 " "$(ledger "SELECT count(*) FROM agents WHERE name = 'item-6-lead'")"
 rmdir /home/agent/x-repo/general/item-6
 
+# A folder-trust prompt naming another directory is not fleet's to answer:
+# exit 3 naming both directories, nothing pressed, the prompt still up.
+rm -f "$fake/trusted"
+touch "$fake/trust"
+echo /home/agent/elsewhere > "$fake/trust-path"
+out=$(thr job start item-7 --repo "$R" --task-file "$(task item-7 'never delivered')" 2>&1); rc=$?
+rm "$fake/trust" "$fake/trust-path"
+check "job start: exit 3 at a trust prompt for another directory" 3 "$rc"
+has "job start: names the directory the prompt is for and the agent's own" "$out" \
+  "folder-trust dialog for /home/agent/elsewhere, not its own directory $DEV" "nothing pressed" "$T job end item-7 --force"
+check "job start: nothing pressed, the cursor still on the cancel option" yes \
+  "$(case "$("${S[@]}" agent read item-7-lead --source visible)" in *"❯ No, exit"*) echo yes ;; *) echo no ;; esac)"
+check "job start: the directory was not trusted" no "$([ -e "$fake/trusted" ] && echo yes || echo no)"
+thr job end item-7 --force >/dev/null 2>&1; rc=$?
+check "job end --force: cleans up the lead stuck at the prompt" 0 "$rc"
+
 # An unknown start-up screen stops the start with exit 3 and the screen.
 touch "$fake/unknown-screen"
 out=$(thr job start item-2 --repo "$R" --task-file "$(task item-2 'never delivered')" 2>&1); rc=$?

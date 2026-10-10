@@ -61,6 +61,10 @@ Checked by hand on 2026-10-09 on a development machine where the client runs as 
 
 The judge has no systemd. Its fake `systemctl` starts the same server detached, so it covers what fleet does around the start, not the unit.
 
+## What fleet presses on its own
+
+Claude Code asks once per directory whether to trust it (the folder-trust dialog, "Quick safety check"), and remembers the answer per directory. Nobody is at the pane of an agent fleet starts, so the first start in a fresh checkout (a new repo or initiative, a fresh machine) would otherwise stay blocked at that dialog; it did, on 2026-10-09, for the first thread agent of a new initiative. So at every start (a thread agent, a lead, a worker, and the retry of a start an earlier run was interrupted in) fleet reads the visible screen and, when it is this dialog and the directory it names is exactly the agent's own (the one fleet chose: the channel's checkout, `~/dev/<repo>`, the cross-repo job's directory, a worker's `--cwd`), moves the cursor to "Yes, I trust this folder" and confirms, one key per press, reading where the cursor is before each press; then it waits for the input box. That directory is fleet's own choice, so trusting it adds nothing to what starting the agent there already does. A dialog naming any other directory, or any other screen, is left alone: the start fails with exit 3 and the screen in the message, and `fleet job end <job> --force` cleans up.
+
 ## What to expect
 
 - The hook exits 0 as soon as the thread's agent has the message, or when the message was ignored, already handled, or dropped because the thread's checkout is missing or Linear was unavailable (the thread gets one line saying so). fednet then marks the message delivered.

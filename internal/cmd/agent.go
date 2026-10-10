@@ -122,12 +122,12 @@ func CreateTab(h *herdr.Herdr, workspaceID, label, cwd string, id *identity.Iden
 }
 
 // StartAgent starts the agent (Claude Code) as `name` in `paneID`, renames
-// the pane, and gets the agent to its input box: the folder-trust prompt is
-// accepted, any other screen is a failure with exit 3 that carries the
-// screen. A start that herdr reports as failed (the gateway refusing the
-// session ends up here, as a timeout) is exit 5 with the pane's text; it
-// is not retried.
-func StartAgent(h *herdr.Herdr, name, paneID string, model, effort *string) error {
+// the pane, and gets the agent to its input box: the folder-trust dialog
+// for `cwd`, the directory fleet chose for it, is accepted; any other
+// screen is a failure with exit 3 that carries the screen. A start that
+// herdr reports as failed (the gateway refusing the session ends up here,
+// as a timeout) is exit 5 with the pane's text; it is not retried.
+func StartAgent(h *herdr.Herdr, name, paneID, cwd string, model, effort *string) error {
 	args := []string{"agent", "start", name, "--kind", "claude", "--pane", paneID,
 		"--timeout", startTimeoutMS, "--"}
 	args = append(args, ClaudeArgs(model, effort)...)
@@ -144,13 +144,14 @@ func StartAgent(h *herdr.Herdr, name, paneID string, model, effort *string) erro
 		return exit.Environmentf("agent %s did not start: herdr: %s: %s\npane %s:\n%s",
 			name, reply.Error.Code, reply.Error.Message, paneID, pane)
 	}
-	return SettleAgent(h, name, paneID)
+	return SettleAgent(h, name, paneID, cwd)
 }
 
 // SettleAgent renames the pane after the started agent `name` and gets it
 // to its input box, as StartAgent does after the start; also what a retry
-// of an interrupted start runs.
-func SettleAgent(h *herdr.Herdr, name, paneID string) error {
+// of an interrupted start runs. `cwd` is the agent's directory, the only
+// one whose trust dialog is accepted.
+func SettleAgent(h *herdr.Herdr, name, paneID, cwd string) error {
 	if _, err := h.CallOK("pane", "rename", paneID, name); err != nil {
 		return err
 	}
@@ -165,11 +166,11 @@ func SettleAgent(h *herdr.Herdr, name, paneID string) error {
 			status, _ := inner["agent_status"].(string)
 			return status, nil
 		},
-		func(keys []string) error {
-			send := append([]string{"agent", "send-keys", name}, keys...)
-			_, err := h.CallOK(send...)
+		func(key string) error {
+			_, err := h.CallOK("agent", "send-keys", name, key)
 			return err
 		},
+		cwd,
 		10*time.Second,
 		250*time.Millisecond,
 	)
@@ -180,17 +181,24 @@ func SettleAgent(h *herdr.Herdr, name, paneID string) error {
 	return err
 }
 
+// maxTrustKeys bounds the keys pressed at the folder-trust dialog: two
+// get through it, the rest allow for lost presses.
+const maxTrustKeys = 6
+
 // reachInputBox gets a started agent to its input box. Ready takes both
 // the input box on `screen` (herdr reports a ❯ menu as idle too) and
 // herdr's `status` idle or done (done: idle after a turn); herdr can still
 // say blocked after the redraw, and a prompt is then refused as
-// agent_blocked. The folder-trust prompt is answered through `keys`, up to
-// 3 times in case a key press is lost, polling every `poll` for at most
-// `wait` after each. Anything else is exit 3 with the screen.
+// agent_blocked. The folder-trust dialog for `cwd` is answered one key at
+// a time through `key`, each chosen from where the cursor is on the screen
+// just read, and the screen read again after each (polling every `poll`
+// for at most `wait`); a dialog for any other directory is left alone.
+// Anything else is exit 3 with the screen.
 func reachInputBox(
 	screen func() (string, error),
 	status func() (string, error),
-	keys func([]string) error,
+	key func(string) error,
+	cwd string,
 	wait time.Duration,
 	poll time.Duration,
 ) error {
@@ -199,15 +207,18 @@ func reachInputBox(
 	if err != nil {
 		return err
 	}
-	for range 3 {
-		trust := TrustKeys(text)
-		if trust == nil {
-			break
-		}
-		if err := keys(trust); err != nil {
+	for range maxTrustKeys {
+		next, err := TrustKey(text, cwd)
+		if err != nil {
 			return err
 		}
-		if text, err = pollInputBox(screen, status, wait, poll); err != nil {
+		if next == "" {
+			break
+		}
+		if err := key(next); err != nil {
+			return err
+		}
+		if text, err = pollScreen(screen, status, text, wait, poll); err != nil {
 			return err
 		}
 	}
@@ -222,9 +233,11 @@ func reachInputBox(
 		fmt.Sprintf("is not ready at its input box (herdr status %q); its screen:\n%s", state, text))
 }
 
-// pollInputBox reads the screen every `poll` until it shows the input box
-// with herdr settled, or `wait` has passed; the last screen is returned.
-func pollInputBox(screen, status func() (string, error), wait, poll time.Duration) (string, error) {
+// pollScreen reads the screen every `poll` until it shows the input box
+// with herdr settled, or the folder-trust dialog redrawn (the cursor
+// moved), or `wait` has passed; the last screen is returned. A screen in
+// between (start-up after the dialog) is waited out.
+func pollScreen(screen, status func() (string, error), before string, wait, poll time.Duration) (string, error) {
 	deadline := time.Now().Add(wait)
 	for {
 		time.Sleep(poll)
@@ -240,6 +253,9 @@ func pollInputBox(screen, status func() (string, error), wait, poll time.Duratio
 			if state == "idle" || state == "done" {
 				return text, nil
 			}
+		}
+		if _, isDialog := trustDialog(text); isDialog && text != before {
+			return text, nil
 		}
 		if !time.Now().Before(deadline) {
 			return text, nil
@@ -257,34 +273,74 @@ func paneText(h *herdr.Herdr, paneID string) string {
 	return string(out)
 }
 
-// TrustKeys are the keys that trust the folder when `screen` is Claude
-// Code's folder-trust prompt (2.1.292: "Quick safety check", the cancel
-// option listed first and highlighted with ❯). nil for any other screen,
-// or when the highlight cannot be placed.
-func TrustKeys(screen string) []string {
-	if !strings.Contains(screen, "Quick safety check") {
-		return nil
+// trustPrompt is a folder-trust dialog as Claude Code 2.1.292 draws it:
+// "Accessing workspace:", the directory, "Quick safety check", the cancel
+// option listed first, the cursor ❯ on one of them.
+type trustPrompt struct {
+	// Dir is the directory the dialog names: the lines between the two
+	// headings joined, so a path wrapped over two lines reads whole.
+	Dir string
+	// Highlighted is the line the cursor is on, without the cursor.
+	Highlighted string
+}
+
+// trustDialog reads the folder-trust dialog off `screen`; ok is false for
+// any other screen.
+func trustDialog(screen string) (p trustPrompt, ok bool) {
+	_, after, found := strings.Cut(screen, "Accessing workspace:")
+	between, _, found2 := strings.Cut(after, "Quick safety check")
+	if !found || !found2 {
+		return trustPrompt{}, false
 	}
-	highlighted := ""
-	found := false
+	for _, line := range lines(between) {
+		p.Dir += strings.TrimSpace(line)
+	}
 	for _, line := range lines(screen) {
 		line = strings.TrimLeftFunc(line, unicode.IsSpace)
-		if strings.HasPrefix(line, "❯") {
-			highlighted, found = line, true
+		if rest, found := strings.CutPrefix(line, "❯"); found {
+			p.Highlighted = strings.TrimSpace(rest)
 			break
 		}
 	}
-	if !found {
-		return nil
+	return p, true
+}
+
+// TrustKey is the one key to press next when `screen` is the folder-trust
+// dialog for `cwd`: `down` while the cursor is on the cancel option, `enter`
+// once it is on "Yes, I trust this folder". "" for any other screen. A
+// dialog naming another directory (the only one fleet may trust is the one
+// it chose for the agent), or one whose cursor cannot be placed, is exit 3
+// with the screen, nothing pressed.
+func TrustKey(screen, cwd string) (string, error) {
+	p, ok := trustDialog(screen)
+	if !ok {
+		return "", nil
+	}
+	if !sameDir(p.Dir, cwd) {
+		return "", exit.New(exit.Blocked, fmt.Sprintf("is at the folder-trust dialog for %s, not its own directory %s; "+
+			"nothing pressed; its screen:\n%s", p.Dir, cwd, screen))
 	}
 	switch {
-	case strings.Contains(highlighted, "Yes, I trust this folder"):
-		return []string{"enter"}
-	case strings.Contains(highlighted, "No, ") && strings.Contains(screen, "Yes, I trust this folder"):
-		return []string{"down", "enter"}
-	default:
-		return nil
+	case strings.Contains(p.Highlighted, "Yes, I trust this folder"):
+		return "enter", nil
+	case strings.HasPrefix(p.Highlighted, "No, ") && strings.Contains(screen, "Yes, I trust this folder"):
+		return "down", nil
 	}
+	return "", exit.New(exit.Blocked, fmt.Sprintf("is at the folder-trust dialog with the cursor on %q; "+
+		"nothing pressed; its screen:\n%s", p.Highlighted, screen))
+}
+
+// sameDir is whether the directory a dialog names is `cwd`, as written or
+// with its symlinks resolved (Claude Code may print the resolved path).
+func sameDir(named, cwd string) bool {
+	if named == "" || cwd == "" {
+		return false
+	}
+	if named == cwd {
+		return true
+	}
+	resolved, err := canonicalize(cwd)
+	return err == nil && named == resolved
 }
 
 // IsInputBox is whether `screen` shows Claude Code's input box: a rule
@@ -695,18 +751,19 @@ func setIssue(conn querier, agent, issue string) error {
 	return nil
 }
 
-// startAndDeliver starts the agent in `place`, delivers the task with the
-// header (`sender`) and the work order's URL, and marks the row active.
+// startAndDeliver starts the agent in `place` (its directory `cwd`),
+// delivers the task with the header (`sender`) and the work order's URL,
+// and marks the row active.
 // Every step appends what it made to `created`. The row is marked active
 // only when herdr reported the task delivered, so a row still `starting`
 // means the agent may not have its task.
-func startAndDeliver(h *herdr.Herdr, conn *sql.DB, id *identity.Identity, place Place, model, effort *string,
+func startAndDeliver(h *herdr.Herdr, conn *sql.DB, id *identity.Identity, place Place, cwd string, model, effort *string,
 	sender, body, url string, created *[]string) (exit.Code, error) {
 	if _, err := conn.Exec("UPDATE agents SET pane_id = ?1 WHERE name = ?2 AND state != 'ended'",
 		place.PaneID, id.Agent); err != nil {
 		return 0, exit.Database(err)
 	}
-	if err := StartAgent(h, id.Agent, place.PaneID, model, effort); err != nil {
+	if err := StartAgent(h, id.Agent, place.PaneID, cwd, model, effort); err != nil {
 		return 0, err
 	}
 	*created = append(*created, fmt.Sprintf("agent %s in pane %s", id.Agent, place.PaneID))
