@@ -87,3 +87,37 @@ check "job end --force: recorded worktrees removed, the detached one too" "no no
 check "job end --force: their branches deleted" "" "$(git -C "/home/agent/dev/$R" branch --list item-6 fix/item-6)"
 check "job end --force: ledger marks them removed" "$WT/item-6|$R|item-6|item-6|item-6-a|0 $WT/item-6-review|$R|fix/item-6|item-6|item-6-a|0 $WT/item-6-audit|$R||item-6|item-6-a|0 " \
   "$(wt_rows item-6)"
+
+# An initiative's repo (x-repo-<I>) with no checkout of that name in ~/dev:
+# the worktree comes from the initiative's checkout ~/x-repo/<I>, and
+# `job end` removes it like the others, deleting its branch there.
+I=example-init
+git init -q --bare -b main "/home/agent/remote/x-repo-$I.git"
+git clone -q "/home/agent/remote/x-repo-$I.git" "/home/agent/seed-$I" 2>/dev/null
+git -C "/home/agent/seed-$I" commit -q --allow-empty -m charter
+git -C "/home/agent/seed-$I" push -q origin main
+git clone -q "/home/agent/remote/x-repo-$I.git" "/home/agent/x-repo/$I"
+ihead=$(git -C "/home/agent/seed-$I" rev-parse HEAD)
+IWT=/home/agent/wt/x-repo-$I
+out=$(in_job item-10 worktree "x-repo-$I" --branch docs/charter 2>&1); rc=$?
+check "worktree of an initiative's repo: exit 0, under ~/wt/x-repo-<I>" "0 $IWT/item-10" "$rc $out"
+check "worktree of an initiative's repo: on the branch, from the initiative's checkout" "docs/charter $ihead" \
+  "$(git -C "$IWT/item-10" branch --show-current 2>&1) $(git -C "$IWT/item-10" rev-parse HEAD 2>&1)"
+out=$(in_job item-10 worktree "x-repo-$I" --name review --detach "$ihead" 2>&1); rc=$?
+check "worktree --detach of an initiative's repo: exit 0 at the commit" "0 $IWT/item-10-review $ihead" \
+  "$rc $out $(git -C "$IWT/item-10-review" rev-parse HEAD 2>&1)"
+worktree_refused "a repo in neither checkouts nor initiatives" "/home/agent/x-repo/no-such" item-10 x-repo-no-such
+out=$(thr job end item-10 --force 2>&1); rc=$?
+check "job end --force: the initiative's worktrees removed and their branch deleted" "0 no no " \
+  "$rc $([ -e "$IWT/item-10" ] && echo yes || echo no) $([ -e "$IWT/item-10-review" ] && echo yes || echo no) $(git -C "/home/agent/x-repo/$I" branch --list docs/charter)"
+
+# A scope whose settings move the worktrees and rename the initiative
+# prefix: the same initiative's repo is then multi-<I>, under ~/trees.
+mkdir -p "/home/agent/.config/$T"
+echo '{"paths": {"worktrees": "~/trees"}, "channels": {"initiative_prefix": "multi-"}}' > "/home/agent/.config/$T/custom.json"
+out=$(SCOPE=custom in_job item-11 worktree "multi-$I" 2>&1); rc=$?
+check "worktree in a scope with paths and channels set: exit 0 under its worktrees" "0 /home/agent/trees/multi-$I/item-11" "$rc $out"
+out=$(SCOPE=custom in_job item-11 worktree "x-repo-$I" 2>&1); rc=$?
+check "worktree in a scope with another initiative prefix: x-repo-<I> refused" 1 "$rc"
+git -C "/home/agent/x-repo/$I" worktree remove "/home/agent/trees/multi-$I/item-11"
+git -C "/home/agent/x-repo/$I" branch -q -D item-11

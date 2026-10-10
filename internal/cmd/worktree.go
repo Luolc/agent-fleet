@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/Luolc/agent-fleet/internal/config"
 	"github.com/Luolc/agent-fleet/internal/db"
 	"github.com/Luolc/agent-fleet/internal/exit"
 	"github.com/Luolc/agent-fleet/internal/identity"
@@ -17,29 +18,34 @@ import (
 
 // WorktreeAbout and WorktreeLongAbout are the help texts of `worktree`.
 const (
-	WorktreeAbout     = "Open a worktree of ~/dev/<repo> for your job and print its path"
-	WorktreeLongAbout = "Open a worktree of ~/dev/<repo> for your job and print its path.\n\n" +
-		"The job is FLEET_JOB. The worktree is ~/wt/<repo>/<job>, or ~/wt/<repo>/<job>-<name> " +
-		"with --name, on a new branch of the same name (no prefix) unless --branch is given. " +
-		"~/dev/<repo> runs `git fetch origin` and the branch starts at origin/HEAD, never at " +
-		"the local HEAD. With --detach <ref> the worktree is a detached checkout of <ref> " +
-		"(a commit, such as a PR's head SHA, resolved in ~/dev/<repo> after the fetch) on no " +
-		"branch, for reviewing or testing it; --detach and --branch exclude each other. The " +
-		"ledger of your scope records the worktree for the job, so `fleet job end` removes " +
-		"it (and its branch, when it has one). Use it rather than `git worktree add`, which " +
-		"fleet would not know to remove.\n\n" +
+	WorktreeAbout     = "Open a worktree of a checkout for your job and print its path"
+	WorktreeLongAbout = "Open a worktree of a checkout for your job and print its path.\n\n" +
+		"The checkout is <repo>'s main checkout under the scope's `paths.checkouts` (default " +
+		"~/dev); when there is none and <repo> is an initiative's repo, <initiative " +
+		"prefix><I> (`channels.initiative_prefix`, default x-repo-), the initiative's " +
+		"checkout <I> under `paths.initiatives` (default ~/x-repo). These settings are in " +
+		"$XDG_CONFIG_HOME/fleet/<scope>.json (see `fleet inbox --help`).\n\n" +
+		"The job is FLEET_JOB. The worktree is <repo>/<job>, or <repo>/<job>-<name> with " +
+		"--name, under `paths.worktrees` (default ~/wt), on a new branch of the same name (no " +
+		"prefix) unless --branch is given. The checkout runs `git fetch origin` and the branch " +
+		"starts at origin/HEAD, never at the local HEAD. With --detach <ref> the worktree is " +
+		"a detached checkout of <ref> (a commit, such as a PR's head SHA, resolved in the " +
+		"checkout after the fetch) on no branch, for reviewing or testing it; --detach and " +
+		"--branch exclude each other. The ledger of your scope records the worktree for the " +
+		"job, so `fleet job end` removes it (and its branch, when it has one). Use it rather " +
+		"than `git worktree add`, which fleet would not know to remove.\n\n" +
 		"When the path already exists and the ledger records it for this job, the path is " +
 		"printed and nothing changes, so every agent of a job gets the same worktree. A path " +
 		"that exists otherwise is refused. stdout carries only the path.\n\n" +
-		"Exit: 0 when the path is printed; 1 when FLEET_JOB is not set, <repo> has no checkout " +
-		"in ~/dev, --name or --branch is invalid, --detach comes with --branch or names no " +
-		"commit of the checkout, the branch already exists, or the path exists and is not " +
-		"this job's; 5 when git or the database fails."
+		"Exit: 0 when the path is printed; 1 when FLEET_JOB is not set, <repo> has no " +
+		"checkout, the scope config is invalid, --name or --branch is invalid, --detach comes " +
+		"with --branch or names no commit of the checkout, the branch already exists, or the " +
+		"path exists and is not this job's; 5 when git or the database fails."
 )
 
 // WorktreeArgs are the arguments of `worktree`.
 type WorktreeArgs struct {
-	// Repo is the checkout's directory name under ~/dev.
+	// Repo is the checkout's directory name, or an initiative's repo.
 	Repo string
 	// Name, when set, is appended to the job: `<job>-<name>`.
 	Name *string
@@ -84,15 +90,31 @@ func worktreeChecks(args WorktreeArgs) (me *identity.Identity, checkout, path, b
 		}
 		branch = ""
 	}
-	home, err := Home()
+	sc, err := config.LoadScope(me.Scope)
 	if err != nil {
 		return nil, "", "", "", err
 	}
-	checkout = filepath.Join(home, "dev", args.Repo)
-	if info, err := os.Stat(checkout); err != nil || !info.IsDir() {
-		return nil, "", "", "", exit.Refusedf("no checkout at %s", checkout)
+	if checkout, err = sourceCheckout(sc, args.Repo); err != nil {
+		return nil, "", "", "", err
 	}
-	return me, checkout, filepath.Join(home, "wt", args.Repo, leaf), branch, nil
+	return me, checkout, filepath.Join(sc.Paths.Worktrees, args.Repo, leaf), branch, nil
+}
+
+// sourceCheckout is the checkout `repo` names: its main checkout under
+// `paths.checkouts`, or when there is none and `repo` is an initiative's
+// repo `<initiative prefix><I>`, the initiative's checkout under
+// `paths.initiatives`.
+func sourceCheckout(sc *config.Scope, repo string) (string, error) {
+	tried := []string{filepath.Join(sc.Paths.Checkouts, repo)}
+	if rest, ok := strings.CutPrefix(repo, sc.Channels.InitiativePrefix); ok && CheckRepo(rest) == nil {
+		tried = append(tried, filepath.Join(sc.Paths.Initiatives, rest))
+	}
+	for _, checkout := range tried {
+		if info, err := os.Stat(checkout); err == nil && info.IsDir() {
+			return checkout, nil
+		}
+	}
+	return "", exit.Refusedf("no checkout at %s", strings.Join(tried, " or "))
 }
 
 // worktreeAdd is the `git worktree add` that opens `path` from `checkout`:

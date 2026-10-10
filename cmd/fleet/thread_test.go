@@ -530,6 +530,34 @@ func TestInboxRunsEachChannelKindInItsDirectory(t *testing.T) {
 	}
 }
 
+func TestInboxFollowsTheChannelsAndPathsOfTheScopeConfig(t *testing.T) {
+	for _, c := range []struct {
+		label, fields, dir, rules string
+	}{
+		{"repo", `"channel_name":"proj-example-dataset"`, "src/example-dataset", "belongs to the repo example-dataset"},
+		{"direct message", `"trigger":"dm"`, "multi/lobby", "belongs to the cross-repo initiative lobby"},
+	} {
+		w := threadWorld(t, "")
+		w.scopeConfig("main", `{"linear": {"team": "TH"}, "fednet": {"socket": "/run/fednet.sock"},
+			"paths": {"checkouts": "`+filepath.Join(w.dir, "src")+`", "initiatives": "`+filepath.Join(w.dir, "multi")+`"},
+			"channels": {"repo_prefix": "proj-", "initiative_prefix": "multi-", "general_initiative": "lobby"}}`)
+		cwd := dir(w, c.dir)
+		out := w.inbox(w.eventIn("m1", "x", "", c.fields))
+		if out.code != 0 || !strings.Contains(w.file("tab-argv"), "--cwd\n"+cwd+"\n") {
+			t.Fatalf("%s: %+v, tab argv %q", c.label, out, w.file("tab-argv"))
+		}
+		prompt := w.file("argv")
+		if !strings.Contains(prompt, c.rules) || !strings.Contains(prompt, filepath.Join(w.dir, "src")+"/<R>/AGENTS.md") {
+			t.Errorf("%s: prompt = %q", c.label, prompt)
+		}
+	}
+	w := threadWorld(t, "")
+	w.scopeConfig("main", `{"channels": {"repo_prefix": "proj-"}}`)
+	if out := w.inbox(w.event("m1", "x", "")); out.code != 0 || !strings.Contains(out.stdout, "ignored m1") {
+		t.Errorf("the default prefix once another is set: %+v", out)
+	}
+}
+
 func TestInboxIgnoresAChannelOutsideTheConvention(t *testing.T) {
 	w := threadWorld(t, "")
 	for i, fields := range []string{`"channel_name":"fednet-dev"`, `"channel_name":"repo-"`, ``, `"trigger":"mention"`} {

@@ -30,16 +30,18 @@ Which messages start agents depends on the channel, through two optional payload
 
 | Channel | Thread agents run in |
 | -- | -- |
-| `repo-<R>` | `~/dev/<R>`, the repo's main checkout |
-| `x-repo-<I>` | `~/x-repo/<I>/`, the checkout of the initiative's repo `x-repo-<I>` |
-| `x-repo-general`, direct messages | `~/x-repo/general/`, the checkout of `x-repo-general` |
+| `<repo prefix><R>` | `<checkouts>/<R>`, the repo's main checkout |
+| `<initiative prefix><I>` | `<initiatives>/<I>/`, the checkout of the initiative's repo `<initiative prefix><I>` |
+| `<initiative prefix><general initiative>`, direct messages | `<initiatives>/<general initiative>/`, the checkout of that repo |
 | anything else | nothing: ignored, exit 0, no reply |
+
+The prefixes, the general initiative and the directories are defaults that the scope's settings file can change, in `channels` (`repo_prefix`, `initiative_prefix`, `general_initiative`) and `paths` (`checkouts`, `initiatives`); [docs/design.md](../design.md) lists the keys and their defaults. With none set, `repo-<R>` runs in `~/dev/<R>`, `x-repo-<I>` in `~/x-repo/<I>/`, and direct messages in `~/x-repo/general/`.
 
 ## Machine setup
 
 What the machine needs before the hook can start agents; fleet itself creates none of it:
 
-- The checkouts in the table above: each repo whose channel points at this machine cloned to `~/dev/<R>`, and the initiatives' repos (including `x-repo-general`) cloned to `~/x-repo/<I>/`. When a checkout is missing, the hook posts one line to the thread saying so, starts nothing and exits 0. A cross-repo job's lead runs in `~/x-repo/<I>/<job>/`, which fleet makes and removes; the repos' `.gitignore` should exclude these job directories.
+- The checkouts in the table above: each repo whose channel points at this machine cloned to `<checkouts>/<R>`, and the initiatives' repos (including the general initiative's) cloned to `<initiatives>/<I>/`. When a checkout is missing, the hook posts one line to the thread saying so, starts nothing and exits 0. A cross-repo job's lead runs in `<initiatives>/<I>/<job>/`, which fleet makes and removes; the repos' `.gitignore` should exclude these job directories.
 - The scope's settings file, as above.
 - The systemd user unit template `~/.config/systemd/user/fleet-scope@.service`, which runs a scope's herdr session, and linger for the user the client runs as (`loginctl enable-linger <user>`), so the user's systemd runs without a login. When the session `fleet-<scope>` is not running, the hook runs `systemctl --user start fleet-scope@<scope>` and waits up to 20 s for it to answer. The server has to belong to systemd rather than to the hook, because the client kills the hook's whole process group when the hook exits:
 

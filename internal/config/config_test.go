@@ -72,16 +72,16 @@ func TestLoadRefusesWithTheFileAndExit1(t *testing.T) {
 }
 
 func TestScopeConfigIsOptionalAndStrict(t *testing.T) {
-	got, err := ParseScope([]byte(`{"linear": {"team": "EX"}, "fednet": {"socket": "/run/fednet.sock"}}`))
+	got, err := ParseScope([]byte(`{"linear": {"team": "EX"}, "fednet": {"socket": "/run/fednet.sock"}}`), "/home/u")
 	if err != nil || got.LinearTeam != "EX" || got.FednetSocket != "/run/fednet.sock" {
 		t.Errorf("%+v, %v", got, err)
 	}
-	got, err = ParseScope([]byte(`{}`))
+	got, err = ParseScope([]byte(`{}`), "/home/u")
 	if err != nil || got.LinearTeam != "" || got.FednetSocket != "" {
 		t.Errorf("empty object: %+v, %v", got, err)
 	}
 	for _, bad := range []string{`{"linear": {}}`, `{"fednet": {"socket": ""}}`, `{"team": "EX"}`, `[]`, `{"linear": {"team": 1}}`} {
-		if _, err := ParseScope([]byte(bad)); err == nil {
+		if _, err := ParseScope([]byte(bad), "/home/u"); err == nil {
 			t.Errorf("%s accepted", bad)
 		}
 	}
@@ -94,5 +94,40 @@ func TestScopeConfigIsOptionalAndStrict(t *testing.T) {
 	path, err := ScopePath("main")
 	if err != nil || !strings.HasSuffix(path, "/.config/fleet/main.json") {
 		t.Errorf("path = %q, %v", path, err)
+	}
+}
+
+func TestScopePathsAndChannelsDefaultToTheConventionsAndCanBeSet(t *testing.T) {
+	got, err := ParseScope([]byte(`{}`), "/home/u")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Paths{Checkouts: "/home/u/dev", Initiatives: "/home/u/x-repo", Worktrees: "/home/u/wt", Scratch: "/home/u/scratch"}
+	if got.Paths != want || got.Channels != DefaultChannels {
+		t.Errorf("defaults: %+v %+v", got.Paths, got.Channels)
+	}
+	if got.Tilde("/home/u/dev/r") != "~/dev/r" || got.Tilde("/srv/r") != "/srv/r" || got.Tilde("/home/user/r") != "/home/user/r" {
+		t.Errorf("Tilde: %q %q %q", got.Tilde("/home/u/dev/r"), got.Tilde("/srv/r"), got.Tilde("/home/user/r"))
+	}
+	got, err = ParseScope([]byte(`{"paths": {"checkouts": "/srv/src/", "worktrees": "~/trees"},
+		"channels": {"repo_prefix": "proj-", "initiative_prefix": "multi-", "general_initiative": "lobby"}}`), "/home/u")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = Paths{Checkouts: "/srv/src", Initiatives: "/home/u/x-repo", Worktrees: "/home/u/trees", Scratch: "/home/u/scratch"}
+	if got.Paths != want || got.Channels != (Channels{"proj-", "multi-", "lobby"}) {
+		t.Errorf("set: %+v %+v", got.Paths, got.Channels)
+	}
+}
+
+func TestScopePathsAndChannelsRefuseWhatCannotWork(t *testing.T) {
+	for body, says := range map[string]string{
+		`{"paths": {"checkouts": "dev"}}`:                                     "paths.checkouts: must be an absolute path",
+		`{"channels": {"repo_prefix": "x-", "initiative_prefix": "x-repo-"}}`: "must not start one with the other",
+		`{"channels": {"initiative_prefix": null}}`:                           "channels.initiative_prefix: must not be null",
+	} {
+		if _, err := ParseScope([]byte(body), "/home/u"); err == nil || !strings.Contains(err.Error(), says) {
+			t.Errorf("%s: %v, want it to say %s", body, err, says)
+		}
 	}
 }

@@ -23,10 +23,10 @@ const (
 		"a worktree from `fleet worktree` (`--detach <ref>` for a reviewer's checkout of a PR " +
 		"head), which several workers may share. A job is started " +
 		"by a thread agent with `fleet job start`; workers cannot spawn.\n\n" +
-		"Settings come from .fleet/config.json in ~/dev/<repo> of the job's repo: " +
+		"Settings come from .fleet/config.json in the main checkout of the job's repo: " +
 		"`max_agents_per_job` (default 16), `resource_check` (default true) and `linear` " +
 		"({\"team\": ..., \"project\": ...}; absent: Linear is off). A cross-repo job reads " +
-		".fleet/config.json in its initiative checkout ~/x-repo/<I>, except `linear`: Linear " +
+		".fleet/config.json in its initiative checkout, except `linear`: Linear " +
 		"is on exactly when the job has a parent issue, " +
 		"whose team and project the work order goes to.\n\n" +
 		"Checks, all before anything is created: the task file is readable and not empty; " +
@@ -80,6 +80,7 @@ type spawnChecked struct {
 	me        *identity.Identity
 	id        *identity.Identity
 	job       *jobRow
+	sc        *config.Scope
 	cfg       *config.Config
 	linear    *linear
 	body      string
@@ -142,18 +143,17 @@ func (c *spawnChecked) ledgerAndHerdr(h *herdr.Herdr, conn *sql.DB) error {
 	if c.job == nil {
 		return exit.Refusedf("job %s is not open in scope %s", c.me.Job, c.me.Scope)
 	}
-	home, err := Home()
-	if err != nil {
+	if c.sc, err = config.LoadScope(c.me.Scope); err != nil {
 		return err
 	}
-	if c.cfg, err = jobConfig(home, c.job.Repo, c.job.LeadCwd); err != nil {
+	if c.cfg, err = jobConfig(c.job.Repo, c.job.LeadCwd); err != nil {
 		return err
 	}
 	c.linear = jobLinear(c.cfg, c.job.Repo, c.job.ParentIssue)
 	if c.linear != nil {
 		if c.job.ParentIssue == "" {
 			return exit.Refusedf("job %s has no parent issue in the ledger, so its worker cannot get a work order; "+
-				"it was started before %s set linear", c.me.Job, config.Path(filepath.Join(home, "dev", c.job.Repo)))
+				"it was started before %s set linear", c.me.Job, config.Path(c.job.LeadCwd))
 		}
 		if c.title = WorkOrderTitle(c.body); c.title == "" {
 			return exit.Refusedf("the task file's first non-empty line gives no title for the work order")
@@ -224,7 +224,7 @@ func Spawn(h *herdr.Herdr, args SpawnArgs) (exit.Code, error) {
 		return startFailed(c.id.Agent, err, 0, created, hint)
 	}
 	created = append(created, fmt.Sprintf("tab %s (%s)", args.Name, place.TabID))
-	body := rolePrompt(c.id, c.cwd, c.job.Repo, filepath.Dir(c.job.LeadCwd), c.cfg.MaxAgentsPerJob, issue, c.job.ParentIssue) +
+	body := rolePrompt(c.sc, c.id, c.cwd, c.job.Repo, filepath.Dir(c.job.LeadCwd), c.cfg.MaxAgentsPerJob, issue, c.job.ParentIssue) +
 		taskSection(issue.URL, c.body)
 	code, err := startAndDeliver(h, conn, c.id, place, c.cwd, args.Model, args.Effort, c.me.Agent, body, &created)
 	if err != nil || code != exit.Ok {

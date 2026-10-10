@@ -171,9 +171,9 @@ CREATE TABLE questions (
 `
 
 // Version 9: where a thread belongs, fixed at its first delivery so a
-// renamed channel does not move it: `mapping` (`repo-<R>` or
-// `x-repo-<I>`; a direct message is `x-repo-general`) and `cwd`, the
-// directory its agents run in.
+// renamed channel does not move it: `mapping` (the channel's name, with
+// the scope's repo or initiative prefix; a direct message has the general
+// initiative's) and `cwd`, the directory its agents run in.
 const schemaV9 = `
 ALTER TABLE threads ADD COLUMN mapping TEXT NOT NULL DEFAULT '';
 ALTER TABLE threads ADD COLUMN cwd TEXT NOT NULL DEFAULT '';
