@@ -124,6 +124,7 @@ func TestScopePathsAndChannelsRefuseWhatCannotWork(t *testing.T) {
 	for body, says := range map[string]string{
 		`{"paths": {"checkouts": "dev"}}`:                                     "paths.checkouts: must be an absolute path",
 		`{"channels": {"repo_prefix": "x-", "initiative_prefix": "x-repo-"}}`: "must not start one with the other",
+		`{"channels": {"initiative_prefix": null}}`:                           "channels.initiative_prefix: must not be null",
 	} {
 		if _, err := ParseScope([]byte(body), "/home/u"); err == nil || !strings.Contains(err.Error(), says) {
 			t.Errorf("%s: %v, want it to say %s", body, err, says)

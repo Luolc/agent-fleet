@@ -219,26 +219,27 @@ func liveRowsOf(conn *sql.DB, job, role string) ([]string, error) {
 	return live, nil
 }
 
-// removeWorktree removes `worktree` from the checkout it was made from and
-// deletes the branch it had checked out, if any. git names that checkout,
-// so it is found wherever it is.
+// removeWorktree removes `worktree` from the repository it was made from
+// and deletes the branch it had checked out, if any. git names that
+// repository's directory, so it is found wherever the checkout is and
+// whatever its layout (a `.git` directory or a separate git dir).
 func removeWorktree(worktree string) error {
-	common, err := Git("-C", worktree, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	out, err := Git("-C", worktree, "rev-parse", "--path-format=absolute", "--git-common-dir")
 	if err != nil {
 		return err
 	}
-	checkout := filepath.Dir(strings.TrimSpace(common))
+	common := strings.TrimSpace(out)
 	var branch string
 	if out, err := Git("-C", worktree, "symbolic-ref", "--quiet", "--short", "HEAD"); err == nil {
 		branch = strings.TrimSpace(out)
 	}
-	if _, err := Git("-C", checkout, "worktree", "remove", worktree); err != nil {
+	if _, err := Git("-C", common, "worktree", "remove", worktree); err != nil {
 		return err
 	}
 	fmt.Fprintf(os.Stdout, "removed worktree %s\n", worktree)
 	if branch != "" {
 		// -D: after a squash merge the branch is not an ancestor of main.
-		if _, err := Git("-C", checkout, "branch", "-D", branch); err != nil {
+		if _, err := Git("-C", common, "branch", "-D", branch); err != nil {
 			return err
 		}
 		fmt.Fprintf(os.Stdout, "deleted branch %s\n", branch)
@@ -724,11 +725,12 @@ func jobEndByLead(h *herdr.Herdr, args JobEndArgs) (exit.Code, error) {
 	if err := e.ledgerChecks(conn); err != nil {
 		return 0, err
 	}
-	if err := e.linearEnd(conn, args.Abandon); err != nil {
-		return 0, err
-	}
+	// Read before the Linear steps, so an invalid file stops nothing midway.
 	sc, err := config.LoadScope(e.me.Scope)
 	if err != nil {
+		return 0, err
+	}
+	if err := e.linearEnd(conn, args.Abandon); err != nil {
 		return 0, err
 	}
 	job := e.me.Job

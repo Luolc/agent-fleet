@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"errors"
 	"io/fs"
 	"os"
@@ -147,14 +148,17 @@ func LoadScope(scope string) (*Scope, error) {
 }
 
 // ParseScope reads a scope config's content, expanding `~/` in paths to
-// `home`. Unknown keys and wrong types are errors; a section that is
-// given must name its value.
+// `home`. Unknown keys, wrong types and nulls are errors; a section that
+// is given must name its value.
 func ParseScope(data []byte, home string) (*Scope, error) {
 	var f scopeFile
 	if err := decodeStrict(data, &f); err != nil {
 		return nil, err
 	}
-	t := &Scope{Paths: DefaultPaths, Channels: DefaultChannels, home: home}
+	if err := refuseNulls(data, ""); err != nil {
+		return nil, err
+	}
+	t := &Scope{Paths: DefaultPaths, Channels: DefaultChannels, home: filepath.Clean(home)}
 	if f.Linear != nil {
 		if f.Linear.Team == "" {
 			return nil, errors.New("linear.team: must be set when linear is")
@@ -198,6 +202,25 @@ func ParseScope(data []byte, home string) (*Scope, error) {
 	return t, nil
 }
 
+// refuseNulls refuses a null anywhere in the object `data`, naming its
+// key: a null would decode as an absent key, which means the default, so
+// `"initiative_prefix": null` must not quietly keep serving `x-repo-*`.
+func refuseNulls(data []byte, prefix string) error {
+	var raw map[string]json.RawMessage
+	if json.Unmarshal(data, &raw) != nil {
+		return nil
+	}
+	for key, value := range raw {
+		if string(value) == "null" {
+			return errors.New(prefix + key + ": must not be null; leave the key out for the default")
+		}
+		if err := refuseNulls(value, prefix+key+"."); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // expand is `path` absolute: as it is when absolute, `~/` replaced by
 // `home`; anything else is an error.
 func expand(path, home string) (string, error) {
@@ -212,8 +235,8 @@ func expand(path, home string) (string, error) {
 
 var channelPrefix = regexp.MustCompile(`^[a-z0-9_-]+$`)
 
-// check refuses prefixes that would read one channel name two ways, and
-// a general initiative that is not one directory name.
+// check refuses names that are not channel names, and prefixes that would
+// read one channel name two ways.
 func (c Channels) check() error {
 	if !channelPrefix.MatchString(c.RepoPrefix) {
 		return errors.New("channels.repo_prefix: must be made of [a-z0-9_-]")
@@ -221,11 +244,11 @@ func (c Channels) check() error {
 	if !channelPrefix.MatchString(c.InitiativePrefix) {
 		return errors.New("channels.initiative_prefix: must be made of [a-z0-9_-]")
 	}
+	if !channelPrefix.MatchString(c.GeneralInitiative) {
+		return errors.New("channels.general_initiative: must be made of [a-z0-9_-]")
+	}
 	if strings.HasPrefix(c.RepoPrefix, c.InitiativePrefix) || strings.HasPrefix(c.InitiativePrefix, c.RepoPrefix) {
 		return errors.New("channels: repo_prefix and initiative_prefix must not start one with the other")
-	}
-	if g := c.GeneralInitiative; g == "." || g == ".." || strings.Contains(g, "/") {
-		return errors.New("channels.general_initiative: must be one directory name")
 	}
 	return nil
 }

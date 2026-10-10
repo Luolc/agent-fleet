@@ -197,7 +197,8 @@ func TestWorktreeOfAnInitiativeCheckoutUnderConfiguredRoots(t *testing.T) {
 	w.git("clone", "-q", bare, seed)
 	w.git("-C", seed, "commit", "-q", "--allow-empty", "-m", "charter")
 	w.git("-C", seed, "push", "-q", "origin", "main")
-	w.git("clone", "-q", bare, checkout)
+	// A separate git dir: the checkout has a `.git` file, not a directory.
+	w.git("clone", "-q", "--separate-git-dir", filepath.Join(w.dir, "init-git"), bare, checkout)
 	head := w.git("-C", seed, "rev-parse", "HEAD")
 	wt := filepath.Join(trees, "multi-example-init")
 
