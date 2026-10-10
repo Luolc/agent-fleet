@@ -555,7 +555,7 @@ func TestJobStartStopsWhenAnAtbStepFails(t *testing.T) {
 		if got := row(w, "item-2-lead"); !strings.HasPrefix(got, " EX-10 starting ") {
 			t.Errorf("%s: row = %s", step, got)
 		}
-		for _, want := range []string{"job item-2 (open)", "ledger row item-2-lead (state starting)", "clean up with: fleet job end item-2 --force"} {
+		for _, want := range []string{"job item-2 (open)", "ledger row item-2-lead (state starting)", "find out why from the error above first; then clean up with: fleet job end item-2 --force"} {
 			if !strings.Contains(out.stderr, want) {
 				t.Errorf("%s: %q missing from %q", step, want, out.stderr)
 			}
@@ -718,7 +718,7 @@ func TestJobStartKeepsTheIdentifiersWrittenBeforeAnAtbStepFailed(t *testing.T) {
 		if got := row(w, "item-2-lead"); !strings.HasPrefix(got, c.leadRow) {
 			t.Errorf("%s: row = %q, want prefix %q", c.failOn, got, c.leadRow)
 		}
-		for _, want := range append(c.listed, "clean up with: fleet job end item-2 --force") {
+		for _, want := range append(c.listed, "find out why from the error above first; then clean up with: fleet job end item-2 --force") {
 			if !strings.Contains(out.stderr, want) {
 				t.Errorf("%s: %q missing from %q", c.failOn, want, out.stderr)
 			}

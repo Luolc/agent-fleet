@@ -469,7 +469,7 @@ func JobStart(h *herdr.Herdr, args JobStartArgs) (exit.Code, error) {
 	}
 	defer conn.Close()
 	job := c.id.Job
-	hint := fmt.Sprintf("clean up with: fleet job end %s --force", job)
+	hint := fmt.Sprintf("find out why from the error above first; then clean up with: fleet job end %s --force", job)
 	if err := c.reserve(conn); err != nil {
 		return 0, err
 	}
