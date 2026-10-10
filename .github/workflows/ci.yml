@@ -80,7 +80,7 @@ jobs:
 
   race:
     needs: changes
-    if: false # control arm, reverted before merge
+    if: fromJSON(needs.changes.outputs.groups).race
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
