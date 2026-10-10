@@ -4,35 +4,13 @@
 # this plain shell with the caller's identity variables set as its pane
 # would have them; the variables the starts injected are checked
 # separately in the agents' processes.
-WT=/home/agent/wt/$R
-DEV=/home/agent/dev/$R
-fake=/home/agent/.fake-claude
-mkdir -p "$fake" /home/agent/tasks
-
-git config --global user.name judge
-git config --global user.email judge@example.test
-# origin gets a commit before ~/dev is cloned, so origin/HEAD is set as in
-# a fresh clone; ~/seed pushes later commits to it.
-git init -q --bare -b main "/home/agent/remote/$R.git"
-git clone -q "/home/agent/remote/$R.git" /home/agent/seed 2>/dev/null
-git -C /home/agent/seed commit -q --allow-empty -m init
-git -C /home/agent/seed push -q origin main
-git clone -q "/home/agent/remote/$R.git" "$DEV"
-
-thr() { as thread-1 thread "" "" -- "$@"; }
+need_fake
+need_repo
 lead() { as item-1-lead lead thread-1 item-1 -- "$@"; }
-task() { printf '%s\n' "$2" > "/home/agent/tasks/$1.md"; echo "/home/agent/tasks/$1.md"; }
 # The arguments the claude process in an agent's pane was started with.
 proc_args() {
   "${S[@]}" pane process-info --pane "$(agent_field "$1" pane_id)" \
     | jq -r '.result.process_info.foreground_processes[0].argv[2:] | join(" ")'
-}
-# The identity variables of the claude process in an agent's pane.
-proc_env() {
-  local pane pid
-  pane=$(agent_field "$1" pane_id)
-  pid=$("${S[@]}" pane process-info --pane "$pane" | jq -r '.result.process_info.foreground_processes[0].pid')
-  tr '\0' '\n' < "/proc/$pid/environ" | grep "^$P" | sort | tr '\n' ' '
 }
 status_flags() { # name:flags for every live agent, in the order status lists them
   thr status --json "$@" | jq -r '[.agents[] | "\(.name):\(.flags | join(","))"] | join(" ")'
@@ -71,7 +49,6 @@ check "job start: Claude's fixed arguments" \
 # The first message is longer than the fake's 20 lines: its tail is on the
 # screen, the whole of it in the fake's log, read once the turn is over.
 has "job start: task on screen" "$(screen item-1-lead)" "## Your task" "0xLEAD1"
-received() { screen "$1" >/dev/null; cat "$fake/received-$(agent_field "$1" pane_id)" 2>/dev/null; }
 check "job start: the first message is the header, then the lead prompt" \
   "[FROM: thread-1]|You are a lead run by fleet: you run the job item-1 (scope $SCOPE) for the people in its home thread. The job is single-repo: its repo is $R, main checkout ~/dev/$R; \`<repo>\` below is $R. You run in $DEV and only read there: you change no repo yourself. You split the work, start workers, merge what they make, and end the job.|" \
   "$(received item-1-lead | head -2 | tr '\n' '|')"
