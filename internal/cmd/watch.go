@@ -45,10 +45,22 @@ const (
 		"job's thread comes later. It never calls a model and never sends keys to a suspect. " +
 		"The screen filter knows only the screen of Claude Code, currently the only supported " +
 		"agent.\n\n" +
+		"Then it looks at every live agent stopped at a screen (herdr status blocked, or a start " +
+		"left at a screen for 10 minutes), thread agents included. The folder-trust dialog for " +
+		"the agent's own directory is answered as a start answers it, and nobody is told. A usage " +
+		"limit, a model switch, a usage reset or a purchase is never pressed: the people in the " +
+		"agent's home thread are asked, once. Any other screen gets a helper agent " +
+		"(`unblock-<row id>`, in the `threads` workspace), one at a time and at most 3 per agent, " +
+		"which presses keys as fleet's guidance says or writes a question that the next run asks " +
+		"the people; no helper is started while that question waits for an answer. A worker's lead " +
+		"is told when a helper starts or the people are asked, and so is the starter of a lead or " +
+		"worker whose start stopped at the screen. Helpers that finished their turn, or worked for 30 " +
+		"minutes, are closed.\n\n" +
 		"Exit: 0 when the check ran (and every lead that had to be told was told); 1 when the " +
 		"scope is not a scope name; 2, 3 or 4 when telling a lead gave no clear signal, " +
 		"found it blocked, or did not find it, as for `send` (on 3 and 4 the next run tells it " +
-		"again); 5 when herdr or the database fails, or the ledger does not exist."
+		"again); 5 when herdr or the database fails, or the ledger does not exist. A failure for one " +
+		"stopped agent is printed and gives its code once the others were looked at."
 )
 
 // reading is what `watch` read for one agent this run.
@@ -112,6 +124,13 @@ func Watch(h *herdr.Herdr) (exit.Code, error) {
 	}
 	if !told {
 		fmt.Fprintf(os.Stdout, "suspect set unchanged for every lead (%d suspect)\n", suspects)
+	}
+	unblocked, err := Unblock(h, conn, inHerdr, now)
+	if err != nil {
+		return 0, err
+	}
+	if code == exit.Ok {
+		code = unblocked
 	}
 	return code, nil
 }

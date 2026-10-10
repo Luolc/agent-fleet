@@ -259,6 +259,9 @@ type inboundMessage struct {
 	// conclusion, which needs no answer.
 	Question   string
 	Conclusion bool
+	// Screen marks a question `watch` asks for a screen helper about an
+	// agent stopped at a screen: there is no agent to pass the answer to.
+	Screen bool
 }
 
 // channel is the channel part of the thread key `CHANNEL/TS`.
@@ -282,6 +285,11 @@ func (m inboundMessage) body() string {
 			"`fleet thread post`, then read the report it names and start the next job for each follow-up that "+
 			"serves what the people asked here, saying so in the thread; ask only about what needs a person's yes "+
 			"or lies outside their request.\n\n%s", m.Question, m.Thread, m.Text)
+	}
+	if m.Screen {
+		return fmt.Sprintf("Question from %s for the people in thread %s about an agent stopped at a screen, already "+
+			"posted there by fleet. Nothing to pass on: once they answer, fleet's watch gives their answer to a new "+
+			"helper on its next run, or they deal with the screen themselves.\n\n%s\n", m.Question, m.Thread, m.Text)
 	}
 	if m.Question != "" {
 		return fmt.Sprintf("Question from %s for the people in thread %s, already posted there by fleet; first check whether "+

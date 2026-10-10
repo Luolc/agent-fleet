@@ -72,15 +72,15 @@ func TestLoadRefusesWithTheFileAndExit1(t *testing.T) {
 }
 
 func TestScopeConfigIsOptionalAndStrict(t *testing.T) {
-	got, err := ParseScope([]byte(`{"linear": {"team": "EX"}, "fednet": {"socket": "/run/fednet.sock"}}`), "/home/u")
-	if err != nil || got.LinearTeam != "EX" || got.FednetSocket != "/run/fednet.sock" {
+	got, err := ParseScope([]byte(`{"linear": {"team": "EX"}, "fednet": {"socket": "/run/fednet.sock"}, "unblock": {"project": "Fleet"}}`), "/home/u")
+	if err != nil || got.LinearTeam != "EX" || got.FednetSocket != "/run/fednet.sock" || got.UnblockProject != "Fleet" {
 		t.Errorf("%+v, %v", got, err)
 	}
 	got, err = ParseScope([]byte(`{}`), "/home/u")
-	if err != nil || got.LinearTeam != "" || got.FednetSocket != "" {
+	if err != nil || got.LinearTeam != "" || got.FednetSocket != "" || got.UnblockProject != "" {
 		t.Errorf("empty object: %+v, %v", got, err)
 	}
-	for _, bad := range []string{`{"linear": {}}`, `{"fednet": {"socket": ""}}`, `{"team": "EX"}`, `[]`, `{"linear": {"team": 1}}`} {
+	for _, bad := range []string{`{"linear": {}}`, `{"fednet": {"socket": ""}}`, `{"unblock": {}}`, `{"team": "EX"}`, `[]`, `{"linear": {"team": 1}}`} {
 		if _, err := ParseScope([]byte(bad), "/home/u"); err == nil {
 			t.Errorf("%s accepted", bad)
 		}

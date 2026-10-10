@@ -14,11 +14,13 @@ import (
 type Role int
 
 // The roles: a thread agent (one conversation on a Slack thread; it starts
-// jobs), a lead (one per job) and a worker (started by a lead).
+// jobs), a lead (one per job), a worker (started by a lead) and a screen
+// helper (`unblock`, started by `watch` for an agent stopped at a screen).
 const (
 	Thread Role = iota
 	Lead
 	Worker
+	Unblock
 )
 
 // ParseRole reads a `FLEET_ROLE` value; ok is false for an unknown one.
@@ -30,6 +32,8 @@ func ParseRole(value string) (role Role, ok bool) {
 		return Lead, true
 	case "worker":
 		return Worker, true
+	case "unblock":
+		return Unblock, true
 	default:
 		return 0, false
 	}
@@ -41,6 +45,8 @@ func (r Role) String() string {
 		return "thread"
 	case Lead:
 		return "lead"
+	case Unblock:
+		return "unblock"
 	default:
 		return "worker"
 	}
@@ -64,7 +70,7 @@ type Identity struct {
 	Thread string
 }
 
-const hint = "this pane was not started by fleet; agents get these variables from `fleet inbox`, `fleet job start` or `fleet spawn`"
+const hint = "this pane was not started by fleet; agents get these variables from `fleet inbox`, `fleet job start`, `fleet spawn` or `fleet watch`"
 
 // AgentName is the caller's name alone: all that `send` needs. Fails with
 // exit code 1 when `FLEET_AGENT` is unset.
@@ -115,7 +121,7 @@ func FromEnv() (*Identity, error) {
 	roleValue := os.Getenv("FLEET_ROLE")
 	role, ok := ParseRole(roleValue)
 	if !ok {
-		return nil, exit.Refusedf("FLEET_ROLE is %q, expected thread, lead or worker: %s", roleValue, hint)
+		return nil, exit.Refusedf("FLEET_ROLE is %q, expected thread, lead, worker or unblock: %s", roleValue, hint)
 	}
 	scope, err := Scope()
 	if err != nil {

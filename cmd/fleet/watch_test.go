@@ -242,10 +242,12 @@ func TestWatchTellsALeadOnlyWhenTheSuspectsAmongItsWorkersChange(t *testing.T) {
 		t.Errorf("%d prompts", got)
 	}
 
-	// b-w1 is back. b-lead's set changes, but b-lead is blocked: exit 3,
-	// and b-w1's flag is kept so the next run tells b-lead. a-lead's set is
-	// unchanged, so it is not told (and not blocked by the fake).
-	w.herdrList("thread-1 idle 1", "a-lead working 7", "a-w1 working 9", "a-w2 working 8", "b-lead blocked 3", "b-w1 working 4")
+	// b-w1 is back. b-lead's set changes, but herdr refuses the notice as
+	// blocked: exit 3, and b-w1's flag is kept so the next run tells
+	// b-lead. a-lead's set is unchanged, so it is not told (and not blocked
+	// by the fake). The list does not show b-lead blocked, which would
+	// start the unblocking (judge/unblock.sh).
+	w.herdrList("thread-1 idle 1", "a-lead working 7", "a-w1 working 9", "a-w2 working 8", "b-lead working 3", "b-w1 working 4")
 	w.screen("b-w1", claude("⏺ Back", "1s", "2hr 40m"))
 	w.reply(`{"error":{"code":"agent_blocked","message":"b"}}`)
 	out = w.run("", []string{"watch", "--scope", scope})
