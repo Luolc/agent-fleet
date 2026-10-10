@@ -41,11 +41,20 @@ downloading another one. Bump the installed Go before bumping `go.mod`.
 
 ## CI
 
-`.github/workflows/ci.yml` has one job, `check`, which is the required status
-check on `main`. It runs on pull requests and on pushes to `main`: a gitleaks
-scan of the full history, pre-commit (gitleaks hook skipped, since the full
-scan covers it), `scripts/check.sh`, `go test -race ./...`, and the judge
-against a fresh Go build. Third-party actions are pinned by commit SHA.
+`.github/workflows/ci.yml` runs on pull requests and on pushes to `main`. Three
+jobs run in parallel:
+
+- `lint`: a gitleaks scan of the full history, pre-commit (gitleaks hook
+  skipped, since the full scan covers it), and `scripts/check.sh`.
+- `race`: `go test -race ./...`.
+- `judge`: the judge against a fresh Go build. The judge image is cached,
+  keyed on `judge/Dockerfile` and `judge/bin/`.
+
+`check` needs all three and passes only when each of them succeeded; it is
+the required status check on `main`, so no other job may be named `check`.
+The judge's suites share one container's state in order, so the judge runs
+as one job. Runners are pinned to `ubuntu-24.04`, and third-party actions by
+commit SHA.
 
 ## Test data
 
