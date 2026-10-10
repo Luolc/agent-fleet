@@ -399,7 +399,7 @@ func TestInboxReopensAKnownThreadWithItsSummariesWhenTheAgentIsGone(t *testing.T
 	if out.code != 0 || !strings.Contains(out.stderr, "gone from herdr") {
 		t.Fatalf("%+v", out)
 	}
-	if got := strings.TrimSpace(w.calls()); !strings.HasPrefix(got, "herdr status server\nherdr agent get\natb linear claim") {
+	if got := strings.TrimSpace(w.calls()); !strings.HasPrefix(got, "herdr status server\nherdr agent get\nherdr status server\natb linear claim") {
 		t.Errorf("calls = %q", got)
 	}
 	conn = w.defaultLedger()
@@ -560,19 +560,24 @@ func TestInboxKeepsAThreadWhereItsFirstMessagePutIt(t *testing.T) {
 }
 
 func TestInboxTellsTheThreadWhenItsCheckoutIsMissing(t *testing.T) {
-	for _, c := range []struct{ fields, line string }{
-		{`"channel_name":"repo-no-such"`, "The repo no-such is not checked out on this machine ("},
-		{`"channel_name":"x-repo-no-such"`, "The repo of x-repo-no-such is not checked out on this machine ("},
-		{`"trigger":"dm"`, "The repo of x-repo-general is not checked out on this machine ("},
+	for _, c := range []struct{ fields, line, dir string }{
+		{`"channel_name":"repo-no-such"`, "The repo no-such is not checked out on this machine (", "dev/no-such"},
+		{`"channel_name":"x-repo-no-such"`, "The repo of x-repo-no-such is not checked out on this machine (", "x-repo/no-such"},
+		{`"trigger":"dm"`, "The repo of x-repo-general is not checked out on this machine (", "x-repo/general"},
 	} {
+		// With the scope's session down: it is not started for a thread
+		// that gets no agent.
 		w := threadWorld(t, "")
-		out := w.inbox(w.eventIn("m1", "x", "", c.fields))
+		if err := os.WriteFile(filepath.Join(w.dir, "session-down"), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		out := w.run("", []string{"inbox", w.eventIn("m1", "x", "", c.fields)}, linearKey, "XDG_RUNTIME_DIR=/run/user/1000")
 		if out.code != 0 {
 			t.Fatalf("%s: %+v", c.fields, out)
 		}
 		calls := w.calls()
-		if !strings.HasPrefix(calls, "herdr status server\nfednet client post -socket /run/fednet.sock -thread "+threadKey+" -- "+c.line) ||
-			strings.Contains(calls, "herdr workspace") || strings.Contains(calls, "atb") {
+		if calls != "fednet client post -socket /run/fednet.sock -thread "+threadKey+" -- "+c.line+
+			filepath.Join(w.dir, "home", c.dir)+"), so no agent was started for this thread.\n" {
 			t.Errorf("%s: calls = %q", c.fields, calls)
 		}
 		if got := inboxRow(w, "m1"); got != "dropped" {

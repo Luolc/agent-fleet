@@ -201,9 +201,6 @@ func Inbox(args InboxArgs) (exit.Code, error) {
 		fmt.Fprintf(os.Stdout, "message %s was already %s\n", e.MsgID, state)
 		return exit.Ok, nil
 	}
-	if err := ensureSession(h, scope); err != nil {
-		return 0, err
-	}
 	msg := inboundMessage{Thread: e.Payload.Thread, Text: e.Payload.Text, User: e.Payload.User, TS: e.Payload.TS,
 		Context: e.Payload.Context, Mapping: mapping}
 	// A person's message in the thread answers what was pending there.
@@ -260,6 +257,9 @@ func route(h *herdr.Herdr, conn *sql.DB, scope string, cfg *config.Scope, msg in
 		return 0, false, err
 	}
 	if name != "" {
+		if err := ensureSession(h, scope); err != nil {
+			return 0, false, err
+		}
 		present, err := herdrHas(h, name)
 		if err != nil {
 			return 0, false, err
@@ -293,6 +293,10 @@ func startThread(h *herdr.Herdr, conn *sql.DB, scope string, cfg *config.Scope, 
 	}
 	if info, err := os.Stat(s.cwd); err != nil || !info.IsDir() {
 		return exit.Ok, true, s.notHere()
+	}
+	// The session is started only for a thread that gets an agent.
+	if err := ensureSession(h, scope); err != nil {
+		return 0, false, err
 	}
 	if err := s.reserve(); err != nil {
 		return 0, false, err

@@ -394,12 +394,18 @@ SYSTEMCTL
 chmod +x /home/agent/fake-thread/systemctl
 mkdir -p /home/agent/run
 L=(herdr --session fleet-lazy)
+echo '{"fednet": {"socket": "/home/agent/fednet.sock"}}' > "/home/agent/.config/$T/lazy.json"
 lazy_tabs() { "${L[@]}" tab list | jq -r '[.result.tabs[].label] | join(" ")'; }
 check "the scope lazy has no session yet" false "$("${L[@]}" status server --json | jq .running)"
 out=$(PATH=/home/agent/fake-thread:$PATH "$T" inbox "$(event m19 C0LZ/0.0 'lazy' '' '"channel_name":"repo-'"$R"'","scope":"lazy"')" 2>&1); rc=$?
 check "inbox: a session to start without XDG_RUNTIME_DIR, exit 5" 5 "$rc"
 has "inbox: names both settings" "$out" "Environment=XDG_RUNTIME_DIR=/run/user/<uid>" "-hook-env XDG_RUNTIME_DIR"
 check "inbox: systemctl not called" no "$([ -e /home/agent/systemctl.log ] && echo yes || echo no)"
+out=$(inbox "$(event m19b C0LZ/0.1 'lazy' '' '"channel_name":"repo-no-such","scope":"lazy"')" 2>&1); rc=$?
+check "inbox: a missing checkout in a scope without a session, exit 0" 0 "$rc"
+has "inbox: the thread is told" "$(cat /home/agent/fednet.log)" "-thread C0LZ/0.1 -- The repo no-such is not checked out"
+check "inbox: no session started for a thread that gets no agent" "no false" \
+  "$([ -e /home/agent/systemctl.log ] && echo yes || echo no) $("${L[@]}" status server --json | jq .running)"
 out=$(inbox "$(event m20 C0LZ/1.1 'lazy 0xMSG20' '' '"channel_name":"repo-'"$R"'","scope":"lazy"')" 2>&1); rc=$?
 check "inbox: a scope without a session, exit 0" 0 "$rc"
 [ "$rc" = 0 ] || printf '%s\n' "$out"
