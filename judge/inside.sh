@@ -2,7 +2,7 @@
 # Runs inside the judge container: two headless herdr sessions, one per
 # scope (fleet-example for the jobs, fleet-main for the threads), fake
 # Claudes, and the binary under test driven from a plain shell (so the
-# scope comes from --scope or the identity variables, as from cron). Every arm asserts an exit code and the visible
+# scope comes from --scope or the identity variables, as from a timer). Every arm asserts an exit code and the visible
 # effect that distinguishes it from the others: stdout/stderr, the ledger
 # (read with sqlite3), herdr's state and the fake agents' screens.
 #
@@ -121,7 +121,7 @@ need_thread_agent() {
 
 # The suites in the order a full run takes; JUDGE_SUITES (space-separated
 # names) picks some of them, still run in this order.
-all="usage send lifecycle watch worktree thread"
+all="usage send lifecycle watch worktree thread watchthread"
 suites=${JUDGE_SUITES:-$all}
 case $suites in *[![:space:]]*) ;; *) echo "JUDGE_SUITES names no suite; the suites are: $all" >&2; exit 2 ;; esac
 for suite in $suites; do

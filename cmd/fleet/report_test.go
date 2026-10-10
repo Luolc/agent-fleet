@@ -37,14 +37,14 @@ func TestReportCountsQuestionsPerJobAndThreadWithoutHerdr(t *testing.T) {
 	if out.code != 0 {
 		t.Fatalf("%+v", out)
 	}
-	want := "JOB  STATE  ASKED  ANSWERED  PENDING  WAIT-MEDIAN  WAIT-MAX\n" +
-		"x    open   1      0         1        -            -\n" +
-		"y    open   0      0         0        -            -\n" +
+	want := "JOB  STATE  ASKED  ANSWERED  PENDING  CLOSED  WAIT-MEDIAN  WAIT-MAX\n" +
+		"x    open   1      0         1        0       -            -\n" +
+		"y    open   0      0         0        0       -            -\n" +
 		"\n" +
-		"THREAD     TICKET  ASKED  ANSWERED  PENDING  WAIT-MEDIAN  WAIT-MAX\n" +
-		"C0123/1.1  EX-1    1      1         0        1m           1m\n" +
+		"THREAD     TICKET  ASKED  ANSWERED  PENDING  CLOSED  WAIT-MEDIAN  WAIT-MAX\n" +
+		"C0123/1.1  EX-1    1      1         0        0       1m           1m\n" +
 		"\n" +
-		"total: 2 asked, 1 answered, 1 pending; wait median 1m, longest 1m\n"
+		"total: 2 asked, 1 answered, 1 pending, 0 closed; wait median 1m, longest 1m\n"
 	if out.stdout != want {
 		t.Errorf("got:\n%s\nwant:\n%s", out.stdout, want)
 	}
@@ -67,7 +67,7 @@ func TestReportOnALedgerWithNoJobs(t *testing.T) {
 	w := newWorld(t)
 	w.exec() // creates the ledger, with no rows
 	out := w.run("", []string{"report"})
-	want := "no jobs\n\nno questions from thread agents\n\ntotal: 0 asked, 0 answered, 0 pending; wait median -, longest -\n"
+	want := "no jobs\n\nno questions from thread agents\n\ntotal: 0 asked, 0 answered, 0 pending, 0 closed; wait median -, longest -\n"
 	if out.code != 0 || out.stdout != want {
 		t.Errorf("%+v", out)
 	}

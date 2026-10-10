@@ -32,7 +32,7 @@ const (
 		"Checks, all before anything is created: the task file is readable and not empty; " +
 		"--cwd is a directory; the job is open in the ledger; the config is valid; with Linear " +
 		"on, the task's first non-empty line gives a title; the name uses only [a-z0-9-], is " +
-		"not `cron`, and is not taken in the ledger or in herdr; the job's workspace exists; " +
+		"not `watch`, and is not taken in the ledger or in herdr; the job's workspace exists; " +
 		"the job holds fewer than max_agents_per_job live agents including the lead; with " +
 		"resource_check, the 1-minute load average is below the CPU count and available " +
 		"memory is above 2 GiB; last, for a cross-repo job, the parent's team and project are " +

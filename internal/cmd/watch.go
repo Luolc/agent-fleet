@@ -1,54 +1,83 @@
-// `fleet watch`: the cron check for stuck agents (docs/design.md).
+// `fleet watch`: the timer's check of a scope's jobs, threads and
+// questions (docs/design.md). The job rules are here, the thread rules in
+// watchthread.go.
 
 package cmd
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
+	"time"
 	"unicode"
 
+	"github.com/Luolc/agent-fleet/internal/config"
 	"github.com/Luolc/agent-fleet/internal/db"
 	"github.com/Luolc/agent-fleet/internal/exit"
 	"github.com/Luolc/agent-fleet/internal/herdr"
+	"github.com/Luolc/agent-fleet/internal/identity"
 )
 
-// staleSecs is the number of seconds without any change before an agent is
-// a suspect (30 minutes).
-const staleSecs int64 = 30 * 60
+// nowEnv sets the clock of a run, in seconds since the epoch, so the
+// end-to-end test can step through hours and days without waiting.
+const nowEnv = "FLEET_WATCH_NOW"
 
-// staleEnv overrides staleSecs, so the end-to-end test does not wait 30
-// minutes.
-const staleEnv = "FLEET_WATCH_STALE_SECS"
+// watchSender is the header name of what watch sends to agents.
+const watchSender = "watch"
 
-// sender is the reserved sender name of watch's notices.
-const sender = "cron"
+// runBudget is how long a run may start new actions; what is left waits
+// for the next run, so a run ends within a minute.
+const runBudget = 45 * time.Second
 
 // WatchAbout and WatchLongAbout are the help texts of `watch`.
 const (
-	WatchAbout     = "Cron check for stuck agents; tells a lead when the suspects among its workers change"
-	WatchLongAbout = "Cron check for stuck agents; tells a lead when the suspects among its workers change.\n\n" +
-		"Meant for cron every 15 minutes, with --scope. It looks at the live " +
-		"lead and worker rows of the ledger. For each agent it reads `agent_status` and " +
-		"`state_change_seq` from herdr and hashes the visible screen with the spinner line, the " +
-		"input box and the status footer stripped (the spinner timer and the footer's countdowns " +
-		"change even when the agent is stuck). An agent is a suspect when all three have been " +
-		"unchanged for 30 minutes, or when it is gone from herdr.\n\n" +
-		"Every suspect is printed with its evidence. A worker's suspicion goes to its lead " +
-		"(FLEET_PARENT): only when the set of suspects among a lead's workers changes is that " +
-		"lead told, through the same path as `fleet send`, with the header `[FROM: cron]` and the " +
-		"evidence for each suspect. A lead's own suspicion is only printed; routing it to the " +
-		"job's thread comes later. It never calls a model and never sends keys to a suspect. " +
-		"The screen filter knows only the screen of Claude Code, currently the only supported " +
-		"agent.\n\n" +
-		"Exit: 0 when the check ran (and every lead that had to be told was told); 1 when the " +
-		"scope is not a scope name; 2, 3 or 4 when telling a lead gave no clear signal, " +
-		"found it blocked, or did not find it, as for `send` (on 3 and 4 the next run tells it " +
-		"again); 5 when herdr or the database fails, or the ledger does not exist."
+	WatchAbout     = "Timer check of a scope: stuck workers, quiet threads, idle sessions, unanswered questions"
+	WatchLongAbout = "Timer check of a scope: stuck workers, quiet threads, idle sessions, unanswered questions.\n\n" +
+		"Meant for a timer every 5 minutes, with --scope; one run at a time per scope (a lock " +
+		"file next to the ledger; a second run is refused). Each run first reads everything it " +
+		"needs: the ledger, `herdr agent list`, the visible screen of every live lead and worker, " +
+		"the config files, and, with a fednet socket configured, the newest message of every " +
+		"thread that has a live thread agent, an open job reporting to it or a pending question " +
+		"(`fednet client read-thread`). A failed read is exit 5 with nothing done. Then it acts; " +
+		"whatever it sends an agent goes through the same path as `fleet send`, headed `[FROM: " +
+		"watch]`, naming the rule and its evidence. It never calls a model and never sends keys.\n\n" +
+		"Jobs: a lead's or worker's status, `state_change_seq` and screen hash (the screen with the " +
+		"spinner line, the input box and the footer stripped) are recorded; an agent is a suspect " +
+		"when all three have been unchanged for `worker_stale` (10m), or when it is gone from " +
+		"herdr; an agent blocked at a prompt is not. Each lead is told when the set of suspects " +
+		"among its workers changes; a lead blocked or gone is told again next run. A lead's own " +
+		"state goes into the quiet-thread notice below.\n\n" +
+		"Threads (only with a fednet socket): a live thread agent gone from herdr has its session " +
+		"ended as abnormal (its ticket released without --done, a closing line saying the session " +
+		"broke off). A thread with no message for `thread_idle` (72h) has its live session " +
+		"reclaimed: the agent is asked to write its summary and end; 10 minutes later fleet ends it " +
+		"(the ticket gets a comment saying no summary was left), closes its tab and posts the " +
+		"closing line. A thread with no pending question and no message for `thread_quiet` (30m) " +
+		"is asked about once per quiet spell: with open jobs reporting to it, its thread agent " +
+		"(started for it when none is live) gets each job's state and is asked for progress; " +
+		"with none, a live thread agent is asked why it has not ended.\n\n" +
+		"Questions: the people are reminded of a thread's pending questions in one post listing " +
+		"them, at each of `reminders` (30m, 3h, 24h) after the oldest. A thread agent's question " +
+		"pending for `thread_question` (72h) is closed and its session reclaimed. A lead's question " +
+		"pending for `lead_question` (72h): the lead is told its job ends in 30 minutes; if the job " +
+		"is still open then, watch reclaims it as `job end --force` does and posts the Linear steps " +
+		"not done to the thread. The pending questions of a job that is not open are closed.\n\n" +
+		"The limits are durations such as `10m` or `72h` under `watch` in the scope's settings; " +
+		"`worker_stale` and `lead_question` of a single-repo job come from its repo's " +
+		"`.fleet/config.json`. FLEET_WATCH_NOW (seconds since the epoch) sets the run's clock.\n\n" +
+		"Exit: 0 when every rule that fired was carried out; 1 when the scope is not a scope name, " +
+		"a config file or FLEET_WATCH_NOW is invalid, or another run holds the lock; 2, 3 or 4 when " +
+		"a delivery gave no clear signal, found the agent blocked, or did not find it, as for " +
+		"`send` (the next run tries again where that matters); 5 when a read fails (nothing " +
+		"done), an action fails (the rest still done), the run is out of time, or the ledger does " +
+		"not exist."
 )
 
 // reading is what `watch` read for one agent this run.
@@ -69,51 +98,192 @@ type watched struct {
 	suspect      bool
 }
 
+// watchRun is one run: what it acts with, the clock, and the exit code so
+// far (the first that was not ok).
+type watchRun struct {
+	h     *herdr.Herdr
+	conn  *sql.DB
+	cfg   *config.Scope
+	scope string
+	now   int64
+	start time.Time
+	code  exit.Code
+	late  bool
+}
+
+// failed records a failed action: printed, its code kept, the run goes on.
+func (r *watchRun) failed(err error) {
+	fmt.Fprintf(os.Stderr, "fleet watch: %v\n", err)
+	code := exit.Environment
+	var failure *exit.Failure
+	if errors.As(err, &failure) {
+		code = failure.Code
+	}
+	r.got(code)
+}
+
+// got keeps the first code that is not ok.
+func (r *watchRun) got(code exit.Code) {
+	if r.code == exit.Ok {
+		r.code = code
+	}
+}
+
+// outOfTime is whether the run may start no more actions; said once.
+func (r *watchRun) outOfTime() bool {
+	if !r.late && time.Since(r.start) > runBudget {
+		r.late = true
+		fmt.Fprintf(os.Stderr, "fleet watch: out of time after %v; the rest waits for the next run\n", runBudget)
+		r.got(exit.Environment)
+	}
+	return r.late
+}
+
 // Watch runs `watch`.
 func Watch(h *herdr.Herdr) (exit.Code, error) {
+	start := time.Now()
+	scope, err := identity.Scope()
+	if err != nil {
+		return 0, err
+	}
+	now, err := watchNow()
+	if err != nil {
+		return 0, err
+	}
+	cfg, err := config.LoadScope(scope)
+	if err != nil {
+		return 0, err
+	}
 	conn, err := OpenLedger()
 	if err != nil {
 		return 0, err
 	}
 	defer conn.Close()
-	stale := watchStaleSecs()
-	now := db.Now()
+	unlock, err := lockWatch(scope)
+	if err != nil {
+		return 0, err
+	}
+	defer unlock()
+	// Everything is read before anything is done.
 	inHerdr, err := HerdrAgents(h)
 	if err != nil {
 		return 0, err
 	}
-	all, err := watchRead(h, conn, inHerdr, now, stale)
+	limits, err := jobLimits(conn, cfg)
 	if err != nil {
 		return 0, err
 	}
-	if err := saveReadings(conn, all); err != nil {
+	all, err := watchRead(h, conn, inHerdr, now, cfg.Watch, limits)
+	if err != nil {
 		return 0, err
+	}
+	threads, on, err := readThreads(conn, cfg, inHerdr, limits)
+	if err != nil {
+		return 0, err
+	}
+	r := &watchRun{h: h, conn: conn, cfg: cfg, scope: scope, now: now, start: start}
+	if err := r.jobs(all); err != nil {
+		return 0, err
+	}
+	if !on {
+		fmt.Fprintf(os.Stderr, "note: fednet.socket is not configured for scope %s; the thread and question rules are off\n", scope)
+		return r.code, nil
+	}
+	if err := r.threads(threads, all); err != nil {
+		return 0, err
+	}
+	return r.code, nil
+}
+
+// jobs runs the job rules: the readings and verdicts saved, every suspect
+// printed, and each lead told when its suspect workers change.
+func (r *watchRun) jobs(all []watched) error {
+	if err := saveReadings(r.conn, all); err != nil {
+		return err
 	}
 	suspects := 0
 	for _, w := range all {
 		if w.suspect {
 			suspects++
-			fmt.Fprintf(os.Stdout, "suspect: %s\n", evidence(w, now))
+			fmt.Fprintf(os.Stdout, "suspect: %s\n", evidence(w, r.now))
 		}
 	}
-	// A lead's own verdict is only printed, so it is saved as is.
+	// A lead's own verdict goes only into the quiet-thread notice, so it
+	// is saved as is.
 	var leads []watched
 	for _, w := range all {
 		if w.live.Role == "lead" {
 			leads = append(leads, w)
 		}
 	}
-	if err := saveSuspects(conn, leads); err != nil {
-		return 0, err
+	if err := saveSuspects(r.conn, leads); err != nil {
+		return err
 	}
-	code, told, err := tellLeads(h, conn, all, now)
+	told, err := r.tellLeads(all)
 	if err != nil {
-		return 0, err
+		return err
 	}
 	if !told {
 		fmt.Fprintf(os.Stdout, "suspect set unchanged for every lead (%d suspect)\n", suspects)
 	}
-	return code, nil
+	return nil
+}
+
+// watchNow is the run's clock: FLEET_WATCH_NOW when set, else now.
+func watchNow() (int64, error) {
+	value := os.Getenv(nowEnv)
+	if value == "" {
+		return db.Now(), nil
+	}
+	now, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return 0, exit.Refusedf("%s=%q is not a number of seconds since the epoch", nowEnv, value)
+	}
+	return now, nil
+}
+
+// lockWatch takes the scope's watch lock, `<scope>.watch.lock` next to
+// the ledger, or refuses when another run holds it. The lock goes with
+// the process, so a killed run leaves none behind.
+func lockWatch(scope string) (func(), error) {
+	ledger, err := db.Path(scope)
+	if err != nil {
+		return nil, err
+	}
+	path := filepath.Join(filepath.Dir(ledger), scope+".watch.lock")
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, exit.IO(err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = f.Close()
+		if errors.Is(err, syscall.EWOULDBLOCK) {
+			return nil, exit.Refusedf("another fleet watch is running for scope %s (%s)", scope, path)
+		}
+		return nil, exit.IO(err)
+	}
+	return func() { _ = f.Close() }, nil
+}
+
+// jobLimits are the watch limits of each open job: its repo's config for
+// a single-repo job, the scope's settings for a cross-repo one.
+func jobLimits(conn *sql.DB, cfg *config.Scope) (map[string]config.Watch, error) {
+	jobs, err := openJobs(conn)
+	if err != nil {
+		return nil, err
+	}
+	limits := map[string]config.Watch{}
+	for _, j := range jobs {
+		limits[j.Job] = cfg.Watch
+		if j.Repo != "" {
+			c, err := jobConfig(j.Repo, j.LeadCwd)
+			if err != nil {
+				return nil, err
+			}
+			limits[j.Job] = c.Watch
+		}
+	}
+	return limits, nil
 }
 
 // workersByLead groups the watched workers by their lead, in lead name
@@ -135,22 +305,21 @@ func workersByLead(all []watched) (leads []string, byLead map[string][]watched) 
 
 // tellLeads tells each lead whose set of suspect workers changed, and saves
 // the verdicts of the workers whose lead was told (or may have been: exit
-// 2). The code is the first delivery's that was not ok; told is whether
-// any lead was told.
-func tellLeads(h *herdr.Herdr, conn *sql.DB, all []watched, now int64) (exit.Code, bool, error) {
+// 2); told is whether any lead was told.
+func (r *watchRun) tellLeads(all []watched) (bool, error) {
 	leads, byLead := workersByLead(all)
-	code, told := exit.Ok, false
+	told := false
 	for _, lead := range leads {
-		got, changed, err := tellLead(h, conn, lead, byLead[lead], now)
+		if r.outOfTime() {
+			break
+		}
+		changed, err := r.tellLead(lead, byLead[lead])
 		if err != nil {
-			return 0, false, err
+			return false, err
 		}
 		told = told || changed
-		if got != exit.Ok && code == exit.Ok {
-			code = got
-		}
 	}
-	return code, told, nil
+	return told, nil
 }
 
 // tellLead tells `lead` when the set of suspects among `workers` changed
@@ -158,7 +327,7 @@ func tellLeads(h *herdr.Herdr, conn *sql.DB, all []watched, now int64) (exit.Cod
 // (exit 2) the notice may have arrived; it is not resent blindly. A
 // blocked or missing lead is told again next run, so the verdicts are
 // saved only on exit 0 or 2.
-func tellLead(h *herdr.Herdr, conn *sql.DB, lead string, workers []watched, now int64) (exit.Code, bool, error) {
+func (r *watchRun) tellLead(lead string, workers []watched) (bool, error) {
 	var before, after []string
 	for _, w := range workers {
 		if w.live.Suspect {
@@ -170,27 +339,31 @@ func tellLead(h *herdr.Herdr, conn *sql.DB, lead string, workers []watched, now 
 	}
 	before, after = nameSet(before), nameSet(after)
 	if slices.Equal(before, after) {
-		return exit.Ok, false, nil
+		return false, nil
 	}
-	text, err := WithHeader(sender, notice(workers, before, now))
+	text, err := WithHeader(watchSender, notice(workers, before, r.now))
 	if err != nil {
-		return 0, true, err
+		return true, err
 	}
-	got, err := Deliver(h, lead, text)
+	got, err := Deliver(r.h, lead, text)
 	if err != nil {
-		return 0, true, err
+		r.failed(err)
+		return true, nil
 	}
+	r.got(got)
 	if got == exit.Ok || got == exit.Unknown {
-		if err := saveSuspects(conn, workers); err != nil {
-			return 0, true, err
+		if err := saveSuspects(r.conn, workers); err != nil {
+			return true, err
 		}
 	}
-	return got, true, nil
+	return true, nil
 }
 
 // watchRead reads every live lead and worker from herdr and compares it with
-// the ledger.
-func watchRead(h *herdr.Herdr, conn *sql.DB, inHerdr map[string]InHerdr, now, stale int64) ([]watched, error) {
+// the ledger, with the stale limit of its job (the scope's for a job the
+// ledger has no open row for).
+func watchRead(h *herdr.Herdr, conn *sql.DB, inHerdr map[string]InHerdr, now int64, scope config.Watch,
+	limits map[string]config.Watch) ([]watched, error) {
 	rows, err := LiveRows(conn, nil)
 	if err != nil {
 		return nil, err
@@ -214,7 +387,11 @@ func watchRead(h *herdr.Herdr, conn *sql.DB, inHerdr map[string]InHerdr, now, st
 				tail:   tail(filtered, 5),
 			}
 		}
-		all = append(all, observe(live, r, now, stale))
+		limit, ok := limits[live.Job]
+		if !ok {
+			limit = scope
+		}
+		all = append(all, observe(live, r, now, secs(limit.WorkerStale)))
 	}
 	return all, nil
 }
@@ -225,15 +402,10 @@ func nameSet(names []string) []string {
 	return slices.Compact(names)
 }
 
-func watchStaleSecs() int64 {
-	if stale, err := strconv.ParseInt(os.Getenv(staleEnv), 10, 64); err == nil {
-		return stale
-	}
-	return staleSecs
-}
-
 // observe compares this run's reading with the last one in the ledger. Any
-// difference in status, seq or screen hash restarts the clock.
+// difference in status, seq or screen hash restarts the clock. An agent
+// blocked at a prompt is never a suspect: getting it past the prompt is
+// another matter than finding it stuck.
 func observe(live Live, r *reading, now, stale int64) watched {
 	if r == nil {
 		var lastChangeAt *int64
@@ -254,7 +426,7 @@ func observe(live Live, r *reading, now, stale int64) watched {
 		live:         live,
 		reading:      r,
 		lastChangeAt: &lastChangeAt,
-		suspect:      now-lastChangeAt >= stale,
+		suspect:      now-lastChangeAt >= stale && r.status != "blocked",
 	}
 }
 
@@ -294,7 +466,10 @@ func notice(workers []watched, before []string, now int64) string {
 		}
 	}
 	var text strings.Builder
-	text.WriteString("fleet watch: the set of suspect agents among your workers changed.\n")
+	text.WriteString("fleet watch, rule `suspect workers`: the set of suspect agents among your workers changed. " +
+		"A suspect has had the same herdr status, state_change_seq and screen for the job's limit, or is gone " +
+		"from herdr. Look at each: a false alarm needs nothing; otherwise send it a message, start another " +
+		"worker to take over, or ask the people with `fleet ask-human`.\n")
 	if len(suspects) == 0 {
 		text.WriteString("\nNo worker of yours is a suspect now.\n")
 	} else {
