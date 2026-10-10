@@ -225,6 +225,9 @@ Options:
       --report-file <PATH>  Your report, written to your work order with atb when FLEET_ISSUE is set,
                             and named in the conclusion (required without --force)
       --abandon             End the job as abandoned instead of done
+      --close-parent <OUTCOME>
+                            Close the job's parent issue as done or abandoned; without it the
+                            parent returns to the state it had before the job claimed it
       --force               Reclaim the job from outside (a thread agent, or no FLEET_ROLE): no report,
                             no Linear step; the cleanup after a failed start or a lost lead
       --scope <NAME>        ` + scopeHelp + `
@@ -751,9 +754,11 @@ func runJobEnd(args []string, scope *cliargs.OptString) (exit.Code, error) {
 	fs := flagSet("job end", scope)
 	reportFile := cliargs.OptString{Name: "report-file", Placeholder: "PATH"}
 	abandon := cliargs.Bool{Name: "abandon"}
+	closeParent := cliargs.OptString{Name: "close-parent", Placeholder: "OUTCOME"}
 	force := cliargs.Bool{Name: "force"}
 	fs.Var(&reportFile, "report-file", "File with the report")
 	fs.Var(&abandon, "abandon", "End the job as abandoned")
+	fs.Var(&closeParent, "close-parent", "Close the parent issue as done or abandoned")
 	fs.Var(&force, "force", "Reclaim the job from outside")
 	got, helped, err := parse(fs, args, jobEndHelp, jobEndUsage, []string{"[JOB]"})
 	if err != nil || helped {
@@ -768,7 +773,8 @@ func runJobEnd(args []string, scope *cliargs.OptString) (exit.Code, error) {
 		return 0, err
 	}
 	return cmd.JobEnd(h, cmd.JobEndArgs{
-		Job: job, ReportFile: reportFile.Ptr(), Abandon: abandon.Value, Force: force.Value})
+		Job: job, ReportFile: reportFile.Ptr(), Abandon: abandon.Value,
+		CloseParent: closeParent.Ptr(), Force: force.Value})
 }
 
 func runWorktree(args []string, scope *cliargs.OptString) (exit.Code, error) {
