@@ -314,7 +314,7 @@ printf 'Progress: half done. 0xPOST\n' > /home/agent/tasks/post.md
 out=$(thra "$K" TH-5 -- thread post --body-file /home/agent/tasks/post.md --attach /home/agent/tasks/q1.md --attach rel/b.pdf 2>&1); rc=$?
 check "thread post: exit 0, fednet's stdout printed" "0 m-posted" "$rc $out"
 check "thread post: posted to the caller's thread through the scope's socket, attachments passed on" \
-  "client post -socket /home/agent/fednet.sock -thread $K -file /home/agent/tasks/q1.md -file rel/b.pdf -- Progress: half done. 0xPOST|" \
+  "client post -socket /home/agent/fednet.sock -thread $K -file /home/agent/tasks/q1.md -file rel/b.pdf -- Progress: half done. 0xPOST||" \
   "$(tr '\n' '|' < /home/agent/fednet.log)"
 printf '    code 0xINDENT\nmore\n' > /home/agent/tasks/indented.md
 : > /home/agent/fednet.log
