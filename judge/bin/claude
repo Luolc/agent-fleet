@@ -18,6 +18,10 @@
 # Claude does: TICK also adds a transcript line each time (a moving agent),
 # HANG does not (a stuck one). Exact, because a stuck agent's screen, with
 # the word on it, is quoted in the notice another fake Claude receives.
+# Every message received is also appended in full to
+# ~/.fake-claude/received-<pane id> (HERDR_PANE_ID, as herdr sets it in the
+# pane), because the screen shows only the last 20 lines and a long first
+# message's head is not on it.
 rule=$(printf '─%.0s' $(seq 1 60))
 transcript=()
 draw() {
@@ -114,6 +118,8 @@ while IFS= read -r line; do
     transcript+=("> $more")
     [ -e "$HOME/.fake-claude/stall" ] || working
   done
+  mkdir -p "$fake"
+  printf '%s\n' "$line" >> "$fake/received-${HERDR_PANE_ID:-$$}"
   if [ -e "$HOME/.fake-claude/stall" ]; then idle; continue; fi
   case "$line" in
     TICK | HANG) forever "$line" ;;

@@ -1246,3 +1246,51 @@ func TestThreadPostPostsToTheCallersThreadThroughTheScopesSocket(t *testing.T) {
 		t.Errorf("a refusal called out: %q", w.calls())
 	}
 }
+
+func TestInboxRecordsThePersonsLatestMessageAndJobStartHandsItToTheLead(t *testing.T) {
+	w := threadWorld(t, "")
+	w.configure(`{"resource_check": false}`)
+	latest := func() string {
+		conn := w.defaultLedger()
+		defer conn.Close()
+		var text, user, ts string
+		if err := conn.QueryRow("SELECT last_text, last_user, last_ts FROM threads WHERE thread = ?1", threadKey).Scan(&text, &user, &ts); err != nil {
+			return "none"
+		}
+		return text + "|" + user + "|" + ts
+	}
+	if out := w.inbox(w.event("m1", "Please import the A table", "ctx")); out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	if got := latest(); got != "Please import the A table|U0ABC|1700000001.000" {
+		t.Errorf("after the start: latest = %q", got)
+	}
+	// A later message to the live agent replaces it; a dropped one does not.
+	if out := w.inbox(w.event("m2", "And the B table, not the C table", "")); out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	if got := latest(); got != "And the B table, not the C table|U0ABC|1700000001.000" {
+		t.Errorf("after a delivery: latest = %q", got)
+	}
+	// The lead's first message carries it verbatim, between the lead prompt
+	// and the task.
+	out := w.run("", []string{"job", "start", "item-7", "--repo", "example-dataset", "--task-file", task(w, "task.md", "Import the A table\n")},
+		"FLEET_AGENT=thread-c0123-1700000000-123", "FLEET_ROLE=thread", "FLEET_SCOPE=main", "FLEET_THREAD="+threadKey)
+	if out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	argv := w.file("argv")
+	for _, want := range []string{"agent\nprompt\nitem-7-lead\n[FROM: thread-c0123-1700000000-123]\nYou are a lead run by fleet: you run the job item-7 (scope main)",
+		"FLEET_ISSUE= (empty: this job has no Linear work orders). Linear is off for this job:",
+		"The job holds at most 4 live agents, you included.",
+		"write your report to ~/scratch/example-dataset/ (",
+		"\n## Latest message from a person in the home thread\n\nFrom U0ABC at 1700000001.000, as written:\n\nAnd the B table, not the C table\n" +
+			"\n## Your task\n\nImport the A table\n\n--wait\n"} {
+		if !strings.Contains(argv, want) {
+			t.Errorf("argv = %q, want %q in it", argv, want)
+		}
+	}
+	if strings.Contains(argv, "{{") || strings.Contains(argv, "Work order:") || strings.Contains(argv, "You are a worker") {
+		t.Errorf("argv = %q: a placeholder, a work order line or the worker prompt in it", argv)
+	}
+}

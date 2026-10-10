@@ -273,6 +273,9 @@ check "job start from a thread agent: exit 0" 0 "$rc"
 [ "$rc" = 0 ] || printf '%s\n' "$out"
 check "job start: the caller's thread is the job's home thread" "$K " "$(tledger "SELECT home_thread FROM jobs WHERE job = 'item-8'")"
 check "job start: the lead's process has no thread variable" "" "$(proc_env item-8-lead | grep -o "${P}THREAD=[^ ]*")"
+has "job start: the lead gets the thread's latest message from a person, verbatim with its sender and time" "$(received item-8-lead)" \
+  "## Latest message from a person in the home thread" "From U0ABC at 1700000001.000, as written:" "again 0xMSG8" "## Your task" "home thread job"
+lacks "job start: the lead does not get an earlier message of the thread" "$(received item-8-lead)" "0xMSG7"
 
 # The lead of item-8 asks the people in its home thread: fleet posts the
 # question, and it reaches the thread agent; the next message in the

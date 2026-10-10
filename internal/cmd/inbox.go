@@ -217,8 +217,20 @@ func Inbox(args InboxArgs) (exit.Code, error) {
 	state = "delivered"
 	if dropped {
 		state = "dropped"
+	} else if err := recordLatest(conn, msg); err != nil {
+		return 0, err
 	}
 	return exit.Ok, setMessage(conn, e.MsgID, state)
+}
+
+// recordLatest writes the delivered message onto the thread's row as the
+// latest a person posted there, for `job start` to hand to the lead.
+func recordLatest(conn *sql.DB, msg inboundMessage) error {
+	if _, err := conn.Exec("UPDATE threads SET last_text = ?1, last_user = ?2, last_ts = ?3 WHERE thread = ?4",
+		msg.Text, msg.User, msg.TS, msg.Thread); err != nil {
+		return exit.Database(err)
+	}
+	return nil
 }
 
 // inboxLedger opens the scope's ledger for a message, or returns nil when
