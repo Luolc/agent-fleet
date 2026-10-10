@@ -520,7 +520,8 @@ func TestInboxRunsEachChannelKindInItsDirectory(t *testing.T) {
 			t.Errorf("%s: tab argv = %q", c.label, w.file("tab-argv"))
 		}
 		prompt := w.file("argv")
-		if !strings.Contains(prompt, c.rules) || !strings.Contains(prompt, "You run in "+cwd+".") {
+		if !strings.Contains(prompt, c.rules) || !strings.Contains(prompt, "You run in "+cwd+".") ||
+			!strings.Contains(prompt, "start the job and say so in the thread; do not ask whether to start it.") {
 			t.Errorf("%s: prompt = %q", c.label, prompt)
 		}
 		if strings.HasPrefix(c.dir, "x-repo/") && !strings.Contains(prompt, filepath.Join(cwd, "AGENTS.md")+" is its charter") {
@@ -1473,7 +1474,7 @@ func TestInboxRecordsThePersonsLatestMessageAndJobStartHandsItToTheLead(t *testi
 	argv := w.file("argv")
 	for _, want := range []string{"agent\nprompt\nitem-7-lead\n[FROM: thread-c0123-1700000000-123]\nYou are a lead run by fleet: you run the job item-7 (scope main)",
 		"FLEET_ISSUE= (empty: this job has no Linear work orders). Linear is off for this job:",
-		"The job holds at most 4 live agents, you included.",
+		"The job's cap is 16 live agents, you included.",
 		"write your report to ~/scratch/example-dataset/ (",
 		"\n## Latest message from a person in the home thread\n\nThe one JSON object on the next line is fleet's record of it (user, ts, text as written):\n" +
 			`{"user":"U0ABC","ts":"1700000001.000","text":"And the B table, not the C table"}` + "\n\n## Your task\n\nImport the A table\n\n--wait\n"} {

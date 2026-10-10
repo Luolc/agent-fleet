@@ -297,7 +297,7 @@ func TestRolePromptsFillEveryPlaceholderForBothRolesAndBothJobKinds(t *testing.T
 	}
 	got := rolePrompt(lead, "/home/u/dev/example-dataset", "example-dataset", "", 4, issue, "QT-10")
 	for _, want := range []string{"FLEET_ISSUE=QT-12 (your work order, https://linear.example.test/QT-12). The job's parent issue is QT-10;",
-		"at most 4 live agents", "read the `## Fleet` section of ~/dev/example-dataset/AGENTS.md", "`wire-<name>`"} {
+		"The job's cap is 4 live agents", "read the `## Fleet` section of ~/dev/example-dataset/AGENTS.md", "`wire-<name>`"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("lead single: %q not in the prompt", want)
 		}

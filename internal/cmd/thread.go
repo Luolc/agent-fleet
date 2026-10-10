@@ -275,7 +275,9 @@ func (m inboundMessage) sender() string {
 func (m inboundMessage) body() string {
 	if m.Conclusion {
 		return fmt.Sprintf("Conclusion of a job from %s for the people in thread %s. Post it to the thread with "+
-			"`fleet thread post`; nothing is waiting for an answer.\n\n%s", m.Question, m.Thread, m.Text)
+			"`fleet thread post`, then read the report it names and start the next job for each follow-up that "+
+			"serves what the people asked here, saying so in the thread; ask only about what needs a person's yes "+
+			"or lies outside their request.\n\n%s", m.Question, m.Thread, m.Text)
 	}
 	if m.Question != "" {
 		return fmt.Sprintf("Question from %s for the people in thread %s, already posted there by fleet; "+
@@ -501,8 +503,16 @@ func summaries(ticket string) ([]string, error) {
 }
 
 // rules is how the thread agent decides between a single-repo and a
-// cross-repo job, by the thread's mapping.
+// cross-repo job, by the thread's mapping, and which work it starts
+// without asking.
 func (s *threadStart) rules() string {
+	return s.jobKind() + " Work you find while answering here (a fix you diagnosed, a follow-up a job's report " +
+		"names) is asked for when it serves what the people asked in this thread: start the job and say so in the thread; do not " +
+		"ask whether to start it. Money, machines, risk controls and a release still need a person's yes."
+}
+
+// jobKind is the single-repo or cross-repo rule of the thread's mapping.
+func (s *threadStart) jobKind() string {
 	if repo, ok := strings.CutPrefix(s.mapping, "repo-"); ok {
 		return fmt.Sprintf("This thread belongs to the repo %[1]s. Work asked for here is a single-repo job in %[1]s "+
 			"(`fleet job start <job> --repo %[1]s ...`), unless the people say it reaches other repos; then it is a "+

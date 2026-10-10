@@ -36,8 +36,9 @@ const (
 		"worktree is made; agents open theirs with `fleet worktree` (`--detach <ref>` for a " +
 		"review checkout of a PR head), never with `git worktree add`, so `job end` removes them.\n\n" +
 		"Settings: a single-repo job reads .fleet/config.json in ~/dev/<repo> (`max_agents_per_job`, " +
-		"`resource_check`, `linear`; see `fleet spawn --help`). A cross-repo job reads no " +
-		"config: the defaults apply, and Linear is on exactly when --parent-issue is given; " +
+		"`resource_check`, `linear`; see `fleet spawn --help`). A cross-repo job reads " +
+		".fleet/config.json in its initiative checkout ~/x-repo/<I> (an invalid file is refused " +
+		"the same way), except `linear`: Linear is on exactly when --parent-issue is given; " +
 		"the work orders then go to the parent's team and project, read from Linear.\n\n" +
 		"Linear on: exactly one of --parent-issue <ISSUE> and --new-parent <TITLE> is required; " +
 		"--new-parent (single-repo jobs only) creates the parent in the repo's team and project " +
@@ -296,8 +297,10 @@ func (c *jobChecked) repoAndLinear(args JobStartArgs) error {
 				"to create the parent in, so create it first and pass --parent-issue")
 		}
 	}
-	if c.cfg, err = jobConfig(c.home, c.repo); err != nil {
-		return err
+	if c.repo != "" {
+		if c.cfg, err = jobConfig(c.home, c.repo, ""); err != nil {
+			return err
+		}
 	}
 	c.linear = jobLinear(c.cfg, c.repo, c.parent)
 	switch {
@@ -318,7 +321,8 @@ func (c *jobChecked) repoAndLinear(args JobStartArgs) error {
 // crossRepoDir is where a cross-repo job's lead runs: a directory named
 // after the job in the checkout of the caller's thread's initiative
 // (~/x-repo/<I>/<job>), or of x-repo-general for a thread of one repo.
-// The checkout must exist; the job's directory is made at the start.
+// The checkout must exist; the job's directory is made at the start. The
+// job's config is read here, from the checkout.
 func (c *jobChecked) crossRepoDir(conn querier) error {
 	mapping, err := threadMapping(conn, c.me.Thread)
 	if err != nil {
@@ -329,7 +333,8 @@ func (c *jobChecked) crossRepoDir(conn querier) error {
 		return exit.Refusedf("no checkout at %s, where a cross-repo job of this thread runs", root)
 	}
 	c.cwd = filepath.Join(root, c.id.Job)
-	return nil
+	c.cfg, err = jobConfig(c.home, "", c.cwd)
+	return err
 }
 
 // dedup is the dedup checks in the ledger: the job's name, its key and its

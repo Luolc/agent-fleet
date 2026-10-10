@@ -48,7 +48,11 @@ job_row() { ledger "SELECT parent_issue, key, repo, lead_cwd, state, outcome FRO
 check "thread agent starts idle" idle "$(start_fake thread-1)"
 tpane=$(agent_field thread-1 pane_id)
 
-# A single-repo job's lead, through the folder-trust prompt, in ~/dev/$R.
+# A single-repo job's lead, through the folder-trust prompt, in ~/dev/$R,
+# with a cap of 4 from .fleet/config.json (the default is 16).
+cfg=$DEV/.fleet/config.json
+mkdir -p "$(dirname "$cfg")"
+echo '{"max_agents_per_job": 4}' > "$cfg"
 touch "$fake/trust"
 out=$(thr job start item-1 --repo "$R" --task-file "$(task lead 'lead task 0xLEAD1')" --model opus --effort medium 2>&1); rc=$?
 check "job start: exit 0 through the trust prompt" 0 "$rc"
@@ -73,7 +77,7 @@ check "job start: the first message is the header, then the lead prompt" \
   "$(received item-1-lead | head -2 | tr '\n' '|')"
 has "job start: the lead prompt names its identity, cap and ending, then the thread's latest message, then the task" "$(received item-1-lead)" \
   "FLEET_AGENT=item-1-lead, FLEET_ROLE=lead, FLEET_JOB=item-1, FLEET_PARENT=thread-1" "FLEET_ISSUE= (empty: this job has no Linear work orders)" \
-  "at most 4 live agents, you included" "\`fleet job end --report-file <file>\`" \
+  "The job's cap is 4 live agents, you included." "\`fleet job end --report-file <file>\`" \
   "## Latest message from a person in the home thread" "no message from a person recorded for this job's home thread" "## Your task" "0xLEAD1"
 lacks "job start: no placeholder left in the lead's first message" "$(received item-1-lead)" "{{"
 lacks "job start: no work order line without Linear" "$(received item-1-lead)" "Work order:"
@@ -86,17 +90,19 @@ check "job start: ledger row active with its places" \
 check "job start: job row open with its repo and the lead's cwd" "||$R|$DEV|open| " "$(job_row item-1)"
 check "job start: started_at is now" "1 " \
   "$(ledger "SELECT abs(started_at - strftime('%s', 'now')) < 120 FROM agents WHERE name = 'item-1-lead'")"
-rm "$fake/trust"
 
 # The lead opens a worktree (branch item-1, no prefix) and starts workers
-# in it, up to the cap of 4 including the lead.
+# in it, up to the cap of 4 including the lead; the first one through the
+# folder-trust prompt for the worktree.
 settled item-1-lead
 wt=$(lead worktree "$R" 2>&1); rc=$?
 check "worktree from the lead: exit 0 with the path" "0 $WT/item-1" "$rc $wt"
 check "worktree: branch named after the job" item-1 "$(git -C "$WT/item-1" branch --show-current 2>&1)"
 out=$(lead spawn a --cwd "$wt" --task-file "$(task a 'worker task 0xWORKA')" 2>&1); rc=$?
-check "spawn worker: exit 0" 0 "$rc"
+rm "$fake/trust"
+check "spawn worker: exit 0 through the trust prompt" 0 "$rc"
 [ "$rc" = 0 ] || printf '%s\n' "$out"
+has "spawn worker: the worktree was trusted" "$(cat "$fake/trusted")" "$WT/item-1"
 has "spawn worker: reports what started" "$out" "started item-1-a in job item-1 ($WT/item-1)"
 check "spawn worker: in the job's workspace" "$lws" "$(agent_field item-1-a workspace_id)"
 check "spawn worker: cwd is --cwd" "$WT/item-1" "$(agent_field item-1-a cwd)"
@@ -138,8 +144,6 @@ check "job list --json: the same job" "item-1 item-1-lead 3" \
 
 # Settings from .fleet/config.json in ~/dev: refusals before anything is
 # created. The file is removed again, so the rest runs on the defaults.
-cfg=$DEV/.fleet/config.json
-mkdir -p "$(dirname "$cfg")"
 echo '{"max_agents_per_job": "4"}' > "$cfg"
 out=$(thr job start item-9 --repo "$R" --task-file "$(task lead9 'lead 9')" 2>&1); rc=$?
 check "job start: invalid config refused with exit 1" 1 "$rc"

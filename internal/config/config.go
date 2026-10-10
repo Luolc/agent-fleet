@@ -39,10 +39,9 @@ type file struct {
 	Linear          *Linear `json:"linear"`
 }
 
-// Default is the config of a job that reads no file: a cross-repo job, or a
-// repo without `.fleet/config.json`.
+// Default is the config of a job whose checkout has no `.fleet/config.json`.
 func Default() *Config {
-	return &Config{MaxAgentsPerJob: 4, ResourceCheck: true}
+	return &Config{MaxAgentsPerJob: 16, ResourceCheck: true}
 }
 
 // Path is the config file of the main checkout `checkout`.
