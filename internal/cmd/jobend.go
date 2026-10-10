@@ -31,7 +31,10 @@ const (
 		"With Linear on, first: the report is written to your work order (FLEET_ISSUE, `atb " +
 		"linear comment`) and the work order is released as done or abandoned (`atb linear " +
 		"release`); then the conclusion (outcome, lead, work order, report path) is written to " +
-		"the job's parent issue and the parent is released the same way. Each step done is " +
+		"the job's parent issue and fleet's claim on the parent is released. The parent is " +
+		"closed only with --close-parent (done or abandoned), for when everything it asks for " +
+		"is done or given up; without it the parent returns to the state it had before the " +
+		"job claimed it, and a later job can take it. Each step done is " +
 		"recorded in the ledger; if a step fails, `job end` exits 5 naming it and nothing else " +
 		"changes, and running it again continues from the first step not recorded, so a " +
 		"release already done is not repeated; the same holds for the ledger update, the " +
@@ -54,7 +57,7 @@ const (
 		"printed for a person to finish. Parts already gone are skipped, so it can be run " +
 		"again.\n\n" +
 		"Exit: 0 when the job ended; 1 when a check refuses (live workers, the caller, the " +
-		"report file, the flags); 5 when atb, git, herdr or the database fails, the scope has " +
+		"report file, the flags, --close-parent on a job without a parent issue); 5 when atb, git, herdr or the database fails, the scope has " +
 		"no ledger, or something is left (listed)."
 )
 
@@ -67,6 +70,9 @@ type JobEndArgs struct {
 	ReportFile *string
 	// Abandon ends the job as abandoned instead of done.
 	Abandon bool
+	// CloseParent closes the parent issue as `done` or `abandoned`; nil
+	// releases the claim only.
+	CloseParent *string
 	// Force reclaims the job from outside.
 	Force bool
 }
@@ -529,8 +535,8 @@ func forcedArgs(args JobEndArgs) (string, error) {
 	if args.Job == nil {
 		return "", exit.Refusedf("--force needs the job: `fleet job end <JOB> --force`")
 	}
-	if args.ReportFile != nil || args.Abandon {
-		return "", exit.Refusedf("--force takes no report and no --abandon; it reclaims the job without a conclusion")
+	if args.ReportFile != nil || args.Abandon || args.CloseParent != nil {
+		return "", exit.Refusedf("--force takes no report, no --abandon and no --close-parent; it reclaims the job without a conclusion")
 	}
 	if os.Getenv("FLEET_ROLE") != "" {
 		me, err := identity.FromEnv()
@@ -549,10 +555,13 @@ type leadEnding struct {
 	me     *identity.Identity
 	job    *jobRow
 	report string
+	// closeParent is `done`, `abandoned` or "" (the parent is not closed).
+	closeParent string
 }
 
 // leadArgs refuses a caller that is not a lead, a job that is not the
-// caller's and a bad report file, before the ledger is opened.
+// caller's, a bad report file and a bad --close-parent, before the ledger
+// is opened.
 func leadArgs(args JobEndArgs) (*leadEnding, error) {
 	me, err := identity.FromEnv()
 	if err != nil {
@@ -577,12 +586,19 @@ func leadArgs(args JobEndArgs) (*leadEnding, error) {
 	if err != nil {
 		return nil, exit.Refusedf("cannot read %s: %v", *args.ReportFile, err)
 	}
-	return &leadEnding{me: me, report: report}, nil
+	e := &leadEnding{me: me, report: report}
+	if args.CloseParent != nil {
+		e.closeParent = *args.CloseParent
+		if e.closeParent != "done" && e.closeParent != "abandoned" {
+			return nil, exit.Refusedf("--close-parent is `done` or `abandoned`, not %q", e.closeParent)
+		}
+	}
+	return e, nil
 }
 
 // ledgerChecks refuses a job that is not open, unless it is the caller's
-// ending that stopped before its last step (the workspace close), and
-// live workers.
+// ending that stopped before its last step (the workspace close), live
+// workers, and --close-parent on a job without a parent issue.
 func (e *leadEnding) ledgerChecks(conn *sql.DB) error {
 	job, err := latestJob(conn, e.me.Job)
 	if err != nil {
@@ -597,6 +613,9 @@ func (e *leadEnding) ledgerChecks(conn *sql.DB) error {
 	}
 	if len(workers) > 0 {
 		return exit.Refusedf("job %s still has live workers: %s; wait for their `done`", e.me.Job, strings.Join(workers, ", "))
+	}
+	if e.closeParent != "" && job.ParentIssue == "" {
+		return exit.Refusedf("job %s has no parent issue to close", e.me.Job)
 	}
 	e.job = job
 	return nil
@@ -631,8 +650,8 @@ func conclusion(job, outcome, lead, issue, report string) string {
 }
 
 // linearEnd writes the report to the lead's work order and releases it,
-// then the conclusion to the parent and releases it; each only when the
-// job has one. Each step done is recorded under the job's key, so a
+// then the conclusion to the parent and releases fleet's claim on it,
+// closing it only as --close-parent says; each only when the job has one. Each step done is recorded under the job's key, so a
 // retry after a failure continues where it stopped.
 func (e *leadEnding) linearEnd(conn querier, abandon bool) error {
 	key := endKey(e.job)
@@ -652,7 +671,12 @@ func (e *leadEnding) linearEnd(conn querier, abandon bool) error {
 	}); err != nil {
 		return err
 	}
-	return runStep(conn, key, "release-parent", func() error { return atb.Release(e.job.ParentIssue, e.me.Agent, abandon) })
+	return runStep(conn, key, "release-parent", func() error {
+		if e.closeParent == "" {
+			return atb.ReleaseClaim(e.job.ParentIssue, e.me.Agent, "job "+e.job.Job+" ended")
+		}
+		return atb.Release(e.job.ParentIssue, e.me.Agent, e.closeParent == "abandoned")
+	})
 }
 
 // commentParent writes `text` to the parent issue through a temporary file.

@@ -331,14 +331,17 @@ func TestJobEndRefusesTheWrongCallerLiveWorkersAndAMissingReport(t *testing.T) {
 		out  result
 		want string
 	}{
-		"thread without --force": {w.asThread("job", "end", "item-1"), "a thread cannot end a job"},
-		"worker":                 {w.asAgent("item-1-a", "worker", "item-1-lead", "item-1", "job", "end", "--report-file", report), "a worker cannot end a job"},
-		"lead with --force":      {asLead("item-1", "--force"), "a lead cannot reclaim a job"},
-		"lead without report":    {asLead(), "--report-file is required"},
-		"lead of another job":    {asLead("item-2", "--report-file", report), "your job is item-1, not item-2"},
-		"lead with live workers": {asLead("--report-file", report), "live workers: item-1-a"},
-		"--force without job":    {w.asThread("job", "end", "--force"), "--force needs the job"},
-		"--force with report":    {w.asThread("job", "end", "item-1", "--force", "--report-file", report), "--force takes no report"},
+		"thread without --force":      {w.asThread("job", "end", "item-1"), "a thread cannot end a job"},
+		"worker":                      {w.asAgent("item-1-a", "worker", "item-1-lead", "item-1", "job", "end", "--report-file", report), "a worker cannot end a job"},
+		"lead with --force":           {asLead("item-1", "--force"), "a lead cannot reclaim a job"},
+		"lead without report":         {asLead(), "--report-file is required"},
+		"lead of another job":         {asLead("item-2", "--report-file", report), "your job is item-1, not item-2"},
+		"lead with live workers":      {asLead("--report-file", report), "live workers: item-1-a"},
+		"--force without job":         {w.asThread("job", "end", "--force"), "--force needs the job"},
+		"--force with report":         {w.asThread("job", "end", "item-1", "--force", "--report-file", report), "--force takes no report"},
+		"--force with --close-parent": {w.asThread("job", "end", "item-1", "--force", "--close-parent", "done"), "no --close-parent"},
+		"lead with a bad --close-parent": {asLead("--report-file", report, "--close-parent", "closed"),
+			"--close-parent is `done` or `abandoned`"},
 	} {
 		if c.out.code != 1 || !strings.Contains(c.out.stderr, c.want) {
 			t.Errorf("%s: %+v", name, c.out)
@@ -459,7 +462,18 @@ func (w *world) endJob(args ...string) result {
 }
 
 func TestJobEndReportsReleasesCleansUpAndClosesTheWorkspaceLast(t *testing.T) {
-	for _, abandon := range []bool{false, true} {
+	// --abandon is the job's own outcome (the work order's release); the
+	// parent is closed only with --close-parent, else its claim is given
+	// back and it returns to its state from before the job.
+	for _, c := range []struct {
+		args                            []string
+		outcome, release, parentRelease string
+	}{
+		{nil, "done", "--reason done --done", "--reason job item-1 ended"},
+		{[]string{"--abandon"}, "abandoned", "--reason abandoned --abandon", "--reason job item-1 ended"},
+		{[]string{"--close-parent", "done"}, "done", "--reason done --done", "--reason done --done"},
+		{[]string{"--abandon", "--close-parent", "abandoned"}, "abandoned", "--reason abandoned --abandon", "--reason abandoned --abandon"},
+	} {
 		w := newWorld(t)
 		openJobWithLead(w, "EX-10")
 		report := task(w, "report.md", "what the job did\n")
@@ -469,19 +483,14 @@ func TestJobEndReportsReleasesCleansUpAndClosesTheWorkspaceLast(t *testing.T) {
 		}
 		w.jobEndHerdr()
 		w.fakeAtb("")
-		args := []string{"--report-file", report}
-		outcome, release := "done", "--reason done --done"
-		if abandon {
-			args = append(args, "--abandon")
-			outcome, release = "abandoned", "--reason abandoned --abandon"
-		}
-		out := w.endJob(args...)
+		outcome, release := c.outcome, c.release
+		out := w.endJob(append([]string{"--report-file", report}, c.args...)...)
 		if out.code != 0 {
-			t.Fatalf("abandon=%v: %+v", abandon, out)
+			t.Fatalf("args=%v: %+v", c.args, out)
 		}
 		conclusion := "Job item-1 ended: " + outcome + ".\nLead: item-1-lead. Work order: EX-12. Report: " + resolved + "\n"
 		if !strings.Contains(out.stdout, "ended job item-1: "+outcome+", 1 rows ended\n"+conclusion) {
-			t.Errorf("abandon=%v: stdout %q", abandon, out.stdout)
+			t.Errorf("args=%v: stdout %q", c.args, out.stdout)
 		}
 		// The report and the release, the conclusion and the release, the
 		// other agent's pane, and the workspace last.
@@ -490,7 +499,7 @@ func TestJobEndReportsReleasesCleansUpAndClosesTheWorkspaceLast(t *testing.T) {
 			"atb linear comment EX-12 --body-file " + resolved + " key=set\n",
 			"atb linear release EX-12 --agent item-1-lead " + release + " key=set\n",
 			"atb linear comment EX-10 --body-file ",
-			"atb linear release EX-10 --agent item-1-lead " + release + " key=set\n",
+			"atb linear release EX-10 --agent item-1-lead " + c.parentRelease + " key=set\n",
 			"herdr pane close p9\n",
 			"herdr workspace close w1\n",
 		}
@@ -498,7 +507,7 @@ func TestJobEndReportsReleasesCleansUpAndClosesTheWorkspaceLast(t *testing.T) {
 		for _, step := range want {
 			i := strings.Index(calls[at:], step)
 			if i < 0 {
-				t.Fatalf("abandon=%v: %q not after position %d in calls:\n%s", abandon, step, at, calls)
+				t.Fatalf("args=%v: %q not after position %d in calls:\n%s", c.args, step, at, calls)
 			}
 			at += i + len(step)
 		}
@@ -507,7 +516,7 @@ func TestJobEndReportsReleasesCleansUpAndClosesTheWorkspaceLast(t *testing.T) {
 		}
 		// The report went to the work order, the conclusion to the parent.
 		if got := w.bodies(); got != "what the job did\n"+conclusion {
-			t.Errorf("abandon=%v: bodies written = %q, want the report then %q", abandon, got, conclusion)
+			t.Errorf("args=%v: bodies written = %q, want the report then %q", c.args, got, conclusion)
 		}
 		if got := state(w, "item-1-lead"); got != "ended" {
 			t.Errorf("state = %s", got)
@@ -515,6 +524,20 @@ func TestJobEndReportsReleasesCleansUpAndClosesTheWorkspaceLast(t *testing.T) {
 		if got := jobState(w, "item-1"); got != "ended "+outcome {
 			t.Errorf("job state = %s", got)
 		}
+	}
+}
+
+func TestJobEndRefusesToCloseAParentTheJobDoesNotHave(t *testing.T) {
+	w := newWorld(t)
+	openJobWithLead(w, "")
+	w.jobEndHerdr()
+	w.fakeAtb("")
+	out := w.endJob("--report-file", task(w, "report.md", "what the job did\n"), "--close-parent", "done")
+	if out.code != 1 || !strings.Contains(out.stderr, "job item-1 has no parent issue to close") {
+		t.Errorf("%+v", out)
+	}
+	if calls := w.calls(); calls != "" {
+		t.Errorf("calls before the refusal: %s", calls)
 	}
 }
 
@@ -564,7 +587,7 @@ func TestJobEndResumesAfterAPartialFailure(t *testing.T) {
 		t.Fatalf("second: %+v", out)
 	}
 	second := strings.TrimPrefix(w.calls(), before)
-	if strings.Count(second, "atb ") != 1 || !strings.Contains(second, "atb linear release EX-10 --agent item-1-lead --reason done --done") {
+	if strings.Count(second, "atb ") != 1 || !strings.Contains(second, "atb linear release EX-10 --agent item-1-lead --reason job item-1 ended") {
 		t.Errorf("second run's atb calls = %q, want only the parent's release", second)
 	}
 	if got := jobState(w, "item-1"); got != "open" {

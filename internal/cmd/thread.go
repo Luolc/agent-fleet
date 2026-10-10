@@ -658,7 +658,7 @@ func resumeThreadStart(h *herdr.Herdr, conn *sql.DB, scope string, cfg *config.S
 			return 0, err
 		}
 	}
-	if err := SettleAgent(h, name, pane, s.cwd); err != nil {
+	if err := ResumeAgent(h, name, pane, s.cwd); err != nil {
 		return 0, err
 	}
 	text, err := WithHeader(s.msg.sender(), s.prompt())

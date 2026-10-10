@@ -150,6 +150,14 @@ func Comment(issue, file string) error {
 	return err
 }
 
+// ReleaseClaim is `atb linear release <issue> --agent <agent> --reason
+// <reason>`: the claim is given up and the issue returns to the state it
+// had before the claim.
+func ReleaseClaim(issue, agent, reason string) error {
+	_, err := run("atb linear release "+issue, "linear", "release", issue, "--agent", agent, "--reason", reason)
+	return err
+}
+
 // Release is `atb linear release <issue> --agent <agent> --reason done
 // --done`, or `--reason abandoned --abandon` when abandoned.
 func Release(issue, agent string, abandon bool) error {
