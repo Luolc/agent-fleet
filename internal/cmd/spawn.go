@@ -203,7 +203,7 @@ func Spawn(h *herdr.Herdr, args SpawnArgs) (exit.Code, error) {
 		return 0, err
 	}
 	defer conn.Close()
-	hint := fmt.Sprintf("the cleanup is the lead's call; `fleet job end %s --force` from outside ends every row of the job", c.me.Job)
+	hint := fmt.Sprintf("find out why from the error above first; the cleanup is the lead's call, and `fleet job end %s --force` from outside ends every row of the job", c.me.Job)
 	// The worker's row is reserved in one transaction with the checks, so
 	// two spawns of one name, or past the cap, cannot both pass.
 	if err := reserve(conn, c.dedup, func(q querier) error {
