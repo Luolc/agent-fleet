@@ -123,6 +123,7 @@ need_thread_agent() {
 # names) picks some of them, still run in this order.
 all="usage send lifecycle watch worktree thread"
 suites=${JUDGE_SUITES:-$all}
+case $suites in *[![:space:]]*) ;; *) echo "JUDGE_SUITES names no suite; the suites are: $all" >&2; exit 2 ;; esac
 for suite in $suites; do
   case " $all " in *" $suite "*) ;; *) echo "unknown suite $suite; the suites are: $all" >&2; exit 2 ;; esac
 done
