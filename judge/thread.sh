@@ -174,10 +174,30 @@ has "inbox: earlier summary and the message on screen" "$(screen "$A")" "Earlier
 check "inbox: thread row counts two sessions" "2 " "$(tledger "SELECT sessions FROM threads WHERE thread = '$K'")"
 settled "$A"
 
+# The thread agent asks the people itself: while the question is pending
+# the session stays (--force is no way out); the people asking to end it
+# is.
+printf 'Which schema should the import use? 0xQ0\n' > /home/agent/tasks/q0.md
+out=$(thra "$K" TH-5 -- ask-human --file /home/agent/tasks/q0.md 2>&1); rc=$?
+check "ask-human: exit 0 from a thread agent" 0 "$rc"
+[ "$rc" = 0 ] || printf '%s\n' "$out"
+: > /home/agent/atb.log
+: > /home/agent/fednet.log
+for arm in "" "--force"; do
+  # shellcheck disable=SC2086
+  out=$(thra "$K" TH-5 -- thread end --summary-file /home/agent/summary.md $arm 2>&1); rc=$?
+  check "thread end ${arm:-plain}: exit 1 while the thread agent's own question is pending" 1 "$rc"
+  has "thread end ${arm:-plain}: names the question and the way out" "$out" \
+    "question from $A, pending: Which schema should the import use? 0xQ0" "--asked-to-end"
+done
+check "thread end refused: nothing done, the row live, the agent there" "|||active $A" \
+  "$(cat /home/agent/atb.log)|$(cat /home/agent/fednet.log)|$(tledger "SELECT step FROM steps WHERE key = 'thread-end:' || (SELECT max(id) FROM agents WHERE name = '$A')")|$(tledger "SELECT state FROM agents WHERE name = '$A' ORDER BY id DESC LIMIT 1")$(agent_field "$A" name)"
+
 # A run killed after the agent started (a thread whose agent ended, now
 # reopened): the retry finishes it, delivering the full first message.
-thra "$K" TH-5 -- thread end --summary-file /home/agent/summary.md >/dev/null 2>&1; rc=$?
-check "thread end: second session ended, exit 0" 0 "$rc"
+thra "$K" TH-5 -- thread end --summary-file /home/agent/summary.md --asked-to-end >/dev/null 2>&1; rc=$?
+check "thread end --asked-to-end: second session ended with the question pending, exit 0" 0 "$rc"
+check "thread end --asked-to-end: row ended" "ended " "$(tledger "SELECT state FROM agents WHERE name = '$A' ORDER BY id DESC LIMIT 1")"
 touch /home/agent/kill-at-rename
 inbox "$(event m3b "$K" 'killed run 0xMSG3B')" >/dev/null 2>&1; rc=$?
 check "inbox: the run was killed" no "$([ "$rc" = 0 ] && echo yes || echo no)"
@@ -348,8 +368,15 @@ check "ask-human: fleet posted the question to the home thread, the second attem
 # its first message; the prompt's head is above the fake's 20 lines.
 has "ask-human: question on the thread agent's screen" "$(screen "$A")" "Question from item-8-lead" "0xQ1"
 check "ask-human: pending in the ledger" "item-8|$K|item-8-lead|0|pending " \
-  "$(tledger "SELECT job, thread, asked_by, approval, state FROM questions")"
+  "$(tledger "SELECT job, thread, asked_by, approval, state FROM questions WHERE job = 'item-8'")"
 settled "$A"
+: > /home/agent/atb.log
+out=$(thra "$K" TH-5 -- thread end --summary-file /home/agent/summary.md 2>&1); rc=$?
+check "thread end: exit 1 while a lead's question is pending and the job is open" 1 "$rc"
+has "thread end: names the lead's question and the open job" "$out" \
+  "question from item-8-lead, pending: Which month should the import cover? 0xQ1" "job item-8, open, reporting to this thread"
+check "thread end refused: no atb call, nothing posted, the row live" "|2|active " \
+  "$(cat /home/agent/atb.log)|$(wc -l < /home/agent/fednet.log)|$(tledger "SELECT state FROM agents WHERE name = '$A' ORDER BY id DESC LIMIT 1")"
 out=$(lead8 ask-human --file /home/agent/tasks/q1.md 2>&1); rc=$?
 check "ask-human: asking again after a success, exit 0" 0 "$rc"
 check "ask-human: asking again posts nothing more" 2 "$(wc -l < /home/agent/fednet.log)"
@@ -421,11 +448,15 @@ check "thread progress: the refusals send nothing" 0 "$(wc -l < /home/agent/fedn
 out=$(lead8 ask-human --file /home/agent/tasks/q1.md --approval 2>&1); rc=$?
 check "ask-human --approval: exit 1, not supported yet" 1 "$rc"
 has "ask-human --approval: says so" "$out" "approval cards are not supported yet"
-check "ask-human --approval: nothing recorded" "1 " "$(tledger "SELECT count(*) FROM questions")"
+check "ask-human --approval: nothing recorded" "1 " "$(tledger "SELECT count(*) FROM questions WHERE job = 'item-8'")"
 out=$(inbox "$(event m5 "$K" 'September 0xMSG5')" 2>&1); rc=$?
 check "inbox: a reply in the thread, exit 0" 0 "$rc"
 has "inbox: the reply marks the question answered" "$out" "1 pending question(s) in thread $K answered"
 check "inbox: no question pending" "0 " "$(tledger "SELECT count(*) FROM questions WHERE state = 'pending'")"
+out=$(thra "$K" TH-5 -- thread end --summary-file /home/agent/summary.md 2>&1); rc=$?
+check "thread end: exit 1 while the job whose home thread it is is open" 1 "$rc"
+has "thread end: names the open job" "$out" "job item-8, open, reporting to this thread"
+lacks "thread end: the answered question is not named" "$out" "0xQ1"
 has "inbox: the reply on the thread agent's screen" "$(screen "$A")" "0xMSG5"
 out=$(as item-1-a worker item-1-lead item-1 -- ask-human --file /home/agent/tasks/q1.md 2>&1); rc=$?
 check "ask-human: exit 1 from a worker" 1 "$rc"
