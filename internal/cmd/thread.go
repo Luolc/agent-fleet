@@ -566,7 +566,7 @@ func (s *threadStart) start() (exit.Code, error) {
 	if err != nil {
 		return startFailed(s.id.Agent, err, 0, s.created, "")
 	}
-	code, err := startAndDeliver(s.h, s.conn, s.id, place, s.cwd, nil, nil, s.msg.sender(), s.prompt(), "", &s.created)
+	code, err := startAndDeliver(s.h, s.conn, s.id, place, s.cwd, nil, nil, s.msg.sender(), s.prompt(), &s.created)
 	if err != nil || code != exit.Ok {
 		return startFailed(s.id.Agent, err, code, s.created, "")
 	}

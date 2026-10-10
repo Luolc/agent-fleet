@@ -492,12 +492,68 @@ func JobStart(h *herdr.Herdr, args JobStartArgs) (exit.Code, error) {
 	if err != nil {
 		return startFailed(c.id.Agent, err, 0, created, hint)
 	}
-	code, err := startAndDeliver(h, conn, c.id, place, c.cwd, args.Model, args.Effort, c.me.Agent, c.body, issue.URL, &created)
+	latest, err := latestMessage(conn, c.me.Thread)
+	if err != nil {
+		return startFailed(c.id.Agent, err, 0, created, hint)
+	}
+	section, err := latestMessageSection(latest)
+	if err != nil {
+		return startFailed(c.id.Agent, err, 0, created, hint)
+	}
+	body := rolePrompt(c.id, c.cwd, c.repo, filepath.Dir(c.cwd), c.cfg.MaxAgentsPerJob, issue, c.parent) +
+		section + taskSection(issue.URL, c.body)
+	code, err := startAndDeliver(h, conn, c.id, place, c.cwd, args.Model, args.Effort, c.me.Agent, body, &created)
 	if err != nil || code != exit.Ok {
 		return startFailed(c.id.Agent, err, code, created, hint)
 	}
 	fmt.Fprintf(os.Stdout, "started %s in job %s (%s)\n", c.id.Agent, job, c.cwd)
 	return code, nil
+}
+
+// threadMessage is the latest message a person posted in a thread, as
+// the thread's row records it.
+type threadMessage struct{ Text, User, TS string }
+
+// latestMessage is the latest message a person posted in `thread`, or
+// nil when the ledger records none (no thread, or none delivered yet).
+func latestMessage(conn querier, thread string) (*threadMessage, error) {
+	if thread == "" {
+		return nil, nil
+	}
+	var m threadMessage
+	err := conn.QueryRow("SELECT last_text, last_user, last_ts FROM threads WHERE thread = ?1", thread).Scan(&m.Text, &m.User, &m.TS)
+	if errors.Is(err, sql.ErrNoRows) || err == nil && m.Text == "" && m.User == "" {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, exit.Database(err)
+	}
+	return &m, nil
+}
+
+// latestMessageSection is the part of a lead's first message that carries
+// the person's own words: the latest message in the home thread as one
+// JSON object (`user`, `ts`, `text`, the text as written), so neither a
+// newline nor a heading in it can end the section or start another, and
+// no text elsewhere in the message has its shape; or a line saying none
+// is recorded.
+func latestMessageSection(m *threadMessage) (string, error) {
+	head := "\n## Latest message from a person in the home thread\n\n"
+	if m == nil {
+		return head + "fleet has no message from a person recorded for this job's home thread; the task below is all there is.\n", nil
+	}
+	var buf bytes.Buffer
+	encoder := json.NewEncoder(&buf)
+	encoder.SetEscapeHTML(false)
+	record := struct {
+		User string `json:"user"`
+		TS   string `json:"ts"`
+		Text string `json:"text"`
+	}{m.User, m.TS, m.Text}
+	if err := encoder.Encode(record); err != nil {
+		return "", exit.Environmentf("json: %v", err)
+	}
+	return head + "The one JSON object on the next line is fleet's record of it (user, ts, text as written):\n" + buf.String(), nil
 }
 
 // jobLine is one job as `job list` prints it.

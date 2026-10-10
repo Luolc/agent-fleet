@@ -64,7 +64,19 @@ check "job start: pane renamed" item-1-lead \
 check "job start: Claude's fixed arguments" \
   '--dangerously-skip-permissions --disallowedTools AskUserQuestion --settings {"remoteControlAtStartup":false} --model opus --effort medium' \
   "$(proc_args item-1-lead)"
-has "job start: header and task on screen" "$(screen item-1-lead)" "[FROM: thread-1]" "0xLEAD1"
+# The first message is longer than the fake's 20 lines: its tail is on the
+# screen, the whole of it in the fake's log, read once the turn is over.
+has "job start: task on screen" "$(screen item-1-lead)" "## Your task" "0xLEAD1"
+received() { screen "$1" >/dev/null; cat "$fake/received-$(agent_field "$1" pane_id)" 2>/dev/null; }
+check "job start: the first message is the header, then the lead prompt" \
+  "[FROM: thread-1]|You are a lead run by fleet: you run the job item-1 (scope $SCOPE) for the people in its home thread. The job is single-repo: its repo is $R, main checkout ~/dev/$R; \`<repo>\` below is $R. You run in $DEV and only read there: you change no repo yourself. You split the work, start workers, merge what they make, and end the job.|" \
+  "$(received item-1-lead | head -2 | tr '\n' '|')"
+has "job start: the lead prompt names its identity, cap and ending, then the thread's latest message, then the task" "$(received item-1-lead)" \
+  "FLEET_AGENT=item-1-lead, FLEET_ROLE=lead, FLEET_JOB=item-1, FLEET_PARENT=thread-1" "FLEET_ISSUE= (empty: this job has no Linear work orders)" \
+  "at most 4 live agents, you included" "\`fleet job end --report-file <file>\`" \
+  "## Latest message from a person in the home thread" "no message from a person recorded for this job's home thread" "## Your task" "0xLEAD1"
+lacks "job start: no placeholder left in the lead's first message" "$(received item-1-lead)" "{{"
+lacks "job start: no work order line without Linear" "$(received item-1-lead)" "Work order:"
 check "job start: identity variables in its process" \
   "${P}AGENT=item-1-lead ${P}ISSUE= ${P}JOB=item-1 ${P}PARENT=thread-1 ${P}ROLE=lead ${P}SCOPE=$SCOPE " \
   "$(proc_env item-1-lead)"
@@ -90,7 +102,14 @@ check "spawn worker: in the job's workspace" "$lws" "$(agent_field item-1-a work
 check "spawn worker: cwd is --cwd" "$WT/item-1" "$(agent_field item-1-a cwd)"
 check "spawn worker: pane renamed" item-1-a \
   "$("${S[@]}" pane get "$(agent_field item-1-a pane_id)" | jq -r .result.pane.label)"
-has "spawn worker: header and task on screen" "$(screen item-1-a)" "[FROM: item-1-lead]" "0xWORKA"
+has "spawn worker: task on screen" "$(screen item-1-a)" "## Your task" "0xWORKA"
+check "spawn worker: the first message is the header, then the worker prompt" \
+  "[FROM: item-1-lead]|You are a worker run by fleet: item-1-a, one task in the job item-1 (scope $SCOPE), for your lead item-1-lead. You run in $WT/item-1. The job is single-repo: its repo is $R, main checkout ~/dev/$R; \`<repo>\` below is $R.|" \
+  "$(received item-1-a | head -2 | tr '\n' '|')"
+has "spawn worker: the worker prompt names its lead and done, then the task" "$(received item-1-a)" \
+  "FLEET_PARENT=item-1-lead, FLEET_ISSUE= (empty: this job has no Linear work orders)" "\`fleet done --report-file <file>\`" "## Your task" "0xWORKA"
+lacks "spawn worker: no placeholder left" "$(received item-1-a)" "{{"
+lacks "spawn worker: no lead prompt" "$(received item-1-a)" "You are a lead"
 check "spawn worker: identity variables in its process" \
   "${P}AGENT=item-1-a ${P}ISSUE= ${P}JOB=item-1 ${P}PARENT=item-1-lead ${P}ROLE=worker ${P}SCOPE=$SCOPE " \
   "$(proc_env item-1-a)"
@@ -250,6 +269,11 @@ check "job start cross-repo: identity variables carry the work order" \
   "${P}AGENT=wire-lead ${P}ISSUE=QT-12 ${P}JOB=wire ${P}PARENT=thread-1 ${P}ROLE=lead ${P}SCOPE=$SCOPE " \
   "$(proc_env wire-lead)"
 has "job start cross-repo: the work order's URL heads the task" "$(screen wire-lead)" "Work order: https://linear.example.test/QT-12" "0xWIRE"
+has "job start cross-repo: the lead prompt names the initiative, its charter and the parent issue" "$(received wire-lead | tr '\n' '|')" \
+  "The job is cross-repo: it runs inside the checkout of the initiative x-repo-general (/home/agent/x-repo/general)" \
+  "read /home/agent/x-repo/general/AGENTS.md (the initiative's charter)" \
+  "FLEET_ISSUE=QT-12 (your work order, https://linear.example.test/QT-12). The job's parent issue is QT-10;" \
+  "## Your task||Work order: https://linear.example.test/QT-12||Wire the repos 0xWIRE"
 check "job start cross-repo: job row with the parent and no repo" "QT-10|||/home/agent/x-repo/general/wire|open| " "$(job_row wire)"
 check "job list: the cross-repo job" "wire	QT-10	-	-	wire-lead	-" "$(thr job list)"
 # Without the fake atb on PATH: the refusal comes from the ledger, before

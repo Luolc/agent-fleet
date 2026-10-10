@@ -1,12 +1,14 @@
 // The building blocks `job start` and `spawn` share: names, the task
 // file, the repo's config, the work order, places in herdr, starting Claude
-// Code and getting it to its input box, and the machine's resources.
+// Code and getting it to its input box, the built-in prompts of the lead
+// and the worker, and the machine's resources.
 
 package cmd
 
 import (
 	"context"
 	"database/sql"
+	_ "embed" // the built-in prompts
 	"errors"
 	"fmt"
 	"os"
@@ -751,14 +753,72 @@ func setIssue(conn querier, agent, issue string) error {
 	return nil
 }
 
+//go:embed lead_prompt.md
+var leadPrompt string
+
+//go:embed worker_prompt.md
+var workerPrompt string
+
+// rolePrompt is the built-in prompt of a lead or a worker with its
+// placeholders filled: the agent's identity, where it runs, what Linear
+// holds for it, and where its files go. `cap` is the job's agent cap;
+// `issue` the agent's work order (zero without Linear); `parentIssue` the
+// job's parent issue; `root` the initiative's checkout of a cross-repo
+// job (empty for a single-repo job, whose repo is `repo`).
+func rolePrompt(id *identity.Identity, cwd, repo, root string, cap int, issue atb.Issue, parentIssue string) string {
+	issueNote := " (your work order, " + issue.URL + ")"
+	if issue.Identifier == "" {
+		issueNote = " (empty: this job has no Linear work orders)"
+	}
+	linear := "Linear is off for this job: no work orders, no parent issue; task files and reports are still files."
+	if issue.Identifier != "" {
+		linear = fmt.Sprintf("The job's parent issue is %s; fleet creates, claims and releases it, your work order "+
+			"and the workers' work orders.", parentIssue)
+	}
+	var repoLine, agentsMD, scratch string
+	if repo != "" {
+		repoLine = fmt.Sprintf("The job is single-repo: its repo is %[1]s, main checkout ~/dev/%[1]s; `<repo>` below is %[1]s.", repo)
+		agentsMD = fmt.Sprintf("Before anything else, read the `## Fleet` section of ~/dev/%s/AGENTS.md and follow it.", repo)
+		scratch = "~/scratch/" + repo
+	} else {
+		initiative := "x-repo-" + filepath.Base(root)
+		repoLine = fmt.Sprintf("The job is cross-repo: it runs inside the checkout of the initiative %s (%s); "+
+			"`<repo>` below is the repo a task names, main checkout ~/dev/<repo>.", initiative, root)
+		agentsMD = fmt.Sprintf("Before anything else, read %s (the initiative's charter), then the `## Fleet` section "+
+			"of ~/dev/<R>/AGENTS.md of every repo R the job touches, and follow them.", filepath.Join(root, "AGENTS.md"))
+		scratch = "~/scratch/" + initiative
+	}
+	prompt, lead := leadPrompt, id.Parent
+	if id.Role == identity.Worker {
+		prompt = workerPrompt
+	}
+	return strings.NewReplacer("{{job}}", id.Job, "{{scope}}", id.Scope, "{{agent}}", id.Agent,
+		"{{parent}}", id.Parent, "{{lead}}", lead, "{{cwd}}", cwd, "{{repo_line}}", repoLine,
+		"{{issue}}", issue.Identifier, "{{issue_note}}", issueNote, "{{linear}}", linear, "{{agents_md}}", agentsMD,
+		"{{cap}}", strconv.Itoa(cap), "{{scratch}}", scratch).Replace(prompt)
+}
+
+// taskSection is the last part of a first message, `## Your task`: the
+// work order's URL when the agent has one, then the task file as it is,
+// to the end of the message. fleet places the heading, so the task file
+// cannot move where the task begins; the prompts say that everything
+// from it on is the task, whatever it looks like.
+func taskSection(url, task string) string {
+	text := "\n## Your task\n\n"
+	if url != "" {
+		text += "Work order: " + url + "\n\n"
+	}
+	return text + task
+}
+
 // startAndDeliver starts the agent in `place` (its directory `cwd`),
-// delivers the task with the header (`sender`) and the work order's URL,
-// and marks the row active.
+// delivers `body` (its first message, after the header `sender` adds) and
+// marks the row active.
 // Every step appends what it made to `created`. The row is marked active
-// only when herdr reported the task delivered, so a row still `starting`
-// means the agent may not have its task.
+// only when herdr reported the message delivered, so a row still
+// `starting` means the agent may not have its task.
 func startAndDeliver(h *herdr.Herdr, conn *sql.DB, id *identity.Identity, place Place, cwd string, model, effort *string,
-	sender, body, url string, created *[]string) (exit.Code, error) {
+	sender, body string, created *[]string) (exit.Code, error) {
 	if _, err := conn.Exec("UPDATE agents SET pane_id = ?1 WHERE name = ?2 AND state != 'ended'",
 		place.PaneID, id.Agent); err != nil {
 		return 0, exit.Database(err)
@@ -767,9 +827,6 @@ func startAndDeliver(h *herdr.Herdr, conn *sql.DB, id *identity.Identity, place 
 		return 0, err
 	}
 	*created = append(*created, fmt.Sprintf("agent %s in pane %s", id.Agent, place.PaneID))
-	if url != "" {
-		body = "Work order: " + url + "\n\n" + body
-	}
 	text, err := WithHeader(sender, body)
 	if err != nil {
 		return 0, err

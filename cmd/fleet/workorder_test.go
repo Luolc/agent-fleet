@@ -203,8 +203,15 @@ func TestSpawnCreatesAndClaimsTheWorkOrderBeforeAnythingElse(t *testing.T) {
 		t.Errorf("tab create argv still has FLEET_REPO: %q", tabArgv)
 	}
 	argv, _ := os.ReadFile(filepath.Join(w.dir, "argv"))
-	if want := "[FROM: item-1-lead]\nWork order: https://linear.example.test/EX-12\n\n\n# Import the A table\n"; !strings.Contains(string(argv), want) {
-		t.Errorf("delivered argv = %q, want %q in it", argv, want)
+	// The worker's first message: the worker prompt, then the task under
+	// the work order's URL.
+	for _, want := range []string{"agent\nprompt\nitem-1-a\n[FROM: item-1-lead]\nYou are a worker run by fleet: item-1-a, " +
+		"one task in the job item-1 (scope " + scope + "), for your lead item-1-lead. You run in " + cwd + ".",
+		"FLEET_ISSUE=EX-12 (your work order, https://linear.example.test/EX-12)",
+		"\n## Your task\n\nWork order: https://linear.example.test/EX-12\n\n\n# Import the A table\nall rows\n\n--wait\n"} {
+		if !strings.Contains(string(argv), want) {
+			t.Errorf("delivered argv = %q, want %q in it", argv, want)
+		}
 	}
 	if got := row(w, "item-1-a"); got != "EX-12 EX-10 active "+cwd {
 		t.Errorf("row = %s", got)
@@ -345,8 +352,17 @@ func TestJobStartCreatesTheParentClaimsItAndMakesTheWorkOrderFirst(t *testing.T)
 		}
 	}
 	argv, _ := os.ReadFile(filepath.Join(w.dir, "argv"))
-	if want := "item-2-lead\n[FROM: thread-1]\nWork order: https://linear.example.test/EX-12\n\n# Import the B table\n"; !strings.Contains(string(argv), want) {
-		t.Errorf("delivered argv = %q, want %q in it", argv, want)
+	// The lead's first message: the lead prompt, the latest message of the
+	// home thread (none: the caller has no thread), then the task under
+	// the work order's URL.
+	for _, want := range []string{"agent\nprompt\nitem-2-lead\n[FROM: thread-1]\nYou are a lead run by fleet: you run the job item-2 " +
+		"(scope " + scope + ") for the people in its home thread. The job is single-repo: its repo is example-dataset",
+		"FLEET_ISSUE=EX-12 (your work order, https://linear.example.test/EX-12). The job's parent issue is EX-11;",
+		"\n## Latest message from a person in the home thread\n\nfleet has no message from a person recorded for this " +
+			"job's home thread; the task below is all there is.\n\n## Your task\n\nWork order: https://linear.example.test/EX-12\n\n# Import the B table\nall rows\n\n--wait\n"} {
+		if !strings.Contains(string(argv), want) {
+			t.Errorf("delivered argv = %q, want %q in it", argv, want)
+		}
 	}
 	if got := jobRow(w, "item-2"); got != "EX-11 B-1 example-dataset "+checkout+" open" {
 		t.Errorf("job row = %s", got)
