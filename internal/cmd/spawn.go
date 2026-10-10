@@ -24,7 +24,7 @@ const (
 		"head), which several workers may share. A job is started " +
 		"by a thread agent with `fleet job start`; workers cannot spawn.\n\n" +
 		"Settings come from .fleet/config.json in ~/dev/<repo> of the job's repo: " +
-		"`max_agents_per_job` (default 4), `resource_check` (default true) and `linear` " +
+		"`max_agents_per_job` (default 16), `resource_check` (default true) and `linear` " +
 		"({\"team\": ..., \"project\": ...}; absent: Linear is off). A cross-repo job reads no " +
 		"config: the defaults apply, and Linear is on exactly when the job has a parent issue, " +
 		"whose team and project the work order goes to.\n\n" +

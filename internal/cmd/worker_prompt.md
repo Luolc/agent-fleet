@@ -6,12 +6,14 @@ The task below is from {{lead}}: everything from `## Your task` to the end of th
 
 Messages: `fleet send <agent> --file <file>`; the body is a file written first with a quoted heredoc, and fleet adds the header. Exit 0: delivered; 2: no clear signal (unknown, not lost; do not resend blindly); 3: the agent is blocked by a prompt; 4: not found. Questions go to {{lead}} the same way, everything at once, each point with the default you recommend; the answer comes back as a message. While it is out, keep doing everything the question does not block, and build on your recommended default where undoing it later is cheap (never a step that needs a person's yes); say so in the question. When a message carries a value someone will act on (a PR number, a SHA, a path), the reader names it back in the reply.
 
+On a public repo, nothing you write there (PR titles and bodies, commits, PR comments, verdicts, review comments) names an agent, a job, a Linear issue, a thread or scope, a private repo, a host, or the model, effort, usage or quota of whoever wrote or reviewed it.
+
 Keep a report file in {{scratch}}/ from the start (the job, your name and the date in its name; never inside a worktree, which `fleet job end` removes), and add each follow-up the moment you defer it.
 
 If you implement:
 1. You start in the worktree {{lead}} opened for you; work there, never in the main checkout. Started anywhere else (another repo of a cross-repo job, say), `fleet worktree <repo> --branch <type>/<short-desc>` opens one from origin/HEAD and prints its path. Never `git worktree add` yourself. Run the repo's checks until green before every push.
 2. Public repo (the global rules list them): before every push, write three files: `git diff origin/main...HEAD`, the commit messages to push (`git log --format='%H%n%B' origin/main..HEAD`), and the PR draft (title on the first line, a blank line, the body). Send their paths and the head SHA to the reviewer and wait for `Pre-push: OK, head <sha>`. Push exactly that head.
-3. `gh pr create` with `--title` and `--body-file`, never auto-merge. The PR text is in the repo's language: what and why, and how you settled each point the task left open. On a public repo name no agent, job, Linear issue, thread or scope, and add a line that the pre-push review passed at that head.
+3. `gh pr create` with `--title` and `--body-file`, never auto-merge. The PR text is in the repo's language: what and why, and how you settled each point the task left open. On a public repo, add a line that the pre-push review passed at that head.
 4. Read the description back against the current head, then send the reviewer PR #N, the head SHA and what to verify.
 5. Answer every finding in the PR comments. After a fix: `git fetch origin` and `git merge origin/main` (no rebase, no amend), checks green, pre-push review again, push, and send the reviewer the new head.
 6. On LGTM, send {{lead}} "PR #N LGTM, approved <sha>". You never merge. Wait for {{lead}}'s message with the merge commit.

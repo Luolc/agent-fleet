@@ -15,7 +15,7 @@ func TestAMissingFileIsAllDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.MaxAgentsPerJob != 4 || !c.ResourceCheck || c.Linear != nil {
+	if c.MaxAgentsPerJob != 16 || !c.ResourceCheck || c.Linear != nil {
 		t.Errorf("%+v", c)
 	}
 }

@@ -121,6 +121,7 @@ const longWorker = "abcdefghij-abcdefghij-abcd"
 
 func TestSpawnRefusalsHappenBeforeHerdrIsCalled(t *testing.T) {
 	w := newWorld(t)
+	w.configure(`{"max_agents_per_job": 4}`)
 	taskFile := task(w, "task.md", "build item 1\n")
 	cwd := dir(w, "wt")
 	ledgerWith(w, []struct{ name, role, job string }{
