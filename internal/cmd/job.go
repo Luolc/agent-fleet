@@ -495,8 +495,12 @@ func JobStart(h *herdr.Herdr, args JobStartArgs) (exit.Code, error) {
 	if err != nil {
 		return startFailed(c.id.Agent, err, 0, created, hint)
 	}
+	section, err := latestMessageSection(latest)
+	if err != nil {
+		return startFailed(c.id.Agent, err, 0, created, hint)
+	}
 	body := rolePrompt(c.id, c.cwd, c.repo, filepath.Dir(c.cwd), c.cfg.MaxAgentsPerJob, issue, c.parent) +
-		latestMessageSection(latest) + taskSection(issue.URL, c.body)
+		section + taskSection(issue.URL, c.body)
 	code, err := startAndDeliver(h, conn, c.id, place, args.Model, args.Effort, c.me.Agent, body, &created)
 	if err != nil || code != exit.Ok {
 		return startFailed(c.id.Agent, err, code, created, hint)
@@ -527,14 +531,28 @@ func latestMessage(conn querier, thread string) (*threadMessage, error) {
 }
 
 // latestMessageSection is the part of a lead's first message that carries
-// the person's own words: the latest message in the home thread, verbatim,
-// with its sender and time; or a line saying none is recorded.
-func latestMessageSection(m *threadMessage) string {
+// the person's own words: the latest message in the home thread as one
+// JSON object (`user`, `ts`, `text`, the text as written), so neither a
+// newline nor a heading in it can end the section or start another, and
+// no text elsewhere in the message has its shape; or a line saying none
+// is recorded.
+func latestMessageSection(m *threadMessage) (string, error) {
 	head := "\n## Latest message from a person in the home thread\n\n"
 	if m == nil {
-		return head + "fleet has no message from a person recorded for this job's home thread; the task below is all there is.\n"
+		return head + "fleet has no message from a person recorded for this job's home thread; the task below is all there is.\n", nil
 	}
-	return head + fmt.Sprintf("From %s at %s, as written:\n\n%s\n", m.User, m.TS, m.Text)
+	var buf bytes.Buffer
+	encoder := json.NewEncoder(&buf)
+	encoder.SetEscapeHTML(false)
+	record := struct {
+		User string `json:"user"`
+		TS   string `json:"ts"`
+		Text string `json:"text"`
+	}{m.User, m.TS, m.Text}
+	if err := encoder.Encode(record); err != nil {
+		return "", exit.Environmentf("json: %v", err)
+	}
+	return head + "The one JSON object on the next line is fleet's record of it (user, ts, text as written):\n" + buf.String(), nil
 }
 
 // jobLine is one job as `job list` prints it.

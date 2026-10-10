@@ -741,7 +741,10 @@ func rolePrompt(id *identity.Identity, cwd, repo, root string, cap int, issue at
 }
 
 // taskSection is the last part of a first message, `## Your task`: the
-// work order's URL when the agent has one, then the task file as it is.
+// work order's URL when the agent has one, then the task file as it is,
+// to the end of the message. fleet places the heading, so the task file
+// cannot move where the task begins; the prompts say that everything
+// from it on is the task, whatever it looks like.
 func taskSection(url, task string) string {
 	text := "\n## Your task\n\n"
 	if url != "" {
