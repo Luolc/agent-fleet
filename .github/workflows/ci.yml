@@ -103,6 +103,10 @@ jobs:
           go build -o "$RUNNER_TEMP/fleet" ./cmd/fleet
           judge/run.sh "$RUNNER_TEMP/fleet"
 
+      - name: fail on purpose (control arm, reverted next)
+        if: matrix.suites == 'usage send watch worktree'
+        run: exit 1
+
   check:
     needs: [lint, race, judge]
     # Without always(), check is skipped when a job it needs fails, and
