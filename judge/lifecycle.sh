@@ -86,17 +86,19 @@ check "job start: ledger row active with its places" \
 check "job start: job row open with its repo and the lead's cwd" "||$R|$DEV|open| " "$(job_row item-1)"
 check "job start: started_at is now" "1 " \
   "$(ledger "SELECT abs(started_at - strftime('%s', 'now')) < 120 FROM agents WHERE name = 'item-1-lead'")"
-rm "$fake/trust"
 
 # The lead opens a worktree (branch item-1, no prefix) and starts workers
-# in it, up to the cap of 4 including the lead.
+# in it, up to the cap of 4 including the lead; the first one through the
+# folder-trust prompt for the worktree.
 settled item-1-lead
 wt=$(lead worktree "$R" 2>&1); rc=$?
 check "worktree from the lead: exit 0 with the path" "0 $WT/item-1" "$rc $wt"
 check "worktree: branch named after the job" item-1 "$(git -C "$WT/item-1" branch --show-current 2>&1)"
 out=$(lead spawn a --cwd "$wt" --task-file "$(task a 'worker task 0xWORKA')" 2>&1); rc=$?
-check "spawn worker: exit 0" 0 "$rc"
+rm "$fake/trust"
+check "spawn worker: exit 0 through the trust prompt" 0 "$rc"
 [ "$rc" = 0 ] || printf '%s\n' "$out"
+has "spawn worker: the worktree was trusted" "$(cat "$fake/trusted")" "$WT/item-1"
 has "spawn worker: reports what started" "$out" "started item-1-a in job item-1 ($WT/item-1)"
 check "spawn worker: in the job's workspace" "$lws" "$(agent_field item-1-a workspace_id)"
 check "spawn worker: cwd is --cwd" "$WT/item-1" "$(agent_field item-1-a cwd)"

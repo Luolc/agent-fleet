@@ -9,7 +9,7 @@ Messages: `fleet send <agent> --file <file>`; the body is a file written first w
 Keep a report file in {{scratch}}/ from the start (the job, your name and the date in its name; never inside a worktree, which `fleet job end` removes), and add each follow-up the moment you defer it.
 
 If you implement:
-1. `fleet worktree <repo> --branch <type>/<short-desc>` opens your worktree from origin/HEAD and prints its path; work there, never in the main checkout, and never `git worktree add` yourself. Run the repo's checks until green before every push.
+1. You start in the worktree {{lead}} opened for you; work there, never in the main checkout. Started anywhere else (another repo of a cross-repo job, say), `fleet worktree <repo> --branch <type>/<short-desc>` opens one from origin/HEAD and prints its path. Never `git worktree add` yourself. Run the repo's checks until green before every push.
 2. Public repo (the global rules list them): before every push, write three files: `git diff origin/main...HEAD`, the commit messages to push (`git log --format='%H%n%B' origin/main..HEAD`), and the PR draft (title on the first line, a blank line, the body). Send their paths and the head SHA to the reviewer and wait for `Pre-push: OK, head <sha>`. Push exactly that head.
 3. `gh pr create` with `--title` and `--body-file`, never auto-merge. The PR text is in the repo's language: what and why, how you settled each point the task left open, and that the review is same-family (both workers are Claude). On a public repo name no agent, job, Linear issue, thread or scope, and add a line that the pre-push review passed at that head.
 4. Read the description back against the current head, then send the reviewer PR #N, the head SHA and what to verify.
