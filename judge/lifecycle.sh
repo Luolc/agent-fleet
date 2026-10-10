@@ -243,7 +243,7 @@ check "job start cross-repo: exit 0" 0 "$rc"
 [ "$rc" = 0 ] || printf '%s\n' "$out"
 has "job start cross-repo: reports the cross-repo directory" "$out" "started wire-lead in job wire (/home/agent/x-repo/general/wire)"
 check "job start cross-repo: the parent is read last, claimed, then the work order created and claimed" \
-  "linear query { issue(id: \"QT-10\") { team { key } project { name } } }|linear claim QT-10 --agent wire-lead --source thread-1 --scope cross-repo: job wire|linear create --team QT --project Queried project --parent QT-10 --title Wire the repos 0xWIRE --description-file /home/agent/tasks/wire.md --json|linear claim QT-12 --agent wire-lead --source thread-1 --scope cross-repo: job wire|" \
+  "linear query { issue(id: \"QT-10\") { team { key } project { name } } }|linear claim QT-10 --agent wire-lead --source thread-1 --scope cross-repo: job wire|linear create --team QT --project Queried project --parent QT-10 --label lead --title Wire the repos 0xWIRE --description-file /home/agent/tasks/wire.md --json|linear claim QT-12 --agent wire-lead --source thread-1 --scope cross-repo: job wire|" \
   "$(tr '\n' '|' < /home/agent/atb.log)"
 check "job start cross-repo: agent cwd is the cross-repo directory" /home/agent/x-repo/general/wire "$(agent_field wire-lead cwd)"
 check "job start cross-repo: identity variables carry the work order" \
@@ -264,7 +264,7 @@ out=$(PATH=/home/agent/fake-atb:$PATH as wire-lead lead thread-1 wire -- spawn a
 check "spawn in a cross-repo job: exit 0" 0 "$rc"
 [ "$rc" = 0 ] || printf '%s\n' "$out"
 check "spawn in a cross-repo job: the parent is queried, the work order created under it and claimed" \
-  "linear query { issue(id: \"QT-10\") { team { key } project { name } } }|linear create --team QT --project Queried project --parent QT-10 --title wire worker --description-file /home/agent/tasks/wirea.md --json|linear claim QT-12 --agent wire-a --source wire-lead --scope cross-repo: job wire|" \
+  "linear query { issue(id: \"QT-10\") { team { key } project { name } } }|linear create --team QT --project Queried project --parent QT-10 --label worker --title wire worker --description-file /home/agent/tasks/wirea.md --json|linear claim QT-12 --agent wire-a --source wire-lead --scope cross-repo: job wire|" \
   "$(tr '\n' '|' < /home/agent/atb.log)"
 # The lead ends the cross-repo job: its own work order gets the report
 # and is released, the parent gets the conclusion and is released, the

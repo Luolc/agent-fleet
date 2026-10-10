@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/Luolc/agent-fleet/internal/db"
 	"github.com/Luolc/agent-fleet/internal/exit"
@@ -21,14 +22,19 @@ const (
 		"The job is FLEET_JOB. The worktree is ~/wt/<repo>/<job>, or ~/wt/<repo>/<job>-<name> " +
 		"with --name, on a new branch of the same name (no prefix) unless --branch is given. " +
 		"~/dev/<repo> runs `git fetch origin` and the branch starts at origin/HEAD, never at " +
-		"the local HEAD. The ledger of your scope records the worktree for the job, so " +
-		"`fleet job end` removes it.\n\n" +
+		"the local HEAD. With --detach <ref> the worktree is a detached checkout of <ref> " +
+		"(a commit, such as a PR's head SHA, resolved in ~/dev/<repo> after the fetch) on no " +
+		"branch, for reviewing or testing it; --detach and --branch exclude each other. The " +
+		"ledger of your scope records the worktree for the job, so `fleet job end` removes " +
+		"it (and its branch, when it has one). Use it rather than `git worktree add`, which " +
+		"fleet would not know to remove.\n\n" +
 		"When the path already exists and the ledger records it for this job, the path is " +
 		"printed and nothing changes, so every agent of a job gets the same worktree. A path " +
 		"that exists otherwise is refused. stdout carries only the path.\n\n" +
 		"Exit: 0 when the path is printed; 1 when FLEET_JOB is not set, <repo> has no checkout " +
-		"in ~/dev, --name or --branch is invalid, the branch already exists, or the path exists " +
-		"and is not this job's; 5 when git or the database fails."
+		"in ~/dev, --name or --branch is invalid, --detach comes with --branch or names no " +
+		"commit of the checkout, the branch already exists, or the path exists and is not " +
+		"this job's; 5 when git or the database fails."
 )
 
 // WorktreeArgs are the arguments of `worktree`.
@@ -39,6 +45,8 @@ type WorktreeArgs struct {
 	Name *string
 	// Branch, when set, replaces the default branch `<job>[-<name>]`.
 	Branch *string
+	// Detach, when set, is the commit to check out detached: no branch.
+	Detach *string
 }
 
 // worktreeChecks refuses what can be refused without git or the ledger, and
@@ -67,6 +75,15 @@ func worktreeChecks(args WorktreeArgs) (me *identity.Identity, checkout, path, b
 	if args.Branch != nil {
 		branch = *args.Branch
 	}
+	if args.Detach != nil {
+		if args.Branch != nil {
+			return nil, "", "", "", exit.Refusedf("--detach and --branch exclude each other: a detached checkout has no branch")
+		}
+		if strings.TrimSpace(*args.Detach) == "" {
+			return nil, "", "", "", exit.Refusedf("--detach names no commit")
+		}
+		branch = ""
+	}
 	home, err := Home()
 	if err != nil {
 		return nil, "", "", "", err
@@ -76,6 +93,43 @@ func worktreeChecks(args WorktreeArgs) (me *identity.Identity, checkout, path, b
 		return nil, "", "", "", exit.Refusedf("no checkout at %s", checkout)
 	}
 	return me, checkout, filepath.Join(home, "wt", args.Repo, leaf), branch, nil
+}
+
+// worktreeAdd is the `git worktree add` that opens `path` from `checkout`:
+// detached at `*detach`, or on the new branch `branch` from origin/HEAD.
+func worktreeAdd(detach *string, checkout, path, branch string) ([]string, error) {
+	if detach != nil {
+		base, err := resolveCommit(checkout, *detach)
+		if err != nil {
+			return nil, err
+		}
+		return []string{"-C", checkout, "worktree", "add", "--detach", path, base}, nil
+	}
+	if _, err := Git("check-ref-format", "--branch", branch); err != nil {
+		return nil, exit.Refusedf("%q is not a valid branch name", branch)
+	}
+	if _, err := Git("-C", checkout, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch); err == nil {
+		return nil, exit.Refusedf("branch %s already exists in %s", branch, checkout)
+	}
+	base, err := originHead(checkout)
+	if err != nil {
+		return nil, err
+	}
+	return []string{"-C", checkout, "worktree", "add", path, "--no-track", "-b", branch, base}, nil
+}
+
+// resolveCommit is the commit `ref` names in `checkout` after `git fetch
+// origin`, so a PR's head on origin resolves; a ref that names no commit
+// is refused.
+func resolveCommit(checkout, ref string) (string, error) {
+	if _, err := Git("-C", checkout, "fetch", "--quiet", "origin"); err != nil {
+		return "", err
+	}
+	sha, err := Git("-C", checkout, "rev-parse", "--verify", "--quiet", "--end-of-options", ref+"^{commit}")
+	if err != nil {
+		return "", exit.Refusedf("%q names no commit in %s (after `git fetch origin`)", ref, checkout)
+	}
+	return strings.TrimSpace(sha), nil
 }
 
 // worktreeOwner is the job the ledger records for `path`, or "" when none.
@@ -116,13 +170,7 @@ func Worktree(args WorktreeArgs) (exit.Code, error) {
 		fmt.Fprintln(os.Stdout, path)
 		return exit.Ok, nil
 	}
-	if _, err := Git("check-ref-format", "--branch", branch); err != nil {
-		return 0, exit.Refusedf("%q is not a valid branch name", branch)
-	}
-	if _, err := Git("-C", checkout, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch); err == nil {
-		return 0, exit.Refusedf("branch %s already exists in %s", branch, checkout)
-	}
-	base, err := originHead(checkout)
+	add, err := worktreeAdd(args.Detach, checkout, path, branch)
 	if err != nil {
 		return 0, err
 	}
@@ -139,7 +187,7 @@ func Worktree(args WorktreeArgs) (exit.Code, error) {
 	if err != nil {
 		return 0, exit.Database(err)
 	}
-	if _, err := Git("-C", checkout, "worktree", "add", path, "--no-track", "-b", branch, base); err != nil {
+	if _, err := Git(add...); err != nil {
 		if id, idErr := res.LastInsertId(); idErr == nil {
 			_, _ = conn.Exec("DELETE FROM worktrees WHERE id = ?1", id)
 		}

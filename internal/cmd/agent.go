@@ -618,17 +618,19 @@ func scopeOf(repo, job string) string {
 	return repo + ": job " + job
 }
 
-// workOrder creates `agent`'s work order under `parent` and claims it in
-// the agent's name, when the job uses Linear; otherwise it returns the
-// zero Issue. The identifier is written onto the agent's reserved row as
-// soon as the issue exists, before the claim, so a failure later leaves
-// it on the row. An issue that was created is in `created`, claimed or
-// not.
-func workOrder(conn querier, l *linear, parent, title, task, agent, source, scope string, created *[]string) (atb.Issue, error) {
+// workOrder creates `agent`'s work order under `parent`, labelled with
+// the agent's role (`lead` or `worker`, as thread tickets are `thread`),
+// and claims it in the agent's name, when the job uses Linear; otherwise
+// it returns the zero Issue. The identifier is written onto the agent's
+// reserved row as soon as the issue exists, before the claim, so a
+// failure later leaves it on the row. An issue that was created is in
+// `created`, claimed or not.
+func workOrder(conn querier, l *linear, parent, title, task string, id *identity.Identity, source, scope string, created *[]string) (atb.Issue, error) {
 	if l == nil {
 		return atb.Issue{}, nil
 	}
-	issue, err := atb.Create(l.team, l.project, parent, title, task)
+	agent := id.Agent
+	issue, err := atb.Create(l.team, l.project, parent, id.Role.String(), title, task)
 	if err != nil {
 		return atb.Issue{}, err
 	}

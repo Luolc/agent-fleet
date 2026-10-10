@@ -33,7 +33,8 @@ const (
 		"a cross-repo job and the lead runs in <job>/ inside the checkout of your thread's " +
 		"initiative, ~/x-repo/<I>/ (~/x-repo/general/ for a thread of a single repo), which " +
 		"must exist; <job>/ is created. No " +
-		"worktree is made; agents open theirs with `fleet worktree`.\n\n" +
+		"worktree is made; agents open theirs with `fleet worktree` (`--detach <ref>` for a " +
+		"review checkout of a PR head), never with `git worktree add`, so `job end` removes them.\n\n" +
 		"Settings: a single-repo job reads .fleet/config.json in ~/dev/<repo> (`max_agents_per_job`, " +
 		"`resource_check`, `linear`; see `fleet spawn --help`). A cross-repo job reads no " +
 		"config: the defaults apply, and Linear is on exactly when --parent-issue is given; " +
@@ -432,7 +433,7 @@ func (c *jobChecked) linearSteps(conn querier, args JobStartArgs, created *[]str
 	}
 	scope := scopeOf(c.repo, c.id.Job)
 	if args.NewParent != nil {
-		parent, err := atb.Create(c.linear.team, c.linear.project, "", *args.NewParent, c.task)
+		parent, err := atb.Create(c.linear.team, c.linear.project, "", "", *args.NewParent, c.task)
 		if err != nil {
 			return atb.Issue{}, err
 		}
@@ -446,7 +447,7 @@ func (c *jobChecked) linearSteps(conn querier, args JobStartArgs, created *[]str
 		return atb.Issue{}, err
 	}
 	*created = append(*created, fmt.Sprintf("parent issue %s claimed by %s", c.parent, c.id.Agent))
-	issue, err := workOrder(conn, c.linear, c.parent, c.title, c.task, c.id.Agent, c.me.Agent, scope, created)
+	issue, err := workOrder(conn, c.linear, c.parent, c.title, c.task, c.id, c.me.Agent, scope, created)
 	if err != nil {
 		return atb.Issue{}, err
 	}

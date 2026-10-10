@@ -27,3 +27,18 @@ func TestThreadSlugIsStableShortAndSafe(t *testing.T) {
 		t.Error(err)
 	}
 }
+
+func TestWithoutLeadingMentionsDropsOnlyTheMentionsAtTheStart(t *testing.T) {
+	for text, want := range map[string]string{
+		"<@UEXAMPLEBOT> import the A table":                  "import the A table",
+		"<@UEXAMPLEBOT> <@W0ABC|bot>  import <@UEXAMPLEBOT>": "import <@UEXAMPLEBOT>",
+		"  <@UEXAMPLEBOT>\nimport the A table":               "import the A table",
+		"import <@UEXAMPLEBOT> the A table":                  "import <@UEXAMPLEBOT> the A table",
+		"<@UEXAMPLEBOT>":                                     "",
+		"plain":                                              "plain",
+	} {
+		if got := WithoutLeadingMentions(text); got != want {
+			t.Errorf("%q: got %q, want %q", text, got, want)
+		}
+	}
+}
