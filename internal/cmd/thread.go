@@ -185,17 +185,20 @@ func endRow(conn querier, name string) error {
 }
 
 // generalMapping is the mapping of a direct message to the bot, and of
-// the channel of the same name.
-const generalMapping = "x-repo-general"
+// the channel of the same name: the general initiative's.
+func generalMapping(ch config.Channels) string {
+	return ch.InitiativePrefix + ch.GeneralInitiative
+}
 
-// ChannelMapping is where a message's thread belongs: `x-repo-general` for
-// a direct message, else the channel's name when it is `repo-<R>` or
-// `x-repo-<I>`, else "": fleet serves no other channel.
-func ChannelMapping(channelName string, dm bool) string {
+// ChannelMapping is where a message's thread belongs: the general
+// initiative's mapping for a direct message, else the channel's name when
+// it is `<repo prefix><R>` or `<initiative prefix><I>`, else "": fleet
+// serves no other channel.
+func ChannelMapping(ch config.Channels, channelName string, dm bool) string {
 	if dm {
-		return generalMapping
+		return generalMapping(ch)
 	}
-	for _, prefix := range []string{"repo-", "x-repo-"} {
+	for _, prefix := range []string{ch.RepoPrefix, ch.InitiativePrefix} {
 		if rest, ok := strings.CutPrefix(channelName, prefix); ok && CheckRepo(rest) == nil {
 			return channelName
 		}
@@ -204,23 +207,24 @@ func ChannelMapping(channelName string, dm bool) string {
 }
 
 // MappingDir is the directory a mapping's thread agents run in: the main
-// checkout ~/dev/<R> for `repo-<R>`, the checkout of the initiative's repo
-// ~/x-repo/<I> for `x-repo-<I>`. fleet never makes either.
-func MappingDir(home, mapping string) string {
-	if rest, ok := strings.CutPrefix(mapping, "x-repo-"); ok {
-		return filepath.Join(home, "x-repo", rest)
+// checkout `<checkouts>/<R>` for a repo's channel, the checkout of the
+// initiative's repo `<initiatives>/<I>` for an initiative's. fleet never
+// makes either.
+func MappingDir(sc *config.Scope, mapping string) string {
+	if rest, ok := strings.CutPrefix(mapping, sc.Channels.InitiativePrefix); ok {
+		return filepath.Join(sc.Paths.Initiatives, rest)
 	}
-	return filepath.Join(home, "dev", strings.TrimPrefix(mapping, "repo-"))
+	return filepath.Join(sc.Paths.Checkouts, strings.TrimPrefix(mapping, sc.Channels.RepoPrefix))
 }
 
 // crossRepoRoot is the directory the cross-repo jobs of a thread put their
-// leads' directories in: the thread's own for `x-repo-<I>`, ~/x-repo/general
-// for a `repo-<R>` thread.
-func crossRepoRoot(home, mapping string) string {
-	if strings.HasPrefix(mapping, "x-repo-") {
-		return MappingDir(home, mapping)
+// leads' directories in: the thread's own for an initiative's channel, the
+// general initiative's for a repo's.
+func crossRepoRoot(sc *config.Scope, mapping string) string {
+	if strings.HasPrefix(mapping, sc.Channels.InitiativePrefix) {
+		return MappingDir(sc, mapping)
 	}
-	return MappingDir(home, generalMapping)
+	return MappingDir(sc, generalMapping(sc.Channels))
 }
 
 // tempFile writes `content` to a new file for an atb `--body-file` or
@@ -348,7 +352,7 @@ func (s *threadStart) belong() error {
 	if s.msg.Mapping == "" {
 		return exit.Environmentf("the ledger records no channel for thread %s", s.msg.Thread)
 	}
-	s.mapping, s.cwd = s.msg.Mapping, MappingDir(s.home, s.msg.Mapping)
+	s.mapping, s.cwd = s.msg.Mapping, MappingDir(s.cfg, s.msg.Mapping)
 	return nil
 }
 
@@ -514,14 +518,14 @@ func (s *threadStart) rules() string {
 
 // jobKind is the single-repo or cross-repo rule of the thread's mapping.
 func (s *threadStart) jobKind() string {
-	if repo, ok := strings.CutPrefix(s.mapping, "repo-"); ok {
+	if repo, ok := strings.CutPrefix(s.mapping, s.cfg.Channels.RepoPrefix); ok {
 		return fmt.Sprintf("This thread belongs to the repo %[1]s. Work asked for here is a single-repo job in %[1]s "+
 			"(`fleet job start <job> --repo %[1]s ...`), unless the people say it reaches other repos; then it is a "+
 			"cross-repo job (no `--repo`).", repo)
 	}
 	return fmt.Sprintf("This thread belongs to the cross-repo initiative %s; %s is its charter, read it first. "+
 		"Decide from the request whether the work touches one repo (`--repo <R>`) or several (a cross-repo job, "+
-		"no `--repo`); when unsure, ask in the thread.", strings.TrimPrefix(s.mapping, "x-repo-"), filepath.Join(s.cwd, "AGENTS.md"))
+		"no `--repo`); when unsure, ask in the thread.", strings.TrimPrefix(s.mapping, s.cfg.Channels.InitiativePrefix), filepath.Join(s.cwd, "AGENTS.md"))
 }
 
 // prompt is the thread agent's first message: the built-in prompt, the
@@ -541,7 +545,8 @@ func (s *threadStart) prompt() string {
 		note = " (empty: thread tickets are off for this scope)"
 	}
 	text := strings.NewReplacer("{{scope}}", s.id.Scope, "{{agent}}", s.id.Agent,
-		"{{mapping}}", s.mapping, "{{cwd}}", s.cwd, "{{rules}}", s.rules(), "{{xrepo}}", crossRepoRoot(s.home, s.mapping),
+		"{{mapping}}", s.mapping, "{{cwd}}", s.cwd, "{{rules}}", s.rules(), "{{xrepo}}", crossRepoRoot(s.cfg, s.mapping),
+		"{{checkouts}}", s.cfg.Tilde(s.cfg.Paths.Checkouts),
 		"{{ticket}}", ticket, "{{ticket_note}}", note, "{{post}}", post, "{{progress}}", progress).Replace(threadPrompt)
 	context := s.msg.Context
 	if context == "" && s.known != nil {
@@ -609,8 +614,8 @@ func (s *threadStart) linearUnavailable(cause error) error {
 // machine: nothing is reserved or started, and the thread is told. An
 // agent's question gets an error instead.
 func (s *threadStart) notHere() error {
-	what := "the repo " + strings.TrimPrefix(s.mapping, "repo-")
-	if strings.HasPrefix(s.mapping, "x-repo-") {
+	what := "the repo " + strings.TrimPrefix(s.mapping, s.cfg.Channels.RepoPrefix)
+	if strings.HasPrefix(s.mapping, s.cfg.Channels.InitiativePrefix) {
 		what = "the repo of " + s.mapping
 	}
 	if s.msg.Question != "" {

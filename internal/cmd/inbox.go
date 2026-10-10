@@ -27,9 +27,12 @@ const (
 		"new thread the channel's `context`, and three optional fields: `trigger` (`dm` for a " +
 		"direct message to the bot), `channel_name` and `scope`. Any other payload type is " +
 		"ignored, exit 0.\n\n" +
-		"Which messages fleet serves, by channel: `repo-<R>` (thread agents run in ~/dev/<R>), " +
-		"`x-repo-<I>` (in ~/x-repo/<I>/, the checkout of the initiative's repo; " +
-		"`x-repo-general` is ~/x-repo/general/) and direct messages (~/x-repo/general/). A " +
+		"Which messages fleet serves, by channel: `<repo prefix><R>` (thread agents run in the " +
+		"main checkout <checkouts>/<R>), `<initiative prefix><I>` (in <initiatives>/<I>/, the " +
+		"checkout of the initiative's repo) and direct messages (in the general initiative's " +
+		"checkout). The prefixes, the general initiative and the directories are settings " +
+		"(below); by default `repo-<R>` runs in ~/dev/<R>, `x-repo-<I>` in ~/x-repo/<I>/, and " +
+		"direct messages in ~/x-repo/general/. A " +
 		"message from any other channel, or with no channel_name and not a direct message, is " +
 		"ignored with exit 0 and no reply, unless the ledger already knows its thread. A thread " +
 		"keeps the channel and directory recorded at its first delivery, even when the channel " +
@@ -40,7 +43,13 @@ const (
 		"fleet-<scope>, the ledger $XDG_STATE_HOME/fleet/<scope>.db (~/.local/state when unset) " +
 		"and the settings $XDG_CONFIG_HOME/fleet/<scope>.json (~/.config when unset): `linear` " +
 		"({\"team\": ...}; absent: thread tickets are off, threads still run) and `fednet` " +
-		"({\"socket\": ...}; absent: fleet cannot post to the thread). --scope does not apply.\n\n" +
+		"({\"socket\": ...}; absent: fleet cannot post to the thread), `paths` (`checkouts`, " +
+		"`initiatives`, `worktrees`, `scratch`: absolute or ~/ paths, default ~/dev, ~/x-repo, " +
+		"~/wt, ~/scratch) and `channels` (`repo_prefix`, `initiative_prefix`, " +
+		"`general_initiative`: default repo-, x-repo-, general); each key left out keeps its " +
+		"default. A recorded thread's kind (repo or initiative) is read with the current " +
+		"prefixes, so change `channels` only while no thread is recorded. --scope does not " +
+		"apply.\n\n" +
 		"First the msg_id is reserved in the scope's ledger (table `inbox`): a message already " +
 		"delivered or dropped is exit 0 at once, so a retry does nothing twice. Then the route: " +
 		"a thread whose agent is live gets the message as `fleet send` would, headed `[FROM: " +
@@ -178,21 +187,23 @@ func Inbox(args InboxArgs) (exit.Code, error) {
 	if err != nil {
 		return 0, err
 	}
-	mapping := ChannelMapping(e.Payload.ChannelName, e.Payload.Trigger == "dm")
+	// The channels fleet serves are in the scope's config.
+	cfg, err := config.LoadScope(scope)
+	if err != nil {
+		return 0, err
+	}
+	mapping := ChannelMapping(cfg.Channels, e.Payload.ChannelName, e.Payload.Trigger == "dm")
 	conn, err := inboxLedger(scope, e.Payload.Thread, mapping)
 	if err != nil || conn == nil {
 		if err == nil {
-			fmt.Fprintf(os.Stdout, "ignored %s: channel %q is neither repo-<R> nor x-repo-<I>\n", e.MsgID, e.Payload.ChannelName)
+			fmt.Fprintf(os.Stdout, "ignored %s: channel %q is neither %s<R> nor %s<I>\n", e.MsgID, e.Payload.ChannelName,
+				cfg.Channels.RepoPrefix, cfg.Channels.InitiativePrefix)
 		}
 		return exit.Ok, err
 	}
 	defer conn.Close()
 	session := identity.Session(scope)
 	h := herdr.New(&session)
-	cfg, err := config.LoadScope(scope)
-	if err != nil {
-		return 0, err
-	}
 	state, err := reserveMessage(conn, e.MsgID, e.Payload.Thread)
 	if err != nil {
 		return 0, err

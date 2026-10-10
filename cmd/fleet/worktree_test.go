@@ -187,6 +187,52 @@ func TestWorktreeDetachChecksOutTheCommitOnNoBranch(t *testing.T) {
 	}
 }
 
+func TestWorktreeOfAnInitiativeCheckoutUnderConfiguredRoots(t *testing.T) {
+	w := newWorld(t)
+	initiatives, trees := filepath.Join(w.dir, "multi"), filepath.Join(w.dir, "trees")
+	w.scopeConfig(scope, `{"paths": {"initiatives": "`+initiatives+`", "worktrees": "`+trees+`"},
+		"channels": {"initiative_prefix": "multi-"}}`)
+	bare, seed, checkout := filepath.Join(w.dir, "init.git"), filepath.Join(w.dir, "seed"), filepath.Join(initiatives, "example-init")
+	w.git("init", "-q", "--bare", "-b", "main", bare)
+	w.git("clone", "-q", bare, seed)
+	w.git("-C", seed, "commit", "-q", "--allow-empty", "-m", "charter")
+	w.git("-C", seed, "push", "-q", "origin", "main")
+	// A separate git dir: the checkout has a `.git` file, not a directory.
+	w.git("clone", "-q", "--separate-git-dir", filepath.Join(w.dir, "init-git"), bare, checkout)
+	head := w.git("-C", seed, "rev-parse", "HEAD")
+	wt := filepath.Join(trees, "multi-example-init")
+
+	out := w.worktree("item-1", "multi-example-init", "--branch", "docs/charter")
+	if out.code != 0 || out.stdout != filepath.Join(wt, "item-1")+"\n" {
+		t.Fatalf("%+v", out)
+	}
+	if got := w.git("-C", filepath.Join(wt, "item-1"), "branch", "--show-current"); got != "docs/charter" {
+		t.Errorf("branch = %s", got)
+	}
+	out = w.worktree("item-1", "multi-example-init", "--name", "review", "--detach", head)
+	if out.code != 0 || w.git("-C", filepath.Join(wt, "item-1-review"), "rev-parse", "HEAD") != head {
+		t.Fatalf("--detach: %+v", out)
+	}
+	out = w.worktree("item-1", "multi-no-such")
+	if out.code != 1 || !strings.Contains(out.stderr, "no checkout at "+filepath.Join(w.dir, "home", "dev", "multi-no-such")+
+		" or "+filepath.Join(initiatives, "no-such")) {
+		t.Errorf("no checkout: %+v", out)
+	}
+
+	w.closeHerdr("")
+	if out := w.asThread("job", "end", "item-1", "--force"); out.code != 0 {
+		t.Fatalf("job end: %+v", out)
+	}
+	for _, leaf := range []string{"item-1", "item-1-review"} {
+		if _, err := os.Stat(filepath.Join(wt, leaf)); err == nil {
+			t.Errorf("%s not removed", leaf)
+		}
+	}
+	if got := w.git("-C", checkout, "branch", "--list", "docs/charter"); got != "" {
+		t.Errorf("branch docs/charter not deleted")
+	}
+}
+
 func TestWorktreeAgainInTheSameJobReturnsThePathAndChangesNothing(t *testing.T) {
 	w := newWorld(t)
 	_, seed := w.origin()

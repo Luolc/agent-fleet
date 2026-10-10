@@ -27,6 +27,17 @@ build, and the design doc's line cap. The linters are pinned in `tools/` and
 run through `go tool`, so nothing needs installing beyond Go. Set
 `FLEET_CHECK_CORES=N` to limit the run to N cores.
 
+## Local conventions
+
+fleet assumes a layout for each machine: the repos' main checkouts under
+`~/dev`, the checkouts of cross-repo initiatives under `~/x-repo`, worktrees
+under `~/wt`, agents' files under `~/scratch`, and Slack channels named
+`repo-<repo>` and `x-repo-<initiative>`, with direct messages going to the
+initiative `general`. These are only defaults: set `paths` and `channels` in
+the scope's settings file, `$XDG_CONFIG_HOME/fleet/<scope>.json`
+(`~/.config` when unset). The keys are listed
+in [docs/design.md](docs/design.md).
+
 The design is in [docs/design.md](docs/design.md).
 
 ## License
