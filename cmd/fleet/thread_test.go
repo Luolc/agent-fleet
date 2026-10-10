@@ -520,7 +520,8 @@ func TestInboxRunsEachChannelKindInItsDirectory(t *testing.T) {
 			t.Errorf("%s: tab argv = %q", c.label, w.file("tab-argv"))
 		}
 		prompt := w.file("argv")
-		if !strings.Contains(prompt, c.rules) || !strings.Contains(prompt, "You run in "+cwd+".") {
+		if !strings.Contains(prompt, c.rules) || !strings.Contains(prompt, "You run in "+cwd+".") ||
+			!strings.Contains(prompt, "start the job and say so in the thread; do not ask whether to start it.") {
 			t.Errorf("%s: prompt = %q", c.label, prompt)
 		}
 		if strings.HasPrefix(c.dir, "x-repo/") && !strings.Contains(prompt, filepath.Join(cwd, "AGENTS.md")+" is its charter") {
