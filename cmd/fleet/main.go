@@ -195,8 +195,9 @@ Options:
                           The job's parent issue, such as ABC-12 (with Linear on; excludes --new-parent)
       --new-parent <TITLE>
                           Create the parent issue with this title first (single-repo jobs with Linear on)
-      --repo <REPO>       Directory name under ~/dev: a single-repo job, the lead runs there. Without
-                          it the job is cross-repo and the lead runs in ~/x-repo/<I>/<job>/
+      --repo <REPO>       Directory name of the main checkout (under ~/dev by default): a single-repo
+                          job, the lead runs there. Without it the job is cross-repo and the lead runs
+                          in <job>/ of the initiative's checkout (~/x-repo/<I>/<job>/ by default)
       --key <KEY>         Dedup key: refused when an open job of the scope has the same key
       --model <MODEL>     Model passed to the agent as --model. Default: the agent's own
       --effort <EFFORT>   Effort passed to the agent as --effort. Default: the agent's own
@@ -288,10 +289,10 @@ const worktreeUsage = "Usage: fleet worktree [OPTIONS] <REPO>"
 var worktreeHelp = cmd.WorktreeLongAbout + "\n\n" + worktreeUsage + `
 
 Arguments:
-  <REPO>  Directory name of the checkout under ~/dev
+  <REPO>  Directory name of the main checkout (under ~/dev by default), or an initiative's repo
 
 Options:
-      --name <NAME>     Another worktree of the job in this repo: ~/wt/<repo>/<job>-<name>. Only [a-z0-9-]
+      --name <NAME>     Another worktree of the job in this repo: <repo>/<job>-<name> (under ~/wt by default). Only [a-z0-9-]
       --branch <NAME>   Branch to create. Default: <job>, or <job>-<name> with --name
       --detach <REF>    Check out <REF> (a commit, such as a PR's head SHA) detached, no branch; not with --branch
       --scope <NAME>    ` + scopeHelp + `
@@ -650,7 +651,7 @@ func runJobStart(args []string, scope *cliargs.OptString) (exit.Code, error) {
 	fs.Var(&taskFile, "task-file", "File with the lead's task")
 	fs.Var(&parentIssue, "parent-issue", "The job's parent issue")
 	fs.Var(&newParent, "new-parent", "Create the parent issue with this title")
-	fs.Var(&repo, "repo", "The job's repo under ~/dev")
+	fs.Var(&repo, "repo", "The directory name of the job's main checkout")
 	fs.Var(&key, "key", "Dedup key")
 	fs.Var(&model, "model", "Model passed to the agent as --model")
 	fs.Var(&effort, "effort", "Effort passed to the agent as --effort")

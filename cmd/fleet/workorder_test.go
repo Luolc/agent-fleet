@@ -105,12 +105,13 @@ func openJobWithLead(w *world, parentIssue string) {
 	w.t.Helper()
 	conn := w.ledger()
 	defer conn.Close()
+	checkout := filepath.Join(w.dir, "home", "dev", "example-dataset")
 	for _, stmt := range []string{
-		"INSERT INTO jobs (job, parent_issue, repo, lead_cwd, state, started_at) VALUES ('item-1', ?1, 'example-dataset', '/dev/example-dataset', 'open', 0)",
+		"INSERT INTO jobs (job, parent_issue, repo, lead_cwd, state, started_at) VALUES ('item-1', ?1, 'example-dataset', ?2, 'open', 0)",
 		"INSERT INTO agents (name, role, job, parent, state, started_at, cwd, parent_issue) " +
-			"VALUES ('item-1-lead', 'lead', 'item-1', 'thread-1', 'active', 0, '/dev/example-dataset', ?1)",
+			"VALUES ('item-1-lead', 'lead', 'item-1', 'thread-1', 'active', 0, ?2, ?1)",
 	} {
-		if _, err := conn.Exec(stmt, parentIssue); err != nil {
+		if _, err := conn.Exec(stmt, parentIssue, checkout); err != nil {
 			w.t.Fatal(err)
 		}
 	}

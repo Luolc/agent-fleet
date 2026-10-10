@@ -41,7 +41,7 @@ const (
 		"conclusion and the workspace close at the end.\n\n" +
 		"Then the cleanup: every other agent in the job's workspace is closed; no agent but you " +
 		"may have its cwd inside one of the job's directories (the worktrees `fleet worktree` " +
-		"recorded for it and, for a cross-repo job, its directory ~/x-repo/<I>/<job>/); each worktree is " +
+		"recorded for it and, for a cross-repo job, its directory <I>/<job>/ under the scope's `paths.initiatives`); each worktree is " +
 		"removed with `git worktree remove` (which refuses uncommitted changes) and its local " +
 		"branch deleted, and the cross-repo directory is removed unless a git checkout inside it " +
 		"has uncommitted changes. When something is left it is " +
@@ -127,9 +127,12 @@ func describe(agent map[string]any) string {
 	return fmt.Sprintf("agent %s (pane %s, cwd %s)", field("name"), field("pane_id"), field("cwd"))
 }
 
-// jobDir is a directory `job end` removes: a worktree with the checkout it
-// belongs to, or the cross-repo directory (no checkout).
-type jobDir struct{ path, checkout string }
+// jobDir is a directory `job end` removes: a worktree, or the cross-repo
+// directory.
+type jobDir struct {
+	path     string
+	worktree bool
+}
 
 // agentsLeft are the agents in one of `workspaces` or with their cwd inside
 // one of `dirs`, except the one named `except` (the lead ending its own
@@ -156,14 +159,15 @@ func agentsLeft(h *herdr.Herdr, workspaces []string, dirs []jobDir, except strin
 }
 
 // jobDirs are the directories to remove for `job`: the worktrees the ledger
-// records for it, then the cross-repo directory of a cross-repo job.
-func jobDirs(conn *sql.DB, job *jobRow, name, home string) ([]jobDir, error) {
-	dirs, err := jobWorktrees(conn, name, home)
+// records for it, then the cross-repo directory of a cross-repo job, when
+// it is still in an initiative's checkout under `initiatives`.
+func jobDirs(conn *sql.DB, job *jobRow, name, initiatives string) ([]jobDir, error) {
+	dirs, err := jobWorktrees(conn, name)
 	if err != nil {
 		return nil, err
 	}
 	if job != nil && job.Repo == "" && filepath.Base(job.LeadCwd) == name &&
-		filepath.Dir(filepath.Dir(job.LeadCwd)) == filepath.Join(home, "x-repo") {
+		filepath.Dir(filepath.Dir(job.LeadCwd)) == initiatives {
 		dirs = append(dirs, jobDir{path: job.LeadCwd})
 	}
 	return dirs, nil
@@ -171,20 +175,20 @@ func jobDirs(conn *sql.DB, job *jobRow, name, home string) ([]jobDir, error) {
 
 // jobWorktrees are the worktrees the ledger records for `job` and not yet
 // removed, oldest first.
-func jobWorktrees(conn *sql.DB, job, home string) ([]jobDir, error) {
+func jobWorktrees(conn *sql.DB, job string) ([]jobDir, error) {
 	rows, err := conn.Query(
-		"SELECT path, repo FROM worktrees WHERE job = ?1 AND removed_at IS NULL ORDER BY id", job)
+		"SELECT path FROM worktrees WHERE job = ?1 AND removed_at IS NULL ORDER BY id", job)
 	if err != nil {
 		return nil, exit.Database(err)
 	}
 	defer rows.Close()
 	var found []jobDir
 	for rows.Next() {
-		var path, repo string
-		if err := rows.Scan(&path, &repo); err != nil {
+		var path string
+		if err := rows.Scan(&path); err != nil {
 			return nil, exit.Database(err)
 		}
-		found = append(found, jobDir{path, filepath.Join(home, "dev", repo)})
+		found = append(found, jobDir{path: path, worktree: true})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, exit.Database(err)
@@ -215,9 +219,15 @@ func liveRowsOf(conn *sql.DB, job, role string) ([]string, error) {
 	return live, nil
 }
 
-// removeWorktree removes `worktree` from `checkout` and deletes the branch
-// it had checked out, if any.
-func removeWorktree(checkout, worktree string) error {
+// removeWorktree removes `worktree` from the checkout it was made from and
+// deletes the branch it had checked out, if any. git names that checkout,
+// so it is found wherever it is.
+func removeWorktree(worktree string) error {
+	common, err := Git("-C", worktree, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	if err != nil {
+		return err
+	}
+	checkout := filepath.Dir(strings.TrimSpace(common))
 	var branch string
 	if out, err := Git("-C", worktree, "symbolic-ref", "--quiet", "--short", "HEAD"); err == nil {
 		branch = strings.TrimSpace(out)
@@ -263,8 +273,8 @@ func removeDirs(h *herdr.Herdr, workspaces []string, dirs []jobDir, except strin
 		if !exists(d.path) {
 			continue
 		}
-		if d.checkout != "" {
-			if err := removeWorktree(d.checkout, d.path); err != nil {
+		if d.worktree {
+			if err := removeWorktree(d.path); err != nil {
 				return err
 			}
 			continue
@@ -283,7 +293,7 @@ func removeDirs(h *herdr.Herdr, workspaces []string, dirs []jobDir, except strin
 func dirtyCheckouts(dirs []jobDir) ([]string, error) {
 	var dirty []string
 	for _, d := range dirs {
-		if d.checkout != "" || !exists(d.path) {
+		if d.worktree || !exists(d.path) {
 			continue
 		}
 		err := filepath.WalkDir(d.path, func(path string, entry fs.DirEntry, err error) error {
@@ -449,7 +459,11 @@ func jobEndForced(h *herdr.Herdr, args JobEndArgs) (exit.Code, error) {
 	if err != nil {
 		return 0, err
 	}
-	home, err := Home()
+	scope, err := identity.Scope()
+	if err != nil {
+		return 0, err
+	}
+	sc, err := config.LoadScope(scope)
 	if err != nil {
 		return 0, err
 	}
@@ -462,7 +476,7 @@ func jobEndForced(h *herdr.Herdr, args JobEndArgs) (exit.Code, error) {
 	if err != nil {
 		return 0, err
 	}
-	dirs, err := jobDirs(conn, open, job, home)
+	dirs, err := jobDirs(conn, open, job, sc.Paths.Initiatives)
 	if err != nil {
 		return 0, err
 	}
@@ -713,12 +727,12 @@ func jobEndByLead(h *herdr.Herdr, args JobEndArgs) (exit.Code, error) {
 	if err := e.linearEnd(conn, args.Abandon); err != nil {
 		return 0, err
 	}
-	home, err := Home()
+	sc, err := config.LoadScope(e.me.Scope)
 	if err != nil {
 		return 0, err
 	}
 	job := e.me.Job
-	dirs, err := jobDirs(conn, e.job, job, home)
+	dirs, err := jobDirs(conn, e.job, job, sc.Paths.Initiatives)
 	if err != nil {
 		return 0, err
 	}

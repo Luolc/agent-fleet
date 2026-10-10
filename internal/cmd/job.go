@@ -28,16 +28,18 @@ const (
 	JobStartAbout     = "Start a job: its lead, in a workspace named after the job (thread agents only)"
 	JobStartLongAbout = "Start a job: its lead, in a workspace named after the job (thread agents only).\n\n" +
 		"<JOB> is the job id; the lead is named `<job>-lead`. With --repo the job is a " +
-		"single-repo job and the lead runs in ~/dev/<repo>, which must exist (read-only by " +
-		"convention: the lead plans and spawns, it does not edit there). Without --repo it is " +
-		"a cross-repo job and the lead runs in <job>/ inside the checkout of your thread's " +
-		"initiative, ~/x-repo/<I>/ (~/x-repo/general/ for a thread of a single repo), which " +
-		"must exist; <job>/ is created. No " +
+		"single-repo job and the lead runs in the repo's main checkout <checkouts>/<repo>, which " +
+		"must exist (read-only by convention: the lead plans and spawns, it does not edit " +
+		"there). Without --repo it is a cross-repo job and the lead runs in <job>/ inside the " +
+		"checkout of your thread's initiative, <initiatives>/<I>/ (the general initiative's " +
+		"for a thread of a single repo), which must exist; <job>/ is created. The directories " +
+		"and the general initiative are the scope's settings (see `fleet inbox --help`; by " +
+		"default ~/dev/<repo>, ~/x-repo/<I>/ and ~/x-repo/general/). No " +
 		"worktree is made; agents open theirs with `fleet worktree` (`--detach <ref>` for a " +
 		"review checkout of a PR head), never with `git worktree add`, so `job end` removes them.\n\n" +
-		"Settings: a single-repo job reads .fleet/config.json in ~/dev/<repo> (`max_agents_per_job`, " +
+		"Settings: a single-repo job reads .fleet/config.json in its main checkout (`max_agents_per_job`, " +
 		"`resource_check`, `linear`; see `fleet spawn --help`). A cross-repo job reads " +
-		".fleet/config.json in its initiative checkout ~/x-repo/<I> (an invalid file is refused " +
+		".fleet/config.json in its initiative checkout <initiatives>/<I> (an invalid file is refused " +
 		"the same way), except `linear`: Linear is on exactly when --parent-issue is given; " +
 		"the work orders then go to the parent's team and project, read from Linear.\n\n" +
 		"Linear on: exactly one of --parent-issue <ISSUE> and --new-parent <TITLE> is required; " +
@@ -50,7 +52,7 @@ const (
 		"scope has the same name or, with --key, the same key (the job is named); no live " +
 		"lead has the same parent issue (the lead is named: talk to it instead); the lead's " +
 		"name is free in the ledger and in herdr; no workspace is labelled after the job and, " +
-		"for a cross-repo job, ~/x-repo/<I>/<job>/ does not exist; with resource_check, the " +
+		"for a cross-repo job, <initiatives>/<I>/<job>/ does not exist; with resource_check, the " +
 		"1-minute load average is below the CPU count and available memory is above 2 GiB; " +
 		"last, for a cross-repo job, the parent's team and project are read from Linear.\n\n" +
 		"Then the job is reserved: the job's row (open, with the caller's thread as the job's " +
@@ -78,7 +80,7 @@ const (
 	JobListAbout     = "List the open jobs of your thread's channel, or of the whole scope (read-only)"
 	JobListLongAbout = "List the open jobs of your thread's channel, or of the whole scope (read-only).\n\n" +
 		"The jobs are those of the caller's scope (its ledger). By default only the jobs whose " +
-		"home thread belongs to the same repo-<R> or x-repo-<I> channel as the caller's thread " +
+		"home thread belongs to the same channel as the caller's thread " +
 		"(a thread agent's own, a lead's or worker's job's home thread); --all lists every " +
 		"open job of the scope, as does a caller with no thread (a plain shell).\n\n" +
 		"One line per open job, oldest first, tab-separated: job, parent issue, key, repo, " +
@@ -102,7 +104,7 @@ type JobStartArgs struct {
 	// parent to create. At most one is set.
 	ParentIssue *string
 	NewParent   *string
-	// Repo, when set, is the directory name of the job's repo under ~/dev.
+	// Repo, when set, is the directory name of the job's main checkout.
 	Repo *string
 	// Key, when set, is the job's dedup key.
 	Key *string
@@ -189,7 +191,7 @@ func openJobs(conn *sql.DB) ([]jobRow, error) {
 type jobChecked struct {
 	me     *identity.Identity
 	id     *identity.Identity
-	home   string
+	sc     *config.Scope
 	repo   string
 	cwd    string
 	key    string
@@ -283,11 +285,11 @@ func (c *jobChecked) flags(args JobStartArgs) error {
 // the job's Linear settings against the parent flags.
 func (c *jobChecked) repoAndLinear(args JobStartArgs) error {
 	var err error
-	if c.home, err = Home(); err != nil {
+	if c.sc, err = config.LoadScope(c.me.Scope); err != nil {
 		return err
 	}
 	if c.repo != "" {
-		c.cwd = filepath.Join(c.home, "dev", c.repo)
+		c.cwd = filepath.Join(c.sc.Paths.Checkouts, c.repo)
 		if info, err := os.Stat(c.cwd); err != nil || !info.IsDir() {
 			return exit.Refusedf("no checkout at %s", c.cwd)
 		}
@@ -298,7 +300,7 @@ func (c *jobChecked) repoAndLinear(args JobStartArgs) error {
 		}
 	}
 	if c.repo != "" {
-		if c.cfg, err = jobConfig(c.home, c.repo, ""); err != nil {
+		if c.cfg, err = jobConfig(c.repo, c.cwd); err != nil {
 			return err
 		}
 	}
@@ -320,20 +322,20 @@ func (c *jobChecked) repoAndLinear(args JobStartArgs) error {
 
 // crossRepoDir is where a cross-repo job's lead runs: a directory named
 // after the job in the checkout of the caller's thread's initiative
-// (~/x-repo/<I>/<job>), or of x-repo-general for a thread of one repo.
-// The checkout must exist; the job's directory is made at the start. The
-// job's config is read here, from the checkout.
+// (`<initiatives>/<I>/<job>`), or of the general initiative for a thread of
+// one repo. The checkout must exist; the job's directory is made at the
+// start. The job's config is read here, from the checkout.
 func (c *jobChecked) crossRepoDir(conn querier) error {
 	mapping, err := threadMapping(conn, c.me.Thread)
 	if err != nil {
 		return err
 	}
-	root := crossRepoRoot(c.home, mapping)
+	root := crossRepoRoot(c.sc, mapping)
 	if info, err := os.Stat(root); err != nil || !info.IsDir() {
 		return exit.Refusedf("no checkout at %s, where a cross-repo job of this thread runs", root)
 	}
 	c.cwd = filepath.Join(root, c.id.Job)
-	c.cfg, err = jobConfig(c.home, "", c.cwd)
+	c.cfg, err = jobConfig("", c.cwd)
 	return err
 }
 
@@ -505,7 +507,7 @@ func JobStart(h *herdr.Herdr, args JobStartArgs) (exit.Code, error) {
 	if err != nil {
 		return startFailed(c.id.Agent, err, 0, created, hint)
 	}
-	body := rolePrompt(c.id, c.cwd, c.repo, filepath.Dir(c.cwd), c.cfg.MaxAgentsPerJob, issue, c.parent) +
+	body := rolePrompt(c.sc, c.id, c.cwd, c.repo, filepath.Dir(c.cwd), c.cfg.MaxAgentsPerJob, issue, c.parent) +
 		section + taskSection(issue.URL, c.body)
 	code, err := startAndDeliver(h, conn, c.id, place, c.cwd, args.Model, args.Effort, c.me.Agent, body, &created)
 	if err != nil || code != exit.Ok {

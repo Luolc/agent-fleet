@@ -55,8 +55,8 @@ func ledgerWith(w *world, rows []struct{ name, role, job string }) {
 		if r.job != "" && !jobs[r.job] {
 			jobs[r.job] = true
 			if _, err := conn.Exec(
-				"INSERT INTO jobs (job, repo, lead_cwd, state, started_at) VALUES (?1, 'example-dataset', '/c', 'open', 0)",
-				r.job); err != nil {
+				"INSERT INTO jobs (job, repo, lead_cwd, state, started_at) VALUES (?1, 'example-dataset', ?2, 'open', 0)",
+				r.job, filepath.Join(w.dir, "home", "dev", "example-dataset")); err != nil {
 				w.t.Fatal(err)
 			}
 		}

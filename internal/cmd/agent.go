@@ -562,10 +562,11 @@ func Home() (string, error) {
 	return home, nil
 }
 
-// CheckRepo refuses what is not a directory name under ~/dev.
+// CheckRepo refuses what is not one directory name: a checkout under the
+// scope's `paths.checkouts` or `paths.initiatives`.
 func CheckRepo(repo string) error {
 	if repo == "" || repo == "." || repo == ".." || strings.Contains(repo, "/") {
-		return exit.Refusedf("<repo> %q must be a directory name under ~/dev", repo)
+		return exit.Refusedf("<repo> %q must be one directory name", repo)
 	}
 	return nil
 }
@@ -705,7 +706,7 @@ func WorkOrderTitle(task string) string {
 type linear struct{ team, project, parent string }
 
 // jobLinear decides whether a job uses Linear. A single-repo job takes its
-// team and project from `.fleet/config.json` of ~/dev/<repo>; a cross-repo
+// team and project from `.fleet/config.json` of its main checkout; a cross-repo
 // job uses Linear exactly when it has a parent issue, whose team and
 // project `resolve` reads from Linear once every other check has passed.
 func jobLinear(cfg *config.Config, repo, parentIssue string) *linear {
@@ -736,15 +737,15 @@ func (l *linear) resolve() error {
 	return nil
 }
 
-// jobConfig is the config a job runs under: `.fleet/config.json` of
-// ~/dev/<repo>, or for a cross-repo job of the initiative checkout that
-// holds the lead's directory `leadCwd`. A cross-repo job's `linear` is
-// not used (jobLinear).
-func jobConfig(home, repo, leadCwd string) (*config.Config, error) {
+// jobConfig is the config a job runs under: `.fleet/config.json` of the
+// lead's directory `leadCwd`, which for a single-repo job is the repo's
+// main checkout, or for a cross-repo job of the initiative checkout that
+// holds `leadCwd`. A cross-repo job's `linear` is not used (jobLinear).
+func jobConfig(repo, leadCwd string) (*config.Config, error) {
 	if repo == "" {
 		return config.Load(filepath.Dir(leadCwd))
 	}
-	return config.Load(filepath.Join(home, "dev", repo))
+	return config.Load(leadCwd)
 }
 
 // scopeOf is the claim scope of a job's work orders: `<repo>: job <job>`,
@@ -844,8 +845,9 @@ var workerPrompt string
 // holds for it, and where its files go. `cap` is the job's agent cap;
 // `issue` the agent's work order (zero without Linear); `parentIssue` the
 // job's parent issue; `root` the initiative's checkout of a cross-repo
-// job (empty for a single-repo job, whose repo is `repo`).
-func rolePrompt(id *identity.Identity, cwd, repo, root string, cap int, issue atb.Issue, parentIssue string) string {
+// job (empty for a single-repo job, whose repo is `repo`); `sc` the
+// scope's paths and channels.
+func rolePrompt(sc *config.Scope, id *identity.Identity, cwd, repo, root string, cap int, issue atb.Issue, parentIssue string) string {
 	issueNote := " (your work order, " + issue.URL + ")"
 	if issue.Identifier == "" {
 		issueNote = " (empty: this job has no Linear work orders)"
@@ -855,18 +857,20 @@ func rolePrompt(id *identity.Identity, cwd, repo, root string, cap int, issue at
 		linear = fmt.Sprintf("The job's parent issue is %s; fleet creates, claims and releases it, your work order "+
 			"and the workers' work orders.", parentIssue)
 	}
-	var repoLine, agentsMD, scratch string
+	checkouts, scratch := sc.Tilde(sc.Paths.Checkouts), sc.Tilde(sc.Paths.Scratch)
+	var repoLine, agentsMD string
 	if repo != "" {
-		repoLine = fmt.Sprintf("The job is single-repo: its repo is %[1]s, main checkout ~/dev/%[1]s; `<repo>` below is %[1]s.", repo)
-		agentsMD = fmt.Sprintf("Before anything else, read the `## Fleet` section of ~/dev/%s/AGENTS.md and follow it.", repo)
-		scratch = "~/scratch/" + repo
+		repoLine = fmt.Sprintf("The job is single-repo: its repo is %[1]s, main checkout %[2]s/%[1]s; `<repo>` below is %[1]s.",
+			repo, checkouts)
+		agentsMD = fmt.Sprintf("Before anything else, read the `## Fleet` section of %s/%s/AGENTS.md and follow it.", checkouts, repo)
+		scratch += "/" + repo
 	} else {
-		initiative := "x-repo-" + filepath.Base(root)
+		initiative := sc.Channels.InitiativePrefix + filepath.Base(root)
 		repoLine = fmt.Sprintf("The job is cross-repo: it runs inside the checkout of the initiative %s (%s); "+
-			"`<repo>` below is the repo a task names, main checkout ~/dev/<repo>.", initiative, root)
+			"`<repo>` below is the repo a task names, main checkout %s/<repo>.", initiative, root, checkouts)
 		agentsMD = fmt.Sprintf("Before anything else, read %s (the initiative's charter), then the `## Fleet` section "+
-			"of ~/dev/<R>/AGENTS.md of every repo R the job touches, and follow them.", filepath.Join(root, "AGENTS.md"))
-		scratch = "~/scratch/" + initiative
+			"of %s/<R>/AGENTS.md of every repo R the job touches, and follow them.", filepath.Join(root, "AGENTS.md"), checkouts)
+		scratch += "/" + initiative
 	}
 	prompt, lead := leadPrompt, id.Parent
 	if id.Role == identity.Worker {
