@@ -36,4 +36,7 @@ CGO_ENABLED=0 go build -trimpath -buildvcs=false -o /dev/null ./cmd/fleet
 step docs/design.md line cap
 scripts/check-design-cap.sh
 
+step judge shards
+scripts/check-judge-shards.sh
+
 step ok

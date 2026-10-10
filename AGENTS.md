@@ -31,7 +31,8 @@ downloading another one. Bump the installed Go before bumping `go.mod`.
 ## Checks
 
 - `scripts/check.sh`: gofmt, `go vet`, golangci-lint, `go test`, govulncheck,
-  a static build, and the design doc's line cap. Must pass before every push.
+  a static build, the design doc's line cap, and that the judge's CI shards
+  run every suite once. Must pass before every push.
   On a shared machine, set `FLEET_CHECK_CORES=N` to limit it to N cores.
 - `go test -race ./...`: CI runs it at default parallelism. A limited local
   run is not a substitute.
@@ -56,8 +57,9 @@ jobs run in parallel:
 `check` needs all of them and passes only when each of them succeeded; it is
 the required status check on `main`, so no other job may be named `check`.
 Each judge suite lays out what it needs, so any suite runs alone; a new
-suite does the same and gets a place in a shard. Runners are pinned to
-`ubuntu-24.04`, and third-party actions by commit SHA.
+suite does the same and gets a place in a shard (`scripts/check.sh` fails
+until it has one). Runners are pinned to `ubuntu-24.04`, and third-party
+actions by commit SHA.
 
 ## Test data
 
