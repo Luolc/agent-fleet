@@ -37,24 +37,27 @@ downloading another one. Bump the installed Go before bumping `go.mod`.
   run is not a substitute.
 - `pre-commit run --all-files`: gitleaks on the staged diff, then gofmt.
 - `judge/run.sh <binary>`: the end-to-end suite. Needs docker; takes a few
-  minutes. Green against the Go binary.
+  minutes. Green against the Go binary. `JUDGE_SUITES="<suite> ..."` runs
+  only those suites.
 
 ## CI
 
-`.github/workflows/ci.yml` runs on pull requests and on pushes to `main`. Three
+`.github/workflows/ci.yml` runs on pull requests and on pushes to `main`. These
 jobs run in parallel:
 
 - `lint`: a gitleaks scan of the full history, pre-commit (gitleaks hook
   skipped, since the full scan covers it), and `scripts/check.sh`.
 - `race`: `go test -race ./...`.
-- `judge`: the judge against a fresh Go build. The judge image is cached,
-  keyed on `judge/Dockerfile` and `judge/bin/`.
+- `judge`: the judge against a fresh Go build, a matrix of three shards set
+  by `JUDGE_SUITES`: lifecycle, thread, and the other four suites together.
+  Each shard prints its own `judge:` line. The judge image is cached, keyed
+  on `judge/Dockerfile` and `judge/bin/`.
 
-`check` needs all three and passes only when each of them succeeded; it is
+`check` needs all of them and passes only when each of them succeeded; it is
 the required status check on `main`, so no other job may be named `check`.
-The judge's suites share one container's state in order, so the judge runs
-as one job. Runners are pinned to `ubuntu-24.04`, and third-party actions by
-commit SHA.
+Each judge suite lays out what it needs, so any suite runs alone; a new
+suite does the same and gets a place in a shard. Runners are pinned to
+`ubuntu-24.04`, and third-party actions by commit SHA.
 
 ## Test data
 

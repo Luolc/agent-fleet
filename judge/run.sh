@@ -12,6 +12,10 @@
 #   JUDGE_ENV_PREFIX  prefix of the identity variables (default: FLEET_,
 #                     that is, JUDGE_NAME upper-cased plus an underscore)
 #   JUDGE_IMAGE       use an image built elsewhere (CI) instead of building
+#   JUDGE_SUITES      the suites to run, space-separated names out of usage,
+#                     send, lifecycle, watch, worktree and thread; they run
+#                     in that order whatever order they are given in
+#                     (default: all of them)
 #
 # Another implementation of the same CLI runs under its own name:
 #   JUDGE_NAME=<its name> judge/run.sh <path/to/its binary>
@@ -32,6 +36,6 @@ if [[ -z "$image" ]]; then
 	docker build -q -t "$image" "$here" >/dev/null
 fi
 docker run --rm \
-	-e "JUDGE_NAME=$name" -e "JUDGE_ENV_PREFIX=$prefix" \
+	-e "JUDGE_NAME=$name" -e "JUDGE_ENV_PREFIX=$prefix" -e "JUDGE_SUITES=${JUDGE_SUITES:-}" \
 	-v "$bin:/home/agent/bin/$name:ro" -v "$here:/home/agent/judge:ro" \
 	"$image" bash /home/agent/judge/inside.sh

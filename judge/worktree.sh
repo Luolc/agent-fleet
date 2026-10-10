@@ -1,8 +1,10 @@
-# Sourced by inside.sh after lifecycle.sh, which set up origin, ~/dev/$R and
-# ~/seed: `worktree` opens a worktree for the caller's job, and `job end`
-# removes the ones recorded for the job. No agent of the job is started; the
-# binary runs from this shell with a job's identity variables, and the jobs
-# have no row in the jobs table (`job end --force` needs none).
+# Sourced by inside.sh: `worktree` opens a worktree for the caller's job,
+# and `job end` removes the ones recorded for the job. No agent of the job
+# is started; the binary runs from this shell with a job's identity
+# variables, and the jobs have no row in the jobs table (`job end --force`
+# needs none).
+need_repo
+need_thread_agent
 in_job() { local job=$1; shift; as "$job-a" worker "$job-lead" "$job" -- "$@"; }
 wt_rows() { ledger "SELECT path, repo, branch, job, created_by, removed_at IS NULL FROM worktrees WHERE job = '$1' ORDER BY id"; }
 

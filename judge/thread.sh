@@ -1,8 +1,9 @@
-# Sourced by inside.sh after worktree.sh: `inbox`, `thread post`, `thread
+# Sourced by inside.sh: `inbox`, `thread post`, `thread
 # end`, `thread set-project`, `thread relate` and `ask-human` against the real herdr, with a fake atb
 # and a fake fednet that log their arguments. Threads use the scope `main`
 # (a message without a scope): its ledger and the herdr session fleet-main.
 # A thread of the channel repo-$R runs in ~/dev/$R.
+need_repo
 S=(herdr --session fleet-main)
 TDB=/home/agent/.local/state/$T/main.db
 tledger() { sqlite3 "$TDB" "$1" | tr '\n' ' '; }

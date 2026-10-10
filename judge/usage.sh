@@ -1,6 +1,7 @@
 # Sourced by inside.sh: the command-line surface that needs no herdr call,
 # and the refusals every command makes before touching anything. Runs
 # before lifecycle.sh, so ~/dev/$R does not exist yet.
+check "fake claude starts idle" idle "$(start_fake fake)"
 "$T" --version >/dev/null 2>&1; rc=$?
 check "version: exit 0" 0 "$rc"
 "$T" --help >/dev/null 2>&1; rc=$?

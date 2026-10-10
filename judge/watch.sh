@@ -1,11 +1,22 @@
-# Sourced by inside.sh after lifecycle.sh, in the ledger the starts created
-# and with the thread agent already running: `watch` and `status` against
-# real herdr and fake Claudes, with the ledger rows inserted directly. Two
+# Sourced by inside.sh: `watch` and `status` against real herdr and fake
+# Claudes, with the ledger rows inserted directly into a ledger that has no
+# live rows, the thread agent idle and the fake agent at its permission
+# prompt, as lifecycle.sh and send.sh leave them in a full run. Two
 # arms must differ: a moving worker (TICK: its transcript grows) and a
 # stuck one (HANG: only the spinner timer and the footer countdown move).
 # w-lead receives the notices, so it moves; u-lead, idle with no workers,
 # is the lead whose own suspicion is only printed. The 30-minute limit is
 # cut to 5 s through <prefix>WATCH_STALE_SECS.
+need_fake
+need_thread_agent
+if [ ! -e "$DB" ]; then
+  thr job start setup --task-file "$(task setup 'makes the ledger')" >/dev/null 2>&1
+  thr job end setup --force >/dev/null 2>&1
+fi
+if [ "$(agent_field fake agent_status)" != blocked ]; then
+  "${S[@]}" agent prompt fake "please BLOCK" --wait --until working --timeout 20000 >/dev/null
+  "${S[@]}" agent wait fake --until blocked --timeout 20000 >/dev/null
+fi
 now=$(date +%s)
 sqlite3 "$DB" >/dev/null <<SQL
 INSERT INTO agents (name, role, job, parent, state, started_at) VALUES

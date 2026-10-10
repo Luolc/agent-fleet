@@ -1,5 +1,6 @@
 # Sourced by inside.sh: `send` against the real herdr and a fake Claude,
 # every outcome of `herdr agent prompt` mapped to its exit code.
+need_fake
 sender() { env "${P}AGENT=judge-sender" "${P}ROLE=thread" "${P}SCOPE=$SCOPE" "$T" "$@"; }
 
 echo "the quick brown fox 0xC0FFEE" | sender send fake; rc=$?
