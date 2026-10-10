@@ -304,18 +304,19 @@ echo "$*" >> /home/agent/atb.log
 [ "$2 $3" = "$(cat /home/agent/atb-fail 2>/dev/null)" ] && { echo "error: refused: no holder" >&2; exit 4; }
 exit 0
 ATB
+# The job is abandoned and so is its parent (--close-parent abandoned).
 # First the parent's release fails: exit 5, nothing changed but the steps
 # done, which the retry does not repeat (the fake then refuses the work
 # order's release, as atb does for an issue nobody holds). The failing
 # step is read from a file: the runner's allow-list passes no variable.
 echo "release QT-10" > /home/agent/atb-fail
-out=$(PATH=/home/agent/fake-atb:$PATH ISSUE=QT-12 as wire-lead lead thread-1 wire -- job end --report-file /home/agent/tasks/wire.md --abandon 2>&1); rc=$?
+out=$(PATH=/home/agent/fake-atb:$PATH ISSUE=QT-12 as wire-lead lead thread-1 wire -- job end --report-file /home/agent/tasks/wire.md --abandon --close-parent abandoned 2>&1); rc=$?
 check "job end cross-repo: exit 5 when the parent's release fails" 5 "$rc"
 has "job end cross-repo: names the failed step" "$out" "atb linear release QT-10 failed"
 check "job end cross-repo: job and lead still live, workspace kept" "open active 1" \
   "$(ledger "SELECT state FROM jobs WHERE job = 'wire'")$(ledger "SELECT state FROM agents WHERE name = 'wire-lead'")$("${S[@]}" workspace list | jq '[.result.workspaces[] | select(.label == "wire")] | length')"
 echo "release QT-12" > /home/agent/atb-fail
-out=$(PATH=/home/agent/fake-atb:$PATH ISSUE=QT-12 as wire-lead lead thread-1 wire -- job end --report-file /home/agent/tasks/wire.md --abandon 2>&1); rc=$?
+out=$(PATH=/home/agent/fake-atb:$PATH ISSUE=QT-12 as wire-lead lead thread-1 wire -- job end --report-file /home/agent/tasks/wire.md --abandon --close-parent abandoned 2>&1); rc=$?
 check "job end cross-repo: exit 0 on the retry" 0 "$rc"
 [ "$rc" = 0 ] || printf '%s\n' "$out"
 check "job end cross-repo: report to the work order, released; conclusion to the parent, released once each, the retry only releasing the parent" \
