@@ -519,6 +519,49 @@ func TestJobStartOfACrossRepoJobWithoutAParentRunsWithLinearOff(t *testing.T) {
 	if got := row(w, "wire-lead"); !strings.HasPrefix(got, "  active ") {
 		t.Errorf("row = %q", got)
 	}
+	// No config in the checkout: the defaults.
+	if argv := w.file("argv"); !strings.Contains(argv, "The job's cap is 16 live agents") {
+		t.Errorf("argv = %q", argv)
+	}
+}
+
+func TestACrossRepoJobReadsTheConfigInItsInitiativeCheckout(t *testing.T) {
+	w := newWorld(t)
+	w.useStartHerdr()
+	w.fakeAtbCreating("")
+	checkout := dir(w, filepath.Join("home", "x-repo", "general"))
+	cfg := filepath.Join(checkout, ".fleet", "config.json")
+	if err := os.MkdirAll(filepath.Dir(cfg), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write := func(body string) {
+		if err := os.WriteFile(cfg, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(`{"max_agents_per_job": 0}`)
+	out := w.startJob("wire", "--task-file", task(w, "task.md", "Wire\n"))
+	if out.code != 1 || !strings.Contains(out.stderr, cfg+": max_agents_per_job") {
+		t.Errorf("invalid config: %+v", out)
+	}
+	// Its linear is not used: without a parent issue Linear stays off.
+	write(`{"max_agents_per_job": 1, "resource_check": false, "linear": {"team": "EX", "project": "Example project"}}`)
+	out = w.startJob("wire", "--task-file", task(w, "task.md", "Wire\n"))
+	if out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	if strings.Contains(w.calls(), "atb") {
+		t.Errorf("calls = %q", w.calls())
+	}
+	if argv := w.file("argv"); !strings.Contains(argv, "The job's cap is 1 live agents") {
+		t.Errorf("argv = %q", argv)
+	}
+	// spawn reads the same file: the lead alone fills a cap of 1.
+	out = w.asAgent("wire-lead", "lead", "", "wire", "spawn", "a", "--cwd", checkout,
+		"--task-file", task(w, "a.md", "a\n"))
+	if out.code != 1 || !strings.Contains(out.stderr, "the cap is 1") {
+		t.Errorf("spawn: %+v", out)
+	}
 }
 
 func TestJobStartStopsWhenAnAtbStepFails(t *testing.T) {

@@ -737,10 +737,12 @@ func (l *linear) resolve() error {
 }
 
 // jobConfig is the config a job runs under: `.fleet/config.json` of
-// ~/dev/<repo>, or the defaults for a cross-repo job.
-func jobConfig(home, repo string) (*config.Config, error) {
+// ~/dev/<repo>, or for a cross-repo job of the initiative checkout that
+// holds the lead's directory `leadCwd`. A cross-repo job's `linear` is
+// not used (jobLinear).
+func jobConfig(home, repo, leadCwd string) (*config.Config, error) {
 	if repo == "" {
-		return config.Default(), nil
+		return config.Load(filepath.Dir(leadCwd))
 	}
 	return config.Load(filepath.Join(home, "dev", repo))
 }

@@ -25,8 +25,9 @@ const (
 		"by a thread agent with `fleet job start`; workers cannot spawn.\n\n" +
 		"Settings come from .fleet/config.json in ~/dev/<repo> of the job's repo: " +
 		"`max_agents_per_job` (default 16), `resource_check` (default true) and `linear` " +
-		"({\"team\": ..., \"project\": ...}; absent: Linear is off). A cross-repo job reads no " +
-		"config: the defaults apply, and Linear is on exactly when the job has a parent issue, " +
+		"({\"team\": ..., \"project\": ...}; absent: Linear is off). A cross-repo job reads " +
+		".fleet/config.json in its initiative checkout ~/x-repo/<I>, except `linear`: Linear " +
+		"is on exactly when the job has a parent issue, " +
 		"whose team and project the work order goes to.\n\n" +
 		"Checks, all before anything is created: the task file is readable and not empty; " +
 		"--cwd is a directory; the job is open in the ledger; the config is valid; with Linear " +
@@ -145,7 +146,7 @@ func (c *spawnChecked) ledgerAndHerdr(h *herdr.Herdr, conn *sql.DB) error {
 	if err != nil {
 		return err
 	}
-	if c.cfg, err = jobConfig(home, c.job.Repo); err != nil {
+	if c.cfg, err = jobConfig(home, c.job.Repo, c.job.LeadCwd); err != nil {
 		return err
 	}
 	c.linear = jobLinear(c.cfg, c.job.Repo, c.job.ParentIssue)
