@@ -90,7 +90,7 @@ check "inbox: identity variables in its process, the thread included" \
   "${P}AGENT=$A ${P}ISSUE=TH-5 ${P}JOB= ${P}PARENT= ${P}ROLE=thread ${P}SCOPE=main ${P}THREAD=$K " \
   "$(proc_env "$A")"
 # The fake Claude shows the last 20 lines; the prompt's head is above them.
-has "inbox: prompt end, context and message on screen" "$(screen "$A")" "fleet thread end" "## Channel context" "0xCTX" "## The message" "0xMSG1"
+has "inbox: prompt end, context and message on screen" "$(screen "$A")" "fleet thread progress --done" "## Channel context" "0xCTX" "## The message" "0xMSG1"
 check "inbox: agent row active with the thread and ticket" "thread||$K|TH-5|active " \
   "$(tledger "SELECT role, job, thread, issue, state FROM agents WHERE name = '$A'")"
 check "inbox: thread row with its ticket and one session" "c0123-1700000000-123|C0123|TH-5|1 " \
@@ -133,6 +133,7 @@ check "thread relate: exit 1 without a ticket" 1 "$rc"
 out=$(as item-1-lead lead thread-1 item-1 -- thread end --summary-file /home/agent/tasks/usage.md 2>&1); rc=$?
 check "thread end: exit 1 from a lead" 1 "$rc"
 : > /home/agent/atb.log
+: > /home/agent/fednet.log
 printf 'Started nothing; the thread was a question. 0xSUMMARY\n' > /home/agent/summary.md
 out=$(thra "$K" TH-5 -- thread end --summary-file /home/agent/summary.md 2>&1); rc=$?
 check "thread end: exit 0" 0 "$rc"
@@ -142,6 +143,10 @@ check "thread end: summary written to the ticket, then the ticket released as do
   "$(sed 's/--body-file [^ ]*/--body-file BODY/' /home/agent/atb.log | tr '\n' '|')"
 check "thread end: the comment is the session's summary" "Session 1 ended||Started nothing; the thread was a question. 0xSUMMARY|" \
   "$(tr '\n' '|' < /home/agent/comment-TH-5.md)"
+check "thread end: one closing line posted to the thread, the ticket linked" \
+  "client post -socket /home/agent/fednet.sock -thread $K -footer -- 会话已结束 · [TH-5](https://linear.example.test/TH-5)|" "$(tr '\n' '|' < /home/agent/fednet.log)"
+check "thread end: every step recorded, the closing line between Linear and the row" "comment release footer end-row " \
+  "$(tledger "SELECT step FROM steps WHERE key = 'thread-end:' || (SELECT max(id) FROM agents WHERE name = '$A') ORDER BY id")"
 check "thread end: row ended" "ended " "$(tledger "SELECT state FROM agents WHERE name = '$A'")"
 check "thread end: tab closed last, the agent is gone" agent_not_found "$(agent_field "$A" agent_status)"
 # The workspace stays: its `shell` tab runs no agent.
@@ -178,7 +183,7 @@ out=$(inbox /home/agent/events/m3b.json 2>&1); rc=$?
 check "inbox: retry of the killed run, exit 0" 0 "$rc"
 [ "$rc" = 0 ] || printf '%s\n' "$out"
 has "inbox: retry says it finished the earlier start" "$out" "still starting from an earlier run"
-has "inbox: retry delivered the full first message" "$(screen "$A")" "Write to people in their language" "Earlier sessions" "0xSUM1" "## The message" "0xMSG3B"
+has "inbox: retry delivered the full first message" "$(screen "$A")" "fleet thread progress --done" "Earlier sessions" "0xSUM1" "## The message" "0xMSG3B"
 check "inbox: retry left the row active, the message delivered, three sessions" "active delivered 3 " \
   "$(tledger "SELECT state FROM agents WHERE name = '$A' AND state != 'ended'")$(tledger "SELECT state FROM inbox WHERE msg_id = 'm3b'")$(tledger "SELECT sessions FROM threads WHERE thread = '$K'")"
 check "inbox: retry started no second agent" "1 " \
@@ -188,6 +193,7 @@ settled "$A"
 # Linear unavailable and the notice cannot be posted: exit 5, the message
 # kept; then the notice goes through: no agent, the thread told, exit 0.
 : > /home/agent/atb.log
+: > /home/agent/fednet.log
 touch /home/agent/linear-down /home/agent/fednet-down
 out=$(inbox "$(event m4 C0999/1.1 'hello 0xMSG4')" 2>&1); rc=$?
 rm /home/agent/fednet-down
@@ -219,10 +225,12 @@ out=$(thra "$K" TH-5 -- thread end --summary-file /home/agent/summary.md 2>&1); 
 check "thread end: retry exit 5 on release exit 4" 5 "$rc"
 check "thread end: retry skipped the comment, no herdr call" "release TH-5|release TH-5|" \
   "$(sed -n 's/^linear \(release TH-5\).*/\1/p' /home/agent/atb.log | tr '\n' '|')$(grep -c comment /home/agent/atb.log | sed 's/^1$//')"
+: > /home/agent/fednet.log
 out=$(thra "$K" TH-5 -- thread end --summary-file /home/agent/summary.md --force 2>&1); rc=$?
 rm -f /home/agent/release-down /home/agent/release-failed-once
 check "thread end --force: exit 0" 0 "$rc"
 has "thread end --force: lists the release to finish by hand" "$out" "Linear steps not done" "atb linear release TH-5 --agent $A --reason done --done"
+check "thread end --force: the closing line still posted" "client post -socket /home/agent/fednet.sock -thread $K -footer -- 会话已结束 · [TH-5](https://linear.example.test/TH-5)|" "$(tr '\n' '|' < /home/agent/fednet.log)"
 check "thread end --force: row ended, tab closed" "ended agent_not_found" \
   "$(tledger "SELECT state FROM agents WHERE name = '$A' ORDER BY id DESC LIMIT 1")$(agent_field "$A" agent_status)"
 
@@ -231,6 +239,7 @@ inbox "$(event m6 "$K" 'again 0xMSG6')" >/dev/null 2>&1; rc=$?
 check "inbox: session 4 for the tab-close arm, exit 0" 0 "$rc"
 settled "$A"
 touch /home/agent/tab-close-fails
+: > /home/agent/fednet.log
 out=$(thra "$K" TH-5 -- thread end --summary-file /home/agent/summary.md 2>&1); rc=$?
 check "thread end: exit 5 when the tab close fails" 5 "$rc"
 check "thread end: row ended, tab still open" "ended $A" \
@@ -239,6 +248,28 @@ check "thread end: row ended, tab still open" "ended $A" \
 out=$(thra "$K" TH-5 -- thread end --summary-file /home/agent/summary.md 2>&1); rc=$?
 check "thread end: retry exit 0" 0 "$rc"
 check "thread end: retry called no atb and closed the tab" " agent_not_found" "$(cat /home/agent/atb.log) $(agent_field "$A" agent_status)"
+check "thread end: the closing line was posted once across both runs" 1 "$(wc -l < /home/agent/fednet.log)"
+
+# thread end whose closing line fails: Linear is done and recorded, the
+# row stays live; the retry posts the line once and finishes.
+inbox "$(event m9 "$K" 'again 0xMSG9')" >/dev/null 2>&1; rc=$?
+check "inbox: a session for the closing-line arm, exit 0" 0 "$rc"
+settled "$A"
+: > /home/agent/atb.log
+: > /home/agent/fednet.log
+touch /home/agent/fednet-down
+out=$(thra "$K" TH-5 -- thread end --summary-file /home/agent/summary.md 2>&1); rc=$?
+rm /home/agent/fednet-down
+check "thread end: exit 5 when the closing line fails" 5 "$rc"
+has "thread end: names the post" "$out" "fednet client post failed"
+check "thread end: Linear done and recorded, the row live, the agent there" "comment release active $A" \
+  "$(tledger "SELECT step FROM steps WHERE key = 'thread-end:' || (SELECT max(id) FROM agents WHERE name = '$A') ORDER BY id")$(tledger "SELECT state FROM agents WHERE name = '$A' ORDER BY id DESC LIMIT 1")$(agent_field "$A" name)"
+: > /home/agent/atb.log
+: > /home/agent/fednet.log
+out=$(thra "$K" TH-5 -- thread end --summary-file /home/agent/summary.md 2>&1); rc=$?
+check "thread end: retry after the failed line, exit 0" 0 "$rc"
+check "thread end: the retry posts the line once, calls no atb, closes the tab" "client post -socket /home/agent/fednet.sock -thread $K -footer -- 会话已结束 · [TH-5](https://linear.example.test/TH-5)| agent_not_found" \
+  "$(tr '\n' '|' < /home/agent/fednet.log)$(cat /home/agent/atb.log) $(agent_field "$A" agent_status)"
 
 # The agent exited to its pane's shell (herdr has no agent, the tab is
 # there): thread end closes the recorded tab anyway, and checks it gone.
@@ -354,6 +385,34 @@ out=$(thra "$K" TH-5 -- thread post --body-file /home/agent/tasks/post.md 2>&1);
 mv /home/agent/main.json.keep "/home/agent/.config/$T/main.json"
 check "thread post: exit 1 without a socket" 1 "$rc"
 check "thread post: the refusals post nothing" 0 "$(wc -l < /home/agent/fednet.log)"
+
+# The progress card: the whole card each call, --done to complete it,
+# through the same thread and socket.
+: > /home/agent/fednet.log
+out=$(thra "$K" TH-5 -- thread progress --title 'Importing 0xPROG' --item 'read the schema:done' --item 'load rows: 12k so far:doing' 2>&1); rc=$?
+check "thread progress: exit 0, fednet's stdout printed" "0 m-posted" "$rc $out"
+thra "$K" TH-5 -- thread progress --done >/dev/null 2>&1; rc=$?
+check "thread progress --done: exit 0" 0 "$rc"
+thra "$K" TH-5 -- thread progress --done --title 'Imported 0xPROG2' --item 'load rows:done' >/dev/null 2>&1; rc=$?
+check "thread progress --done with the closed card's wording: exit 0" 0 "$rc"
+check "thread progress: the card, then -done, then -done with the wording, to the caller's thread" \
+  "client progress -socket /home/agent/fednet.sock -thread $K -title Importing 0xPROG -item read the schema:done -item load rows: 12k so far:doing|client progress -socket /home/agent/fednet.sock -thread $K -done|client progress -socket /home/agent/fednet.sock -thread $K -done -title Imported 0xPROG2 -item load rows:done|" \
+  "$(tr '\n' '|' < /home/agent/fednet.log)"
+touch /home/agent/fednet-down
+out=$(thra "$K" TH-5 -- thread progress --title 'x' 2>&1); rc=$?
+rm /home/agent/fednet-down
+check "thread progress: fednet's exit code and stderr handed back" "4 post: hub unreachable" "$rc $out"
+: > /home/agent/fednet.log
+many=$(for _ in $(seq 1 51); do printf -- '--item step:doing '; done)
+for arm in "no title:--item a:doing" "an item without a state:--title x --item nostate" "an item with an unknown state:--title x --item a:pending" \
+  "an item without text:--title x --item :done" "51 items:--title x $many"; do
+  # shellcheck disable=SC2086
+  thra "$K" TH-5 -- thread progress ${arm#*:} >/dev/null 2>&1; rc=$?
+  check "thread progress: exit 1 with ${arm%%:*}" 1 "$rc"
+done
+lead8 thread progress --title x >/dev/null 2>&1; rc=$?
+check "thread progress: exit 1 from a lead" 1 "$rc"
+check "thread progress: the refusals send nothing" 0 "$(wc -l < /home/agent/fednet.log)"
 out=$(lead8 ask-human --file /home/agent/tasks/q1.md --approval 2>&1); rc=$?
 check "ask-human --approval: exit 1, not supported yet" 1 "$rc"
 has "ask-human --approval: says so" "$out" "approval cards are not supported yet"
@@ -384,9 +443,13 @@ check "job end: the job is ended" "ended|done " "$(tledger "SELECT state, outcom
 # a direct message in x-repo-general's; any other channel is ignored.
 X=C0X01/1700000002.000
 AX=thread-c0x01-1700000002-000
-out=$(inbox "$(event m10 "$X" 'cross work 0xMSG10' '' '"channel_name":"x-repo-example-init"')" 2>&1); rc=$?
+: > /home/agent/atb.log
+out=$(inbox "$(event m10 "$X" '<@UEXAMPLEBOT> <@UEXAMPLEBOT> cross work 0xMSG10' '' '"channel_name":"x-repo-example-init"')" 2>&1); rc=$?
 check "inbox: x-repo channel, exit 0" 0 "$rc"
 [ "$rc" = 0 ] || printf '%s\n' "$out"
+check "inbox: the ticket's title drops the leading mentions of the bot" \
+  "linear create --team TH --label thread --title cross work 0xMSG10 --description-file DESC --json" \
+  "$(sed -n 's/--description-file [^ ]*/--description-file DESC/p' /home/agent/atb.log)"
 check "inbox: x-repo channel runs in the initiative's checkout" /home/agent/x-repo/example-init "$(agent_field "$AX" cwd)"
 check "inbox: the thread is recorded with its channel and directory" "x-repo-example-init|/home/agent/x-repo/example-init " \
   "$(tledger "SELECT mapping, cwd FROM threads WHERE thread = '$X'")"

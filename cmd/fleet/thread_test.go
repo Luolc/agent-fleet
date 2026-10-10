@@ -90,7 +90,9 @@ if [ "$2" = "` + failOn + `" ]; then
   : > "$dir/failed-once"; echo "error: Linear unreachable" >&2; exit 1
 fi
 case "$2" in
-  create) echo '{"identifier":"TH-5","url":"https://linear.example.test/TH-5"}' ;;
+  create)
+    while [ $# -gt 0 ]; do [ "$1" = --description-file ] && cp "$2" "$dir/description"; shift; done
+    echo '{"identifier":"TH-5","url":"https://linear.example.test/TH-5"}' ;;
   comment) cat "$5" > "$dir/comment-$3" ;;
   query) printf '%s\n' '{"issue":{"comments":{"nodes":[{"body":"claim: thread-x","createdAt":"2026-10-09T01:00:00Z"},{"body":"Session 2 ended\n\nSecond: 0xSUM2","createdAt":"2026-10-09T03:00:00Z"},{"body":"Session 1 ended\n\nFirst: 0xSUM1","createdAt":"2026-10-09T02:00:00Z"}]}}}' ;;
 esac
@@ -656,9 +658,13 @@ func TestThreadEndWritesTheSummaryReleasesEndsTheRowAndClosesTheTabLast(t *testi
 	got[0] = strings.SplitN(got[0], " --body-file", 2)[0]
 	want := []string{"atb linear comment TH-5",
 		"atb linear release TH-5 --agent thread-c0123-1700000000-123 --reason done --done key=set",
+		"fednet client post -socket /run/fednet.sock -thread " + threadKey + " -footer -- 会话已结束 · [TH-5](https://linear.example.test/TH-5)",
 		"herdr pane get", "herdr tab close", "herdr tab get"}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Errorf("calls = %q, want %q", got, want)
+	}
+	if got := stepsOf(w); got != "comment release footer end-row" {
+		t.Errorf("steps = %q", got)
 	}
 	if got := w.file("comment-TH-5"); got != "Session 1 ended\n\nStarted job item-1 for the import.\n" {
 		t.Errorf("comment = %q", got)
@@ -993,7 +999,8 @@ func TestThreadEndResumesAfterAPartialReleaseAndForceFinishesLocally(t *testing.
 		strings.Contains(out.stdout, "comment") {
 		t.Errorf("force stdout = %q", out.stdout)
 	}
-	if got := strings.TrimSpace(w.calls()); !strings.HasPrefix(got, "atb linear release TH-5") || !strings.HasSuffix(got, "herdr pane get\nherdr tab close\nherdr tab get") {
+	if got := strings.TrimSpace(w.calls()); !strings.HasPrefix(got, "atb linear release TH-5") ||
+		!strings.HasSuffix(got, "-footer -- 会话已结束 · [TH-5](https://linear.example.test/TH-5)\nherdr pane get\nherdr tab close\nherdr tab get") {
 		t.Errorf("force calls = %q", got)
 	}
 	if got := threadAgentRow(w); got != "TH-5 ended" {
@@ -1002,8 +1009,101 @@ func TestThreadEndResumesAfterAPartialReleaseAndForceFinishesLocally(t *testing.
 	if got := strings.TrimSpace(w.file("closed-tab")); got != "t9" {
 		t.Errorf("closed tab = %q", got)
 	}
-	if got := stepsOf(w); got != "comment end-row" {
+	if got := stepsOf(w); got != "comment footer end-row" {
 		t.Errorf("steps = %q", got)
+	}
+}
+
+func TestThreadEndPostsTheClosingLineOnceAndRetriesItWhenItFails(t *testing.T) {
+	w := threadWorld(t, "")
+	if out := w.inbox(w.event("m1", "first", "")); out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	for _, marker := range []string{"has-thread-c0123-1700000000-123", "fednet-down"} {
+		if err := os.WriteFile(filepath.Join(w.dir, marker), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	summary := task(w, "summary.md", "bye\n")
+	_ = os.Remove(filepath.Join(w.dir, "calls"))
+	// The Linear steps are done, the closing line fails: exit 5, the row
+	// live, nothing in herdr.
+	out := w.asThreadAgent("TH-5", "thread", "end", "--summary-file", summary)
+	if out.code != 5 || !strings.Contains(out.stderr, "fednet client post failed") {
+		t.Fatalf("first: %+v", out)
+	}
+	if got := stepsOf(w); got != "comment release" {
+		t.Errorf("steps = %q", got)
+	}
+	if got := threadAgentRow(w); got != "TH-5 active" {
+		t.Errorf("row = %q", got)
+	}
+	if strings.Contains(w.calls(), "herdr") {
+		t.Errorf("herdr was called: %q", w.calls())
+	}
+	// The retry skips Linear, posts the line once, ends the row and closes
+	// the tab.
+	_ = os.Remove(filepath.Join(w.dir, "fednet-down"))
+	_ = os.Remove(filepath.Join(w.dir, "calls"))
+	out = w.asThreadAgent("TH-5", "thread", "end", "--summary-file", summary)
+	if out.code != 0 {
+		t.Fatalf("retry: %+v", out)
+	}
+	want := "fednet client post -socket /run/fednet.sock -thread " + threadKey +
+		" -footer -- 会话已结束 · [TH-5](https://linear.example.test/TH-5)\nherdr pane get\nherdr tab close\nherdr tab get"
+	if got := strings.TrimSpace(w.calls()); got != want {
+		t.Errorf("retry calls = %q, want %q", got, want)
+	}
+	if got := stepsOf(w); got != "comment release footer end-row" {
+		t.Errorf("steps = %q", got)
+	}
+	// --force skips a failing line, says so, and finishes locally.
+	w2 := threadWorld(t, "")
+	if out := w2.inbox(w2.event("m1", "first", "")); out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	for _, marker := range []string{"has-thread-c0123-1700000000-123", "fednet-down"} {
+		if err := os.WriteFile(filepath.Join(w2.dir, marker), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out = w2.asThreadAgent("TH-5", "thread", "end", "--summary-file", task(w2, "s.md", "bye\n"), "--force")
+	if out.code != 0 || !strings.Contains(out.stdout, "the closing line was not posted to the thread") ||
+		strings.Contains(out.stdout, "Linear steps not done") {
+		t.Errorf("force: %+v", out)
+	}
+	if got := stepsOf(w2); got != "comment release end-row" {
+		t.Errorf("force steps = %q", got)
+	}
+	if got := threadAgentRow(w2); got != "TH-5 ended" {
+		t.Errorf("force row = %q", got)
+	}
+	// Without a ticket the line has no link; without a socket there is
+	// no line and the ending goes on.
+	w3 := threadWorld(t, "")
+	w3.scopeConfig("main", `{"fednet": {"socket": "/run/fednet.sock"}}`)
+	if out := w3.inbox(w3.event("m1", "first", "")); out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	_ = os.Remove(filepath.Join(w3.dir, "calls"))
+	if out := w3.asThreadAgent("", "thread", "end", "--summary-file", task(w3, "s.md", "bye\n")); out.code != 0 {
+		t.Fatalf("no ticket: %+v", out)
+	}
+	if got := strings.TrimSpace(w3.calls()); !strings.HasPrefix(got, "fednet client post -socket /run/fednet.sock -thread "+threadKey+" -footer -- 会话已结束\nherdr") {
+		t.Errorf("no ticket calls = %q", got)
+	}
+	w4 := threadWorld(t, "")
+	w4.scopeConfig("main", `{"linear": {"team": "TH"}}`)
+	if out := w4.inbox(w4.event("m1", "first", "")); out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	_ = os.Remove(filepath.Join(w4.dir, "calls"))
+	out = w4.asThreadAgent("TH-5", "thread", "end", "--summary-file", task(w4, "s.md", "bye\n"))
+	if out.code != 0 || !strings.Contains(out.stderr, "no closing line posted") || strings.Contains(w4.calls(), "fednet") {
+		t.Errorf("no socket: %+v, calls %q", out, w4.calls())
+	}
+	if got := stepsOf(w4); got != "comment release footer end-row" {
+		t.Errorf("no socket steps = %q", got)
 	}
 }
 
@@ -1025,7 +1125,7 @@ func TestThreadEndRetriesAFailedTabCloseAfterTheRowEnded(t *testing.T) {
 	if got := threadAgentRow(w); got != "TH-5 ended" {
 		t.Errorf("row = %q", got)
 	}
-	if got := stepsOf(w); got != "comment release end-row" {
+	if got := stepsOf(w); got != "comment release footer end-row" {
 		t.Errorf("steps = %q", got)
 	}
 	_ = os.Remove(filepath.Join(w.dir, "calls"))
@@ -1033,6 +1133,7 @@ func TestThreadEndRetriesAFailedTabCloseAfterTheRowEnded(t *testing.T) {
 	if out.code != 0 {
 		t.Fatalf("retry: %+v", out)
 	}
+	// Neither Linear nor the closing line again: only the tab.
 	if got := strings.TrimSpace(w.calls()); got != "herdr pane get\nherdr tab close\nherdr tab get" {
 		t.Errorf("retry calls = %q", got)
 	}
@@ -1318,5 +1419,96 @@ func TestInboxRecordsThePersonsLatestMessageAndJobStartHandsItToTheLead(t *testi
 	if strings.Count(argv, "\n## Your task\n") != 1 || strings.Index(argv, "0xPERSON") > strings.Index(argv, "\n## Your task\n\nDo the import") ||
 		strings.Index(argv, "0xFAKE") < strings.Index(argv, "\n## Your task\n\nDo the import") {
 		t.Errorf("argv = %q: the person's text is not before the task heading fleet placed, or the task's not after", argv)
+	}
+}
+
+func TestThreadProgressSendsTheWholeCardToTheCallersThread(t *testing.T) {
+	w := threadWorld(t, "")
+	if out := w.inbox(w.event("m1", "first", "")); out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	_ = os.Remove(filepath.Join(w.dir, "calls"))
+	out := w.asThreadAgent("TH-5", "thread", "progress", "--title", "Importing the A table", "--item", "read the schema:done",
+		"--item", "load rows: 12k so far:doing")
+	if out.code != 0 || out.stdout != "m-posted\n" {
+		t.Errorf("card: %+v", out)
+	}
+	prefix := "fednet client progress -socket /run/fednet.sock -thread " + threadKey
+	if got := w.calls(); got != prefix+" -title Importing the A table -item read the schema:done -item load rows: 12k so far:doing\n" {
+		t.Errorf("calls = %q", got)
+	}
+	_ = os.Remove(filepath.Join(w.dir, "calls"))
+	if out := w.asThreadAgent("TH-5", "thread", "progress", "--done"); out.code != 0 {
+		t.Errorf("done: %+v", out)
+	}
+	if got := w.calls(); got != prefix+" -done\n" {
+		t.Errorf("done calls = %q", got)
+	}
+	_ = os.Remove(filepath.Join(w.dir, "calls"))
+	if out := w.asThreadAgent("TH-5", "thread", "progress", "--done", "--title", "Imported", "--item", "load rows:done"); out.code != 0 {
+		t.Errorf("done with wording: %+v", out)
+	}
+	if got := w.calls(); got != prefix+" -done -title Imported -item load rows:done\n" {
+		t.Errorf("done with wording calls = %q", got)
+	}
+	if err := os.WriteFile(filepath.Join(w.dir, "fednet-down"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out = w.asThreadAgent("TH-5", "thread", "progress", "--title", "x")
+	if out.code != 4 || out.stderr != "post: hub unreachable\n" {
+		t.Errorf("fednet down: %+v", out)
+	}
+	_ = os.Remove(filepath.Join(w.dir, "fednet-down"))
+	_ = os.Remove(filepath.Join(w.dir, "calls"))
+	many := []string{"thread", "progress", "--title", "x"}
+	for i := 0; i < 51; i++ {
+		many = append(many, "--item", "step:doing")
+	}
+	for _, c := range []struct {
+		label string
+		out   result
+	}{
+		{"a lead", w.asAgent("item-1-lead", "lead", "thread-x", "item-1", "thread", "progress", "--title", "x")},
+		{"no title", w.asThreadAgent("TH-5", "thread", "progress", "--item", "a:doing")},
+		{"an empty title", w.asThreadAgent("TH-5", "thread", "progress", "--title", " ")},
+		{"an item without a state", w.asThreadAgent("TH-5", "thread", "progress", "--title", "x", "--item", "no state")},
+		{"an item with an unknown state", w.asThreadAgent("TH-5", "thread", "progress", "--title", "x", "--item", "a:pending")},
+		{"an item without text", w.asThreadAgent("TH-5", "thread", "progress", "--title", "x", "--item", ":done")},
+		{"51 items", w.asThreadAgent("TH-5", many...)},
+		{"another thread's key", w.run("", []string{"thread", "progress", "--title", "x"}, "FLEET_AGENT=thread-c0123-1700000000-123",
+			"FLEET_ROLE=thread", "FLEET_SCOPE=main", "FLEET_THREAD=C0999/1.1")},
+	} {
+		if c.out.code != 1 {
+			t.Errorf("%s: %+v", c.label, c.out)
+		}
+	}
+	w.scopeConfig("main", `{"linear": {"team": "TH"}}`)
+	out = w.asThreadAgent("TH-5", "thread", "progress", "--title", "x")
+	if out.code != 1 || !strings.Contains(out.stderr, "fednet.socket is not configured") {
+		t.Errorf("no socket: %+v", out)
+	}
+	if w.calls() != "" {
+		t.Errorf("a refusal called out: %q", w.calls())
+	}
+}
+
+func TestInboxDropsTheLeadingMentionsFromTheTicketTitle(t *testing.T) {
+	w := threadWorld(t, "")
+	out := w.inbox(w.event("m1", "<@UEXAMPLEBOT> <@UEXAMPLEBOT>  import the A table", "The data channel"))
+	if out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	var create string
+	for _, line := range strings.Split(w.calls(), "\n") {
+		if strings.HasPrefix(line, "atb linear create") {
+			create = line
+		}
+	}
+	if !strings.Contains(create, " --title import the A table --description-file ") {
+		t.Errorf("create = %q", create)
+	}
+	// The description keeps the text as it came.
+	if got := w.file("description"); !strings.Contains(got, "<@UEXAMPLEBOT> <@UEXAMPLEBOT>  import the A table") {
+		t.Errorf("description = %q", got)
 	}
 }

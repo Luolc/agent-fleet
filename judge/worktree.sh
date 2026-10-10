@@ -31,6 +31,17 @@ out=$(in_job item-6 worktree "$R" --name review --branch fix/item-6 2>&1); rc=$?
 check "worktree --name --branch: exit 0 with <job>-<name>" "0 $WT/item-6-review" "$rc $out"
 check "worktree --branch: on the given branch" fix/item-6 "$(git -C "$WT/item-6-review" branch --show-current 2>&1)"
 
+# --detach: a detached checkout of a commit that is on origin only, no branch.
+git -C /home/agent/seed commit -q --allow-empty -m "a PR head"
+git -C /home/agent/seed push -q origin main:refs/heads/pr-head
+head=$(git -C /home/agent/seed rev-parse HEAD)
+out=$(in_job item-6 worktree "$R" --name audit --detach "$head" 2>&1); rc=$?
+check "worktree --detach: exit 0 with <job>-<name>" "0 $WT/item-6-audit" "$rc $out"
+check "worktree --detach: HEAD at the commit, on no branch" "$head|" \
+  "$(git -C "$WT/item-6-audit" rev-parse HEAD 2>&1)|$(git -C "$WT/item-6-audit" branch --show-current 2>&1)"
+check "worktree --detach: ledger records it for the job with no branch" "$WT/item-6-audit|$R||item-6|item-6-a|1 " \
+  "$(ledger "SELECT path, repo, branch, job, created_by, removed_at IS NULL FROM worktrees WHERE path = '$WT/item-6-audit'")"
+
 worktree_refused() { # <label> <needle> <job> <worktree arguments...>
   local label=$1 needle=$2 job=$3
   shift 3
@@ -44,6 +55,8 @@ worktree_refused "an unset job" "${P}JOB" "" "$R"
 worktree_refused "another job's path" "belongs to job item-6" item-6-review "$R"
 worktree_refused "a path the ledger does not record" "does not record it" item-8 "$R"
 worktree_refused "a repo without a checkout" "no checkout" item-9 no-such-repo
+worktree_refused "--detach with --branch" "exclude each other" item-9 "$R" --name x --detach "$head" --branch fix/x
+worktree_refused "--detach of a ref that is not there" "names no commit" item-9 "$R" --name x --detach no-such-ref
 check "worktree: refusals wrote no row" "0 " \
   "$(ledger "SELECT count(*) FROM worktrees WHERE job IN ('item-6-review', 'item-8', 'item-9')")"
 rmdir "$WT/item-8"
@@ -69,8 +82,8 @@ rm "$WT/item-6-review/notes.txt"
 out=$(thr job end item-6 --force 2>&1); rc=$?
 check "job end --force: recorded worktrees, exit 0 once nothing is in the way" 0 "$rc"
 [ "$rc" = 0 ] || printf '%s\n' "$out"
-check "job end --force: recorded worktrees removed" "no no" \
-  "$([ -e "$WT/item-6" ] && echo yes || echo no) $([ -e "$WT/item-6-review" ] && echo yes || echo no)"
+check "job end --force: recorded worktrees removed, the detached one too" "no no no" \
+  "$([ -e "$WT/item-6" ] && echo yes || echo no) $([ -e "$WT/item-6-review" ] && echo yes || echo no) $([ -e "$WT/item-6-audit" ] && echo yes || echo no)"
 check "job end --force: their branches deleted" "" "$(git -C "/home/agent/dev/$R" branch --list item-6 fix/item-6)"
-check "job end --force: ledger marks them removed" "$WT/item-6|$R|item-6|item-6|item-6-a|0 $WT/item-6-review|$R|fix/item-6|item-6|item-6-a|0 " \
+check "job end --force: ledger marks them removed" "$WT/item-6|$R|item-6|item-6|item-6-a|0 $WT/item-6-review|$R|fix/item-6|item-6|item-6-a|0 $WT/item-6-audit|$R||item-6|item-6-a|0 " \
   "$(wt_rows item-6)"

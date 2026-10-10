@@ -1,7 +1,7 @@
 // Thread agents: the name a thread's agent gets, the `threads` workspace,
 // starting a thread agent for a message (`fleet inbox` does it), and the
-// commands a thread agent runs on its own thread: `fleet thread end`,
-// `set-project` and `relate`.
+// commands a thread agent runs on its own thread: `fleet thread post`,
+// `progress`, `end`, `set-project` and `relate`.
 
 package cmd
 
@@ -31,7 +31,7 @@ import (
 // ThreadAbout, ThreadEndAbout and the others are the help texts of
 // `thread` and its subcommands.
 const (
-	ThreadAbout         = "What a thread agent does to its own thread: post to it, end the session, set the ticket's project, relate an issue"
+	ThreadAbout         = "What a thread agent does to its own thread: post to it, show its progress, end the session, set the ticket's project, relate an issue"
 	ThreadPostAbout     = "Post to your thread in Slack (thread agents only)"
 	ThreadPostLongAbout = "Post to your thread in Slack (thread agents only).\n\n" +
 		"The text is read from --body-file and posted with `fednet client post` to the " +
@@ -43,26 +43,48 @@ const (
 		"body file cannot be read, is empty (or only whitespace) or is over 100 KiB (102400 bytes), or the socket " +
 		"is not configured; fednet's own exit code, with its stderr as it is, when the post " +
 		"fails; 5 when fednet cannot be run or times out, or the settings or the database fail."
-	ThreadEndAbout     = "End this session of your thread: summary on the ticket, ticket released, tab closed (thread agents only)"
-	ThreadEndLongAbout = "End this session of your thread: summary on the ticket, ticket released, tab closed (thread agents only).\n\n" +
+	ThreadProgressAbout     = "Show or complete the progress card of your thread in Slack (thread agents only)"
+	ThreadProgressLongAbout = "Show or complete the progress card of your thread in Slack (thread agents only).\n\n" +
+		"A thread has at most one open card: a short title with a spinner and, expanded, its " +
+		"items. Each call gives the whole card (`fednet client progress`): --title is the " +
+		"status now, about 10 to 20 characters, and each --item is `<text>:<state>` with the " +
+		"state `doing`, `done` or `error`; the first call opens the card, each later one " +
+		"replaces it, so items can be merged, dropped or rewritten (at most 50). Keep the " +
+		"items few. --done completes the card (the items still doing marked done), with the " +
+		"closed card's wording when --title or --item come with it; a reply posted with `fleet " +
+		"thread post` completes it as well, so --done is for when no reply follows. The thread " +
+		"comes from your row in the ledger " +
+		"and the socket from the scope's settings (`fednet.socket`); you never name either. " +
+		"fednet's stdout is printed; fleet does not retry.\n\n" +
+		"Exit: 0 when fednet took the card; 1 when the caller is not a live thread agent, " +
+		"--title is missing or empty without --done, there are over 50 items, an item has no " +
+		"state or an unknown one, or the socket is not configured; fednet's own " +
+		"exit code, with its stderr as it is, when the call fails; 5 when fednet cannot be run " +
+		"or times out, or the settings or the database fail."
+	ThreadEndAbout     = "End this session of your thread: summary on the ticket, ticket released, a closing line in the thread, tab closed (thread agents only)"
+	ThreadEndLongAbout = "End this session of your thread: summary on the ticket, ticket released, a closing line in the thread, tab closed (thread agents only).\n\n" +
 		"Call it from your own pane when nothing is pending for you; a job you started keeps " +
 		"running. --summary-file is required and must not be empty. With a thread ticket " +
 		"(FLEET_ISSUE), first the summary is written to it as a comment headed `Session <n> " +
 		"ended` (`atb linear comment`), then the ticket is released as done (`atb linear " +
 		"release`); a later message in the thread starts a new session that gets every such " +
-		"summary. Then your row in the ledger is ended, and last your tab is closed, which " +
-		"ends your own pane.\n\n" +
+		"summary. Then fleet posts one line of small grey text to the thread, `会话已结束 · " +
+		"<ticket>` with the ticket linked (`会话已结束` alone without a ticket; nothing when the " +
+		"scope has no fednet socket), which also completes an open progress card. Then your " +
+		"row in the ledger is ended, and last your tab is closed, which ends your own pane.\n\n" +
 		"Each step done is recorded in the ledger (table `steps`), so running it again after " +
-		"a failure skips the steps done and continues with the rest; an atb exit 4 (no " +
-		"holder) on the retry is a failure, never taken as the step having been done. The tab " +
+		"a failure skips the steps done and continues with the rest, and the closing line is " +
+		"posted at most once; an atb exit 4 (no holder) on the retry is a failure, never taken " +
+		"as the step having been done. The tab " +
 		"is found from the pane your row recorded, so it is closed even when herdr no longer " +
 		"has the agent (it exited to the pane's shell), and checked gone afterwards. With " +
 		"--force a Linear step that fails is skipped and listed at the end, with the command " +
-		"to finish it by hand, and the local cleanup (row, tab) is done anyway.\n\n" +
+		"to finish it by hand, a closing line that fails is skipped and said so, and the " +
+		"local cleanup (row, tab) is done anyway.\n\n" +
 		"Exit: 0 when the session ended (you will not see it: the tab closes); 1 when the " +
 		"caller is not a thread agent started by `fleet inbox` (FLEET_THREAD), or the summary " +
-		"file cannot be read or is empty; 5 when an atb step fails without --force (the steps " +
-		"before it stay recorded), or herdr or the database fails."
+		"file cannot be read or is empty; 5 when an atb step or the closing line fails without " +
+		"--force (the steps before it stay recorded), or herdr or the database fails."
 	ThreadSetProjectAbout     = "Put your thread ticket into a Linear project (thread agents only)"
 	ThreadSetProjectLongAbout = "Put your thread ticket into a Linear project (thread agents only).\n\n" +
 		"The ticket is FLEET_ISSUE; the project is matched exactly against the unarchived " +
@@ -376,7 +398,7 @@ func (s *threadStart) linearSteps() error {
 		return nil
 	}
 	if s.known == nil || s.known.Ticket == "" {
-		title := WorkOrderTitle(s.msg.Text)
+		title := WorkOrderTitle(WithoutLeadingMentions(s.msg.Text))
 		if title == "" {
 			title = "Thread " + s.msg.Thread
 		}
@@ -424,6 +446,16 @@ func (s *threadStart) linearSteps() error {
 }
 
 var sessionEnded = regexp.MustCompile(`^Session [0-9]+ ended\n`)
+
+var leadingMentions = regexp.MustCompile(`^(?:\s*<@[^<>\s]+>)+\s*`)
+
+// WithoutLeadingMentions is a Slack message without the mentions (`<@U…>`)
+// it begins with, as a message addressed to the bot does; the rest is
+// kept as it is. For a thread ticket's title; the description keeps the
+// text whole.
+func WithoutLeadingMentions(text string) string {
+	return leadingMentions.ReplaceAllString(text, "")
+}
 
 // summaries are the `Session <n> ended` comments of `ticket`, oldest
 // first, as `fleet thread end` wrote them.
@@ -481,9 +513,12 @@ func (s *threadStart) rules() string {
 // channel's context, the earlier summaries, and the message.
 func (s *threadStart) prompt() string {
 	post := "posting to the thread is off: the fednet socket is not configured for this scope (`fednet.socket` in its config file)"
+	progress := "the progress card is off for the same reason: `fleet thread progress` is refused"
 	if s.cfg.FednetSocket != "" {
 		post = "`fleet thread post --body-file <file> [--attach <path>]...` posts the file's text to your thread " +
-			"(fleet knows which thread and how), with the files to upload: progress, answers, a job's conclusion"
+			"(fleet knows which thread and how), with the files to upload: your first line, answers, a job's conclusion"
+		progress = "`fleet thread progress --title <status> [--item <text>:<doing|done|error>]...` shows a progress " +
+			"card in your thread, replaced whole each call; `fleet thread progress --done` completes it"
 	}
 	ticket := s.ticket.Identifier
 	note := " (your thread ticket, " + s.ticket.URL + ")"
@@ -492,7 +527,7 @@ func (s *threadStart) prompt() string {
 	}
 	text := strings.NewReplacer("{{scope}}", s.id.Scope, "{{agent}}", s.id.Agent,
 		"{{mapping}}", s.mapping, "{{cwd}}", s.cwd, "{{rules}}", s.rules(), "{{xrepo}}", crossRepoRoot(s.home, s.mapping),
-		"{{ticket}}", ticket, "{{ticket_note}}", note, "{{post}}", post).Replace(threadPrompt)
+		"{{ticket}}", ticket, "{{ticket_note}}", note, "{{post}}", post, "{{progress}}", progress).Replace(threadPrompt)
 	context := s.msg.Context
 	if context == "" && s.known != nil {
 		context = s.known.Context
@@ -531,7 +566,7 @@ func (s *threadStart) start() (exit.Code, error) {
 	if err != nil {
 		return startFailed(s.id.Agent, err, 0, s.created, "")
 	}
-	code, err := startAndDeliver(s.h, s.conn, s.id, place, nil, nil, s.msg.sender(), s.prompt(), &s.created)
+	code, err := startAndDeliver(s.h, s.conn, s.id, place, s.cwd, nil, nil, s.msg.sender(), s.prompt(), &s.created)
 	if err != nil || code != exit.Ok {
 		return startFailed(s.id.Agent, err, code, s.created, "")
 	}
@@ -623,7 +658,7 @@ func resumeThreadStart(h *herdr.Herdr, conn *sql.DB, scope string, cfg *config.S
 			return 0, err
 		}
 	}
-	if err := SettleAgent(h, name, pane); err != nil {
+	if err := SettleAgent(h, name, pane, s.cwd); err != nil {
 		return 0, err
 	}
 	text, err := WithHeader(s.msg.sender(), s.prompt())
@@ -670,36 +705,121 @@ func ThreadPost(args ThreadPostArgs) (exit.Code, error) {
 	if strings.TrimSpace(text) == "" {
 		return 0, exit.Refusedf("the body file is empty")
 	}
-	cfg, err := config.LoadScope(me.Scope)
+	socket, err := socketOf(me.Scope)
 	if err != nil {
 		return 0, err
 	}
-	if cfg.FednetSocket == "" {
-		return 0, exit.Refusedf("fednet.socket is not configured for scope %s, so fleet cannot post to the thread", me.Scope)
+	thread, err := liveThreadOf(me)
+	if err != nil {
+		return 0, err
 	}
+	return handBack(fednet.Relay(socket, thread, text, args.Attach))
+}
+
+// liveThreadOf is the thread the caller's live row records, which must
+// be the caller's FLEET_THREAD.
+func liveThreadOf(me *identity.Identity) (string, error) {
 	conn, err := db.Open(me.Scope)
 	if err != nil {
-		return 0, err
+		return "", err
 	}
 	defer conn.Close()
 	var thread string
 	err = conn.QueryRow("SELECT thread FROM agents WHERE name = ?1 AND role = 'thread' AND state != 'ended'", me.Agent).Scan(&thread)
 	if errors.Is(err, sql.ErrNoRows) {
-		return 0, exit.Refusedf("the ledger has no live thread agent %s", me.Agent)
+		return "", exit.Refusedf("the ledger has no live thread agent %s", me.Agent)
 	}
 	if err != nil {
-		return 0, exit.Database(err)
+		return "", exit.Database(err)
 	}
 	if thread != me.Thread {
-		return 0, exit.Refusedf("the ledger records thread %s for %s, not FLEET_THREAD %s", thread, me.Agent, me.Thread)
+		return "", exit.Refusedf("the ledger records thread %s for %s, not FLEET_THREAD %s", thread, me.Agent, me.Thread)
 	}
-	stdout, stderr, code, err := fednet.Relay(cfg.FednetSocket, thread, text, args.Attach)
+	return thread, nil
+}
+
+// handBack prints what fednet printed and returns its exit code as the
+// command's.
+func handBack(stdout, stderr []byte, code int, err error) (exit.Code, error) {
 	_, _ = os.Stdout.Write(stdout)
 	_, _ = os.Stderr.Write(stderr)
 	if err != nil {
 		return 0, err
 	}
 	return exit.Code(code), nil
+}
+
+// socketOf is the scope's fednet socket; none is a refusal.
+func socketOf(scope string) (string, error) {
+	cfg, err := config.LoadScope(scope)
+	if err != nil {
+		return "", err
+	}
+	if cfg.FednetSocket == "" {
+		return "", exit.Refusedf("fednet.socket is not configured for scope %s, so fleet cannot post to the thread", scope)
+	}
+	return cfg.FednetSocket, nil
+}
+
+// ThreadProgressArgs are the arguments of `thread progress`.
+type ThreadProgressArgs struct {
+	// Title is the card's status line; Items its items, each
+	// `<text>:<doing|done|error>`.
+	Title *string
+	Items []string
+	// Done completes the card instead.
+	Done bool
+}
+
+// itemStates are the states an item of the card can be in.
+var itemStates = map[string]bool{"doing": true, "done": true, "error": true}
+
+// maxCardItems is what a Slack card holds.
+const maxCardItems = 50
+
+// checkCard refuses a card fleet can see is wrong before fednet gets it:
+// no title without --done, more items than a card holds, an item without
+// a state or with an unknown one.
+func checkCard(args ThreadProgressArgs) error {
+	if !args.Done && (args.Title == nil || strings.TrimSpace(*args.Title) == "") {
+		return exit.Refusedf("--title is required (the card's status now), or --done to complete the card")
+	}
+	if len(args.Items) > maxCardItems {
+		return exit.Refusedf("%d items; a card holds at most %d", len(args.Items), maxCardItems)
+	}
+	for _, item := range args.Items {
+		i := strings.LastIndex(item, ":")
+		if i < 0 || strings.TrimSpace(item[:i]) == "" || !itemStates[item[i+1:]] {
+			return exit.Refusedf("--item %q is not <text>:<state> with the state doing, done or error", item)
+		}
+	}
+	return nil
+}
+
+// ThreadProgress runs `thread progress`: the whole card, or --done, to
+// the thread the caller's live row records; fednet's output and exit
+// code are handed back as they are.
+func ThreadProgress(args ThreadProgressArgs) (exit.Code, error) {
+	me, err := threadCaller()
+	if err != nil {
+		return 0, err
+	}
+	if err := checkCard(args); err != nil {
+		return 0, err
+	}
+	socket, err := socketOf(me.Scope)
+	if err != nil {
+		return 0, err
+	}
+	thread, err := liveThreadOf(me)
+	if err != nil {
+		return 0, err
+	}
+	title := ""
+	if args.Title != nil {
+		title = strings.TrimSpace(*args.Title)
+	}
+	return handBack(fednet.Progress(socket, thread, title, args.Items, args.Done))
 }
 
 // ThreadEndArgs are the arguments of `thread end`.
@@ -728,9 +848,11 @@ func threadCaller() (*identity.Identity, error) {
 }
 
 // ThreadEnd runs `thread end`. The ending's steps (the ticket comment,
-// the release, the row) are recorded under `thread-end:<row id>`, so a
-// run after a partial failure skips what was done; the tab close is
-// always attempted last, since the tab is where the caller runs.
+// the release, the closing line, the row) are recorded under
+// `thread-end:<row id>`, so a run after a partial failure skips what was
+// done; the tab close is always attempted last, since the tab is where
+// the caller runs. The thread and its ticket come from the caller's
+// newest row and the thread's row, not from the environment.
 func ThreadEnd(h *herdr.Herdr, args ThreadEndArgs) (exit.Code, error) {
 	me, err := threadCaller()
 	if err != nil {
@@ -743,72 +865,139 @@ func ThreadEnd(h *herdr.Herdr, args ThreadEndArgs) (exit.Code, error) {
 	if strings.TrimSpace(string(summary)) == "" {
 		return 0, exit.Refusedf("the summary file is empty")
 	}
+	cfg, err := config.LoadScope(me.Scope)
+	if err != nil {
+		return 0, err
+	}
 	conn, err := db.Open(me.Scope)
 	if err != nil {
 		return 0, err
 	}
 	defer conn.Close()
-	var rowID, session int64
-	if err := conn.QueryRow("SELECT id FROM agents WHERE name = ?1 ORDER BY id DESC LIMIT 1", me.Agent).Scan(&rowID); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return 0, exit.Refusedf("the ledger has no row for %s", me.Agent)
-		}
-		return 0, exit.Database(err)
-	}
-	if row, err := threadByKey(conn, me.Thread); err != nil {
+	e, err := newThreadEnding(conn, me, args.Force)
+	if err != nil {
 		return 0, err
-	} else if row != nil {
-		session = row.Sessions
 	}
-	e := &threadEnding{conn: conn, key: fmt.Sprintf("thread-end:%d", rowID), force: args.Force}
-	if me.Issue != "" {
-		file, remove, err := tempFile(fmt.Sprintf("Session %d ended\n\n%s", session, strings.TrimSpace(string(summary))+"\n"))
-		if err != nil {
-			return 0, err
+	if err := e.linearSteps(me, string(summary)); err != nil {
+		return 0, err
+	}
+	// The closing line goes before the row ends, after Linear: it is what
+	// the thread sees of the ending, and the hub completes an open
+	// progress card before it.
+	if err := e.step("footer", func() error {
+		if cfg.FednetSocket == "" {
+			fmt.Fprintf(os.Stderr, "note: fednet.socket is not configured for scope %s; no closing line posted\n", me.Scope)
+			return nil
 		}
-		defer remove()
-		if err := e.linear("comment", func() error { return atb.Comment(me.Issue, file) },
-			fmt.Sprintf("atb linear comment %s --body-file <the summary, headed `Session %d ended`>", me.Issue, session)); err != nil {
-			return 0, err
-		}
-		if err := e.linear("release", func() error { return atb.Release(me.Issue, me.Agent, false) },
-			fmt.Sprintf("atb linear release %s --agent %s --reason done --done", me.Issue, me.Agent)); err != nil {
-			return 0, err
-		}
+		return fednet.Footer(cfg.FednetSocket, e.thread, e.footer)
+	}, func(error) { e.unposted = true }); err != nil {
+		return 0, err
 	}
 	if err := runStep(conn, e.key, "end-row", func() error { return endRow(conn, me.Agent) }); err != nil {
 		return 0, err
 	}
-	missed := e.missed
-	fmt.Fprintf(os.Stdout, "ended session %d of thread %s\n", session, me.Thread)
-	if len(missed) > 0 {
+	fmt.Fprintf(os.Stdout, "ended session %d of thread %s\n", e.session, e.thread)
+	if len(e.missed) > 0 {
 		fmt.Fprintf(os.Stdout, "Linear steps not done, finish them by hand:\n")
-		for _, m := range missed {
+		for _, m := range e.missed {
 			fmt.Fprintf(os.Stdout, "  - %s\n", m)
 		}
+	}
+	if e.unposted {
+		fmt.Fprintf(os.Stdout, "the closing line was not posted to the thread\n")
 	}
 	return exit.Ok, closeOwnTab(h, conn, me.Agent)
 }
 
-// threadEnding is one `thread end`: its step key, and with --force the
-// Linear steps skipped, each as the command to finish it by hand.
-type threadEnding struct {
-	conn   *sql.DB
-	key    string
-	force  bool
-	missed []string
+// newThreadEnding reads what the ending acts on: the caller's newest row
+// (its step key and thread) and the thread's row (the session and the
+// ticket the closing line links).
+func newThreadEnding(conn *sql.DB, me *identity.Identity, force bool) (*threadEnding, error) {
+	e := &threadEnding{conn: conn, force: force, footer: "会话已结束"}
+	var rowID int64
+	if err := conn.QueryRow("SELECT id, thread FROM agents WHERE name = ?1 ORDER BY id DESC LIMIT 1", me.Agent).Scan(&rowID, &e.thread); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, exit.Refusedf("the ledger has no row for %s", me.Agent)
+		}
+		return nil, exit.Database(err)
+	}
+	if e.thread == "" {
+		return nil, exit.Refusedf("the ledger records no thread for %s", me.Agent)
+	}
+	e.key = fmt.Sprintf("thread-end:%d", rowID)
+	row, err := threadByKey(conn, e.thread)
+	if err != nil {
+		return nil, err
+	}
+	if row != nil {
+		e.session = row.Sessions
+		e.footer = sessionEndedLine(row.Ticket, row.TicketURL)
+	}
+	return e, nil
 }
 
-// linear runs a Linear step through runStep; a failure is returned, or
-// with --force printed and listed in `missed`.
-func (e *threadEnding) linear(step string, do func() error, byHand string) error {
+// sessionEndedLine is the closing line: `会话已结束 · <ticket>`, the ticket
+// linked, or `会话已结束` alone without one.
+func sessionEndedLine(ticket, url string) string {
+	switch {
+	case ticket == "":
+		return "会话已结束"
+	case url == "":
+		return "会话已结束 · " + ticket
+	}
+	return fmt.Sprintf("会话已结束 · [%s](%s)", ticket, url)
+}
+
+// threadEnding is one `thread end`: its step key, the thread, the session
+// and the closing line, and with --force the Linear steps skipped, each as
+// the command to finish it by hand, and whether the closing line was
+// skipped.
+type threadEnding struct {
+	conn     *sql.DB
+	key      string
+	thread   string
+	session  int64
+	footer   string
+	force    bool
+	missed   []string
+	unposted bool
+}
+
+// linearSteps are the ticket's steps, with a ticket: the summary comment,
+// then the release.
+func (e *threadEnding) linearSteps(me *identity.Identity, summary string) error {
+	if me.Issue == "" {
+		return nil
+	}
+	file, remove, err := tempFile(fmt.Sprintf("Session %d ended\n\n%s", e.session, strings.TrimSpace(summary)+"\n"))
+	if err != nil {
+		return err
+	}
+	defer remove()
+	if err := e.linear("comment", func() error { return atb.Comment(me.Issue, file) },
+		fmt.Sprintf("atb linear comment %s --body-file <the summary, headed `Session %d ended`>", me.Issue, e.session)); err != nil {
+		return err
+	}
+	return e.linear("release", func() error { return atb.Release(me.Issue, me.Agent, false) },
+		fmt.Sprintf("atb linear release %s --agent %s --reason done --done", me.Issue, me.Agent))
+}
+
+// step runs a step through runStep; a failure is returned, or with
+// --force printed and given to `skipped`.
+func (e *threadEnding) step(step string, do func() error, skipped func(error)) error {
 	err := runStep(e.conn, e.key, step, do)
 	if err == nil || !e.force {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "fleet: %v\n", err)
-	e.missed = append(e.missed, byHand)
+	skipped(err)
 	return nil
+}
+
+// linear runs a Linear step; with --force a failure lists the command to
+// finish it by hand.
+func (e *threadEnding) linear(step string, do func() error, byHand string) error {
+	return e.step(step, do, func(error) { e.missed = append(e.missed, byHand) })
 }
 
 // closeOwnTab closes the tab the thread agent's row recorded (its pane's

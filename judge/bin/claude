@@ -67,7 +67,12 @@ transcript+=(" Welcome to fake Claude Code ($(pwd))")
 # ~/.fake-claude/ (a pane's environment is the tool's to set):
 #   trust          the folder-trust prompt, drawn once per cwd, as Claude
 #                  Code 2.1.292 draws it (cancel first and highlighted, no
-#                  indexes); down then enter trusts, enter alone exits
+#                  indexes); down then enter trusts, enter alone exits.
+#                  One key per read: a chunk carrying more than one key is
+#                  dropped, as a TUI parsing one keypress per input event
+#                  does (what hit a real start on 2026-10-09)
+#   trust-path     with trust: the directory the prompt names, instead of
+#                  the cwd (a prompt that is not this agent's to answer)
 #   unknown-screen a screen the tool does not know; waits forever
 #   gateway-full   exits at once with a gateway's refusal, as when the
 #                  machine is at its session limit
@@ -83,18 +88,25 @@ if [ -e "$fake/unknown-screen" ]; then
 fi
 if [ -e "$fake/trust" ] && ! grep -qxF "$(pwd)" "$fake/trusted" 2>/dev/null; then
   cursor=0
+  named=$(cat "$fake/trust-path" 2>/dev/null || pwd)
   trust_screen() {
     local no='  ' yes='  '
     if [ "$cursor" = 0 ]; then no=$'\xe2\x9d\xaf '; else yes=$'\xe2\x9d\xaf '; fi
     printf '\033]0;\xe2\x9c\xb3 Claude Code\007\033[2J\033[H'
-    printf '%s\n Accessing workspace:\n\n %s\n\n' "$rule" "$(pwd)"
+    printf '%s\n Accessing workspace:\n\n %s\n\n' "$rule" "$named"
     printf ' Quick safety check: Is this a project you created or one you trust? (Like your own code, a well-known open source project, or work from your team). If not, take a moment to review what'"'"'s in this folder first.\n\n'
     printf ' %sNo, exit\n %sYes, I trust this folder\n\n Enter to confirm \xc2\xb7 Esc to cancel\n' "$no" "$yes"
   }
   trust_screen
   while IFS= read -rsn1 key; do
+    case "$key" in $'\e') read -rsn2 -t 1 seq; key=$key$seq ;; esac
+    # Anything more in the same chunk means several keys at once: dropped.
+    extra=0
+    while IFS= read -rsn1 -t 0.1 _; do extra=1; done
+    [ "$extra" = 0 ] || { trust_screen; continue; }
     case "$key" in
-      $'\e') read -rsn2 -t 1 seq; case "$seq" in '[B'|OB) cursor=1;; '[A'|OA) cursor=0;; esac; trust_screen ;;
+      $'\e[B'|$'\eOB') cursor=1; trust_screen ;;
+      $'\e[A'|$'\eOA') cursor=0; trust_screen ;;
       '') [ "$cursor" = 1 ] || exit 1; pwd >> "$fake/trusted"; break ;;
     esac
   done

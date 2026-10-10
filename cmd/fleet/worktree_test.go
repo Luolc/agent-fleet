@@ -127,6 +127,66 @@ func TestWorktreeNameAndBranch(t *testing.T) {
 	}
 }
 
+func TestWorktreeDetachChecksOutTheCommitOnNoBranch(t *testing.T) {
+	w := newWorld(t)
+	checkout, seed := w.origin()
+	// The commit is on origin only: the checkout has not fetched it.
+	w.git("-C", seed, "commit", "-q", "--allow-empty", "-m", "a PR head")
+	w.git("-C", seed, "push", "-q", "origin", "main:refs/heads/pr-head")
+	head := w.git("-C", seed, "rev-parse", "HEAD")
+	path := filepath.Join(w.dir, "home", "wt", dataset, "item-1-review")
+
+	out := w.worktree("item-1", dataset, "--name", "review", "--detach", head)
+	if out.code != 0 || out.stdout != path+"\n" {
+		t.Fatalf("%+v", out)
+	}
+	if got := w.git("-C", path, "rev-parse", "HEAD"); got != head {
+		t.Errorf("HEAD = %s, want %s", got, head)
+	}
+	if got := w.git("-C", path, "branch", "--show-current"); got != "" {
+		t.Errorf("on branch %q, want detached", got)
+	}
+	if got := w.git("-C", checkout, "branch", "--list"); got != "* main" {
+		t.Errorf("branches = %q", got)
+	}
+	want := []string{path + "|" + dataset + "||item-1|item-1-a|live"}
+	if got := w.worktreeRows(); strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("rows = %q, want %q", got, want)
+	}
+	// Again: the same path, nothing changed; a job's checkout by ref name too.
+	if out := w.worktree("item-1", dataset, "--name", "review", "--detach", head); out.code != 0 || out.stdout != path+"\n" {
+		t.Errorf("again: %+v", out)
+	}
+	if out := w.worktree("item-1", dataset, "--name", "audit", "--detach", "origin/pr-head"); out.code != 0 {
+		t.Errorf("by ref: %+v", out)
+	}
+	for _, c := range []struct {
+		label  string
+		needle string
+		args   []string
+	}{
+		{"--detach with --branch", "exclude each other", []string{"--name", "x", "--detach", head, "--branch", "fix/x"}},
+		{"an empty --detach", "names no commit", []string{"--name", "x", "--detach", " "}},
+		{"a ref that is not there", "names no commit", []string{"--name", "x", "--detach", "no-such-ref"}},
+	} {
+		out := w.worktree("item-1", append([]string{dataset}, c.args...)...)
+		if out.code != 1 || !strings.Contains(out.stderr, c.needle) {
+			t.Errorf("%s: %+v", c.label, out)
+		}
+	}
+	if got := w.worktreeRows(); len(got) != 2 {
+		t.Errorf("rows after refusals = %q", got)
+	}
+	// job end --force removes it like any other, with no branch to delete.
+	w.closeHerdr("")
+	if out := w.asThread("job", "end", "item-1", "--force"); out.code != 0 {
+		t.Fatalf("job end: %+v", out)
+	}
+	if _, err := os.Stat(path); err == nil {
+		t.Errorf("%s still exists", path)
+	}
+}
+
 func TestWorktreeAgainInTheSameJobReturnsThePathAndChangesNothing(t *testing.T) {
 	w := newWorld(t)
 	_, seed := w.origin()

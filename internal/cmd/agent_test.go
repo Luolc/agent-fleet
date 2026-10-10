@@ -15,35 +15,62 @@ import (
 
 const trust = "────────\n Accessing workspace:\n\n /w/x\n\n Quick safety check: Is this a project you created or one you trust?\n\n ❯ No, exit\n   Yes, I trust this folder\n\n Enter to confirm · Esc to cancel\n"
 
-func TestTrustPromptIsAnsweredFromTheHighlight(t *testing.T) {
-	if got := strings.Join(TrustKeys(trust), " "); got != "down enter" {
+func onYes(screen string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(screen, " ❯ No, exit", "   No, exit"), "   Yes, I trust", " ❯ Yes, I trust")
+}
+
+func TestTrustDialogIsAnsweredOneKeyAtATimeFromTheCursorForTheAgentsOwnDirectory(t *testing.T) {
+	key := func(screen, cwd string) string {
+		k, err := TrustKey(screen, cwd)
+		if err != nil {
+			return "exit " + strconv.Itoa(int(code(err))) + ": " + err.Error()
+		}
+		return k
+	}
+	if got := key(trust, "/w/x"); got != "down" {
 		t.Errorf("cancel highlighted: %q", got)
 	}
-	onYes := strings.ReplaceAll(strings.ReplaceAll(trust, " ❯ No, exit", "   No, exit"), "   Yes, I trust", " ❯ Yes, I trust")
-	if got := strings.Join(TrustKeys(onYes), " "); got != "enter" {
+	if got := key(onYes(trust), "/w/x"); got != "enter" {
 		t.Errorf("yes highlighted: %q", got)
 	}
-	if got := TrustKeys(" ❯ 1. Dark mode\n   2. Light mode\n"); got != nil {
+	if got := key(" ❯ 1. Dark mode\n   2. Light mode\n", "/w/x"); got != "" {
 		t.Errorf("menu: %q", got)
+	}
+	// Another directory's dialog is not fleet's to accept: exit 3 naming
+	// both, nothing pressed.
+	if got := key(trust, "/w/y"); !strings.HasPrefix(got, "exit 3: ") || !strings.Contains(got, "for /w/x, not its own directory /w/y") ||
+		!strings.Contains(got, "nothing pressed") {
+		t.Errorf("another directory: %q", got)
+	}
+	// A path wrapped over two lines reads whole; a cursor that cannot be
+	// placed is exit 3.
+	wrapped := strings.Replace(trust, "\n /w/x\n", "\n /w/x/a-long-\n directory\n", 1)
+	if got := key(wrapped, "/w/x/a-long-directory"); got != "down" {
+		t.Errorf("wrapped path: %q", got)
+	}
+	if got := key(strings.ReplaceAll(trust, "❯", " "), "/w/x"); !strings.HasPrefix(got, "exit 3: ") {
+		t.Errorf("no cursor: %q", got)
 	}
 }
 
-// scripted is a scripted herdr for reachInputBox: screens and statuses are
-// returned in order, the last one repeating.
+// scripted is a scripted herdr for reachInputBox: the screen is the one
+// indexed by the number of keys pressed so far (the last one repeating),
+// so a key that changes nothing is a lost press; statuses are returned in
+// order, the last one repeating; the keys pressed go to `sent`.
 func scripted(screens, statuses []string, sent *[]string) error {
-	next := func(items []string, i *int) (string, error) {
-		item := items[min(*i, len(items)-1)]
-		*i++
-		return item, nil
-	}
-	s, st := 0, 0
+	st := 0
 	return reachInputBox(
-		func() (string, error) { return next(screens, &s) },
-		func() (string, error) { return next(statuses, &st) },
-		func(keys []string) error {
-			*sent = append(*sent, strings.Join(keys, " "))
+		func() (string, error) { return screens[min(len(*sent), len(screens)-1)], nil },
+		func() (string, error) {
+			item := statuses[min(st, len(statuses)-1)]
+			st++
+			return item, nil
+		},
+		func(key string) error {
+			*sent = append(*sent, key)
 			return nil
 		},
+		"/w/x",
 		30*time.Millisecond,
 		time.Millisecond,
 	)
@@ -61,15 +88,37 @@ func TestReadyNeedsTheInputBoxAndHerdrOutOfBlocked(t *testing.T) {
 	rule := strings.Repeat("─", 40)
 	idle := rule + "\n❯ \n" + rule + "\n"
 	var sent []string
-	if err := scripted([]string{trust, idle}, []string{"blocked", "blocked", "idle"}, &sent); err != nil {
+	// Each key is chosen from the screen read after the one before: down
+	// moves the cursor, enter confirms what the cursor is on.
+	if err := scripted([]string{trust, onYes(trust), idle}, []string{"blocked", "blocked", "idle"}, &sent); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(sent, ",") != "down enter" {
+	if strings.Join(sent, ",") != "down,enter" {
 		t.Errorf("sent %q", sent)
+	}
+	// A lost press: the cursor has not moved, so down is pressed again,
+	// never enter on the cancel option.
+	sent = nil
+	if err := scripted([]string{trust, trust, onYes(trust), idle}, []string{"blocked", "blocked", "blocked", "idle"}, &sent); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(sent, ",") != "down,down,enter" {
+		t.Errorf("lost press: sent %q", sent)
+	}
+	// The cursor never moves: the presses stop at the bound, exit 3.
+	sent = nil
+	if got := code(scripted([]string{trust}, []string{"blocked"}, &sent)); got != exit.Blocked || len(sent) != maxTrustKeys {
+		t.Errorf("stuck cursor: code %d, sent %q", got, sent)
+	}
+	// A dialog for another directory: exit 3, nothing pressed.
+	sent = nil
+	other := strings.Replace(trust, " /w/x\n", " /w/other\n", 1)
+	if got := code(scripted([]string{other, idle}, []string{"blocked", "idle"}, &sent)); got != exit.Blocked || len(sent) != 0 {
+		t.Errorf("other directory: code %d, sent %q", got, sent)
 	}
 	// The input box is drawn but herdr stays blocked past the deadline.
 	sent = nil
-	if got := code(scripted([]string{trust, idle}, []string{"blocked"}, &sent)); got != exit.Blocked {
+	if got := code(scripted([]string{trust, onYes(trust), idle}, []string{"blocked"}, &sent)); got != exit.Blocked {
 		t.Errorf("stays blocked: code %d", got)
 	}
 	// Started straight at the input box: no keys.

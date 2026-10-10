@@ -36,14 +36,17 @@ func CheckIdentifier(issue string) error {
 }
 
 // Create is `atb linear create --team <team> --project <project> [--parent
-// <parent>] --title <title> --description-file <file> --json`; an empty
-// parent makes a top-level issue. Only an identifier and an https URL are
-// taken from its output; anything else is a failure that does not show
-// the output.
-func Create(team, project, parent, title, file string) (Issue, error) {
+// <parent>] [--label <label>] --title <title> --description-file <file>
+// --json`; an empty parent makes a top-level issue, an empty label none.
+// Only an identifier and an https URL are taken from its output; anything
+// else is a failure that does not show the output.
+func Create(team, project, parent, label, title, file string) (Issue, error) {
 	argv := []string{"--team", team, "--project", project}
 	if parent != "" {
 		argv = append(argv, "--parent", parent)
+	}
+	if label != "" {
+		argv = append(argv, "--label", label)
 	}
 	return create(append(argv, "--title", title, "--description-file", file)...)
 }
