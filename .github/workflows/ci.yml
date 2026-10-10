@@ -14,8 +14,10 @@ env:
   GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
   PRE_COMMIT_VERSION: 4.6.2
 
+# lint, race and judge run in parallel; check is the required status check
+# and passes only when all three succeeded.
 jobs:
-  check:
+  lint:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -44,10 +46,67 @@ jobs:
       - name: check script
         run: scripts/check.sh
 
+  race:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: tools/*.sum
+
       - name: race tests
         run: go test -race ./...
 
+  judge:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: tools/*.sum
+
+      # The image depends only on the Dockerfile and the fake claude it copies.
+      - name: judge image cache
+        id: judge-image
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/judge-image.tar
+          key: judge-image-${{ hashFiles('judge/Dockerfile', 'judge/bin/**') }}
+
+      - name: judge image
+        env:
+          HIT: ${{ steps.judge-image.outputs.cache-hit }}
+        run: |
+          if [ "$HIT" = true ]; then
+            docker load -i "$RUNNER_TEMP/judge-image.tar"
+          else
+            docker build -t fleet-judge judge
+            docker save -o "$RUNNER_TEMP/judge-image.tar" fleet-judge
+          fi
+
       - name: judge (black-box e2e against the Go binary)
+        env:
+          JUDGE_IMAGE: fleet-judge
         run: |
           go build -o "$RUNNER_TEMP/fleet" ./cmd/fleet
           judge/run.sh "$RUNNER_TEMP/fleet"
+
+  check:
+    needs: [lint, race, judge]
+    # Runs even when a job it needs failed or was skipped, so that the
+    # required check reports a failure instead of being left pending.
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: lint, race and judge all succeeded
+        env:
+          LINT: ${{ needs.lint.result }}
+          RACE: ${{ needs.race.result }}
+          JUDGE: ${{ needs.judge.result }}
+        run: |
+          echo "lint: $LINT, race: $RACE, judge: $JUDGE"
+          [ "$LINT" = success ] && [ "$RACE" = success ] && [ "$JUDGE" = success ]
