@@ -155,6 +155,11 @@ func ParseScope(data []byte, home string) (*Scope, error) {
 	if err := decodeStrict(data, &f); err != nil {
 		return nil, err
 	}
+	// A top-level null decodes into an empty struct, all defaults.
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil || raw == nil {
+		return nil, errors.New("not a valid config: not a JSON object")
+	}
 	if err := refuseNulls(data, ""); err != nil {
 		return nil, err
 	}
