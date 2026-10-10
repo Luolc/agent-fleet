@@ -77,7 +77,8 @@ func TestAskHumanReachesTheLiveThreadAgentAndIsAnsweredByTheNextMessage(t *testi
 	}
 	argv := w.file("argv")
 	if !strings.HasPrefix(argv, "agent\nprompt\nthread-c0123-1700000000-123\n[FROM: item-1-lead]\nQuestion from item-1-lead for the people in thread "+
-		threadKey+", already posted there by fleet; when they answer, pass the answer on with `fleet send item-1-lead --file <file>`.\n\n"+
+		threadKey+", already posted there by fleet; first check whether the rules leave it to the lead (your prompt says how); "+
+		"when the people answer, pass the answer on with `fleet send item-1-lead --file <file>`.\n\n"+
 		"Which month: September or October?\n") {
 		t.Errorf("argv = %q", argv)
 	}
@@ -130,7 +131,11 @@ func TestAskHumanStartsAThreadAgentWhenTheHomeThreadHasNone(t *testing.T) {
 	}
 	prompt := w.file("argv")
 	for _, want := range []string{"[FROM: item-1-lead]\nYou are a thread agent", "## Earlier sessions on this thread",
-		"## The message\n\nQuestion from item-1-lead for the people in thread " + threadKey, "Which month?\n"} {
+		"## The message\n\nQuestion from item-1-lead for the people in thread " + threadKey, "Which month?\n",
+		"A lead's question waits for a person only when the rules require a person's yes for it.",
+		"tell the lead with `fleet send` to decide it itself, naming the rule",
+		"The question stays pending until a person next writes in the thread",
+		"tell the lead of each job started from this thread that is still open what changed, with `fleet send`"} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt = %q, want %q in it", prompt, want)
 		}
