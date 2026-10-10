@@ -14,8 +14,8 @@ env:
   GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
   PRE_COMMIT_VERSION: 4.6.2
 
-# lint, race and judge run in parallel; check is the required status check
-# and passes only when all three succeeded.
+# lint, race and the judge's shards run in parallel; check is the required
+# status check and passes only when all of them succeeded.
 jobs:
   lint:
     runs-on: ubuntu-24.04
@@ -59,7 +59,14 @@ jobs:
       - name: race tests
         run: go test -race ./...
 
+  # The judge's suites in three shards, so the longest suite (lifecycle)
+  # sets the judge's time; together the shards run every suite once.
   judge:
+    name: judge (${{ matrix.suites }})
+    strategy:
+      fail-fast: false
+      matrix:
+        suites: [lifecycle, thread, usage send watch worktree]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -91,18 +98,20 @@ jobs:
       - name: judge (black-box e2e against the Go binary)
         env:
           JUDGE_IMAGE: fleet-judge
+          JUDGE_SUITES: ${{ matrix.suites }}
         run: |
           go build -o "$RUNNER_TEMP/fleet" ./cmd/fleet
           judge/run.sh "$RUNNER_TEMP/fleet"
 
   check:
     needs: [lint, race, judge]
-    # Runs even when a job it needs failed or was skipped, so that the
-    # required check reports a failure instead of being left pending.
+    # Without always(), check is skipped when a job it needs fails, and
+    # GitHub counts a skipped required check as passed. needs.judge.result
+    # is success only when every shard succeeded.
     if: always()
     runs-on: ubuntu-24.04
     steps:
-      - name: lint, race and judge all succeeded
+      - name: require every job to succeed
         env:
           LINT: ${{ needs.lint.result }}
           RACE: ${{ needs.race.result }}
