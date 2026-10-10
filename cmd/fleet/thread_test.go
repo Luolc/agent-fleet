@@ -279,12 +279,17 @@ func TestInboxStartsAThreadAgentForANewThreadWithItsTicket(t *testing.T) {
 		}
 	}
 	prompt := w.file("argv")
+	// The agent names neither where nor how to post: fleet does.
+	if embedded, _, _ := strings.Cut(prompt, "## Channel context"); strings.Contains(embedded, threadKey) ||
+		strings.Contains(embedded, "/run/fednet.sock") || !strings.Contains(embedded, "You are a thread agent") {
+		t.Errorf("embedded prompt = %q, want neither the thread key nor the socket in it", embedded)
+	}
 	for _, want := range []string{"[FROM: inbox]\nYou are a thread agent",
 		"which belongs to repo-example-dataset (scope main). You run in " + cwd + ".",
 		"a single-repo job in example-dataset (`fleet job start <job> --repo example-dataset ...`)",
 		"read the `## Fleet` section of ~/dev/<R>/AGENTS.md",
-		"Before you write to Slack with `fednet client post`, read the user-level skill `slack-reply`.", "FLEET_ISSUE=TH-5 (your thread ticket, https://linear.example.test/TH-5)",
-		"fednet client post -socket /run/fednet.sock -thread " + threadKey, "## Channel context\n\nThe data channel\n",
+		"Before you write to Slack, read the user-level skill `slack-reply`", "FLEET_ISSUE=TH-5 (your thread ticket, https://linear.example.test/TH-5)",
+		"`fleet thread post --body-file <file> [--attach <path>]...` posts the file's text to your thread", "## Channel context\n\nThe data channel\n",
 		"## The message\n\nMessage in thread " + threadKey + " from U0ABC at 1700000001.000:\n\nPlease import the A table\n"} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt = %q, want %q in it", prompt, want)
@@ -456,7 +461,7 @@ func TestInboxRunsWithoutLinearAndIgnoresOtherPayloads(t *testing.T) {
 		t.Errorf("atb was called: %q", got)
 	}
 	if !strings.Contains(w.file("argv"), "FLEET_ISSUE= (empty: thread tickets are off for this scope)") ||
-		!strings.Contains(w.file("argv"), "the fednet socket is not configured") {
+		!strings.Contains(w.file("argv"), "posting to the thread is off: the fednet socket is not configured") {
 		t.Errorf("prompt = %q", w.file("argv"))
 	}
 	if got := threadRow(w); got != " s " {
@@ -859,6 +864,11 @@ func TestInboxFinishesAStartItsEarlierRunWasKilledIn(t *testing.T) {
 		t.Errorf("retry calls = %q, want %q", got, want)
 	}
 	prompt := w.file("argv")
+	// The agent names neither where nor how to post: fleet does.
+	if embedded, _, _ := strings.Cut(prompt, "## Channel context"); strings.Contains(embedded, threadKey) ||
+		strings.Contains(embedded, "/run/fednet.sock") || !strings.Contains(embedded, "You are a thread agent") {
+		t.Errorf("embedded prompt = %q, want neither the thread key nor the socket in it", embedded)
+	}
 	for _, want := range []string{"[FROM: inbox]\nYou are a thread agent", "FLEET_ISSUE=TH-5 (your thread ticket",
 		"## Channel context\n\nctx\n", "## Earlier sessions on this thread\n\nSession 1 ended", "0xMSG1"} {
 		if !strings.Contains(prompt, want) {
@@ -1165,5 +1175,65 @@ func TestInboxRestoresTheShellTabOfTheThreadsWorkspace(t *testing.T) {
 	// The shell tab is made first; the thread's tab is the last one made.
 	if !strings.Contains(w.file("tab-argv"), "--label\nc0123-1700000000-123\n") {
 		t.Errorf("tab argv = %q", w.file("tab-argv"))
+	}
+}
+
+func TestThreadPostPostsToTheCallersThreadThroughTheScopesSocket(t *testing.T) {
+	w := threadWorld(t, "")
+	if out := w.inbox(w.event("m1", "first", "")); out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	_ = os.Remove(filepath.Join(w.dir, "calls"))
+	body := task(w, "post.md", "Import started.\n")
+	out := w.asThreadAgent("TH-5", "thread", "post", "--body-file", body, "--attach", "/r/a.png", "--attach", "b c.pdf")
+	if out.code != 0 || out.stdout != "m-posted\n" {
+		t.Errorf("post: %+v", out)
+	}
+	if got := w.calls(); got != "fednet client post -socket /run/fednet.sock -thread "+threadKey+
+		" -file /r/a.png -file b c.pdf -- Import started.\n" {
+		t.Errorf("calls = %q", got)
+	}
+	// fednet's failure comes back as it is: its exit code and stderr.
+	if err := os.WriteFile(filepath.Join(w.dir, "fednet-down"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out = w.asThreadAgent("TH-5", "thread", "post", "--body-file", body)
+	if out.code != 4 || out.stderr != "post: hub unreachable\n" {
+		t.Errorf("fednet down: %+v", out)
+	}
+	_ = os.Remove(filepath.Join(w.dir, "fednet-down"))
+	if err := os.WriteFile(filepath.Join(w.dir, "max.md"), []byte(strings.Repeat("x", 102400)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out := w.asThreadAgent("TH-5", "thread", "post", "--body-file", filepath.Join(w.dir, "max.md")); out.code != 0 {
+		t.Errorf("100 KiB: %+v", out)
+	}
+	_ = os.Remove(filepath.Join(w.dir, "calls"))
+	if err := os.WriteFile(filepath.Join(w.dir, "big.md"), []byte(strings.Repeat("x", 102401)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		label string
+		out   result
+	}{
+		{"a lead", w.asAgent("item-1-lead", "lead", "thread-x", "item-1", "thread", "post", "--body-file", body)},
+		{"an empty body", w.asThreadAgent("TH-5", "thread", "post", "--body-file", task(w, "e.md", " \n"))},
+		{"a missing file", w.asThreadAgent("TH-5", "thread", "post", "--body-file", filepath.Join(w.dir, "no.md"))},
+		{"a body over 100 KiB", w.asThreadAgent("TH-5", "thread", "post", "--body-file", filepath.Join(w.dir, "big.md"))},
+		{"no --body-file", w.asThreadAgent("TH-5", "thread", "post")},
+		{"another thread's key", w.run("", []string{"thread", "post", "--body-file", body}, "FLEET_AGENT=thread-c0123-1700000000-123",
+			"FLEET_ROLE=thread", "FLEET_SCOPE=main", "FLEET_THREAD=C0999/1.1")},
+	} {
+		if c.out.code != 1 {
+			t.Errorf("%s: %+v", c.label, c.out)
+		}
+	}
+	w.scopeConfig("main", `{"linear": {"team": "TH"}}`)
+	out = w.asThreadAgent("TH-5", "thread", "post", "--body-file", body)
+	if out.code != 1 || !strings.Contains(out.stderr, "fednet.socket is not configured") {
+		t.Errorf("no socket: %+v", out)
+	}
+	if w.calls() != "" {
+		t.Errorf("a refusal called out: %q", w.calls())
 	}
 }

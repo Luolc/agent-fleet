@@ -24,7 +24,7 @@ A scope is one fleet on the machine: the herdr session `fleet-<scope>`, the ledg
 {"linear": {"team": "ABC"}, "fednet": {"socket": "/run/fednet/client.sock"}}
 ```
 
-`linear.team` is the team thread tickets are created in; without it, threads run without tickets. `fednet.socket` is the client's `-socket`, which fleet needs to tell a thread why no agent was started and which the thread agent is told to post with.
+`linear.team` is the team thread tickets are created in; without it, threads run without tickets. `fednet.socket` is the client's `-socket`. fleet posts through it whenever something goes to a thread: the line telling a thread why no agent was started, a question from `fleet ask-human`, and a thread agent's own posts, which go through `fleet thread post --body-file <file>`. Thread agents are never told the socket or their thread's key; without the setting, nothing can be posted.
 
 Which messages start agents depends on the channel, through two optional payload fields that newer fednet versions send: `channel_name` (absent in a direct message) and `trigger` (`dm` for a direct message to the bot). Until the client's fednet sends them, every message is ignored except in threads the ledger already knows.
 
@@ -65,4 +65,5 @@ The judge has no systemd. Its fake `systemctl` starts the same server detached, 
 
 - The hook exits 0 as soon as the thread's agent has the message, or when the message was ignored, already handled, or dropped because the thread's checkout is missing or Linear was unavailable (the thread gets one line saying so). fednet then marks the message delivered.
 - A non-zero exit makes fednet retry with growing delays, then move the message to its dead letters and alert. The hook keeps its reservation of the `msg_id` across retries, so a retry delivers to the agent an earlier run started rather than starting another.
+- Every post runs `fednet client post` as the user fleet runs as, with only the environment fleet passes on (`PATH`, `HOME`, `USER`, `LOGNAME`, `TMPDIR`, `TERM`, `LANG`, `LC_*`, `XDG_*`, `HERDR_*`) and a 60 s deadline. That user must be able to connect to the socket. A thread agent's post that fails comes back to it with fednet's exit code and stderr; fleet does not retry it.
 - Thread agents live in the herdr workspace `threads` of the scope's session, one tab per thread, in the directory of the thread's channel. A thread keeps the channel and directory recorded at its first message, even if the channel is renamed later.
