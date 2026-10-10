@@ -135,7 +135,8 @@ func TestAskHumanStartsAThreadAgentWhenTheHomeThreadHasNone(t *testing.T) {
 		"A lead's question waits for a person only when the rules require a person's yes for it.",
 		"tell the lead with `fleet send` to decide it itself, naming the rule",
 		"The question stays pending until a person next writes in the thread",
-		"tell the lead of each job started from this thread that is still open what changed, with `fleet send`"} {
+		"tell the lead of each job started from this thread that is still open what changed, with `fleet send`",
+		"they are the leads `fleet status` lists with PARENT thread-c0123-1700000000-123,"} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt = %q, want %q in it", prompt, want)
 		}
