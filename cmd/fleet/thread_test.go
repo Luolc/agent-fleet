@@ -282,7 +282,8 @@ func TestInboxStartsAThreadAgentForANewThreadWithItsTicket(t *testing.T) {
 	for _, want := range []string{"[FROM: inbox]\nYou are a thread agent",
 		"which belongs to repo-example-dataset (scope main). You run in " + cwd + ".",
 		"a single-repo job in example-dataset (`fleet job start <job> --repo example-dataset ...`)",
-		"read the `## Fleet` section of ~/dev/<R>/AGENTS.md", "FLEET_ISSUE=TH-5 (your thread ticket, https://linear.example.test/TH-5)",
+		"read the `## Fleet` section of ~/dev/<R>/AGENTS.md",
+		"Before you write to Slack with `fednet client post`, read the user-level skill `slack-reply`.", "FLEET_ISSUE=TH-5 (your thread ticket, https://linear.example.test/TH-5)",
 		"fednet client post -socket /run/fednet.sock -thread " + threadKey, "## Channel context\n\nThe data channel\n",
 		"## The message\n\nMessage in thread " + threadKey + " from U0ABC at 1700000001.000:\n\nPlease import the A table\n"} {
 		if !strings.Contains(prompt, want) {
