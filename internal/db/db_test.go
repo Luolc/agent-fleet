@@ -351,3 +351,39 @@ func TestAVersion10LedgerKeepsItsQuestionsAndMayCloseThem(t *testing.T) {
 		}
 	}
 }
+
+func TestAVersion11LedgerTakesOverTheRemindersItsQuestionsName(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fleet.db")
+	conn, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range append(migrations[:11:11],
+		"INSERT INTO questions (job, thread, asked_by, text, state, asked_at, reminders, reminder_msg) VALUES "+
+			"('', 'C1/1.1', 'thread-c1', 'A?', 'pending', 1, 2, 'm-2'), ('a', 'C1/1.1', 'a-lead', 'B?', 'pending', 2, 2, 'm-2'), "+
+			"('', 'C2/2.2', 'thread-c2', 'C?', 'answered', 3, 1, 'm-1'), ('', 'C2/2.2', 'thread-c2', 'D?', 'pending', 4, 0, '')",
+		"PRAGMA user_version = 11") {
+		if _, err := conn.Exec(step); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	conn, err = OpenAt(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	var rows string
+	if err := conn.QueryRow("SELECT group_concat(msg_id || ' ' || thread || ' ' || state, ', ') FROM (SELECT * FROM reminders ORDER BY id)").
+		Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != "m-2 C1/1.1 posted, m-1 C2/2.2 posted" {
+		t.Errorf("%q", rows)
+	}
+	if _, err := conn.Exec("INSERT INTO reminders (msg_id, thread, state) VALUES ('m-2', 'C1/1.1', 'posted')"); err == nil {
+		t.Error("a second row for m-2 was accepted")
+	}
+}

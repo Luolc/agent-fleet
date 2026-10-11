@@ -1,7 +1,8 @@
 // Package fednet runs `fednet client`: `post` for what fleet itself says
 // in a thread and what a thread agent posts through `fleet thread post`,
-// `progress` for a thread agent's progress card, and `read-thread` for
-// when a thread last had a message.
+// `delete` for the reminder a newer one replaces, `progress` for a thread
+// agent's progress card, and `read-thread` for when a thread last had a
+// message.
 package fednet
 
 import (
@@ -17,11 +18,15 @@ import (
 	"github.com/Luolc/agent-fleet/internal/herdr"
 )
 
-// postArgv is `client post -socket <socket> -thread <thread> [-file <f>]... -- <text>`.
-func postArgv(socket, thread, text string, files []string) []string {
+// postArgv is `client post -socket <socket> -thread <thread> [-file
+// <f>]... [-mention <user>]... -- <text>`.
+func postArgv(socket, thread, text string, files, mentions []string) []string {
 	args := []string{"client", "post", "-socket", socket, "-thread", thread}
 	for _, f := range files {
 		args = append(args, "-file", f)
+	}
+	for _, m := range mentions {
+		args = append(args, "-mention", m)
 	}
 	return append(args, "--", text)
 }
@@ -49,7 +54,7 @@ func progressArgv(socket, thread, title string, items []string, done bool) []str
 // allow-list). A non-zero exit is an environment failure that names the
 // step and fednet's status, never its output.
 func Post(socket, thread, text string) error {
-	return hidden("fednet client post", postArgv(socket, thread, text, nil))
+	return hidden("fednet client post", postArgv(socket, thread, text, nil, nil))
 }
 
 // Footer is `fednet client post -socket <socket> -thread <thread> -footer
@@ -60,10 +65,21 @@ func Footer(socket, thread, text string) error {
 	return hidden("fednet client post", []string{"client", "post", "-socket", socket, "-thread", thread, "-footer", "--", text})
 }
 
+// ErrMention marks a post fednet refused for its mentions, queuing
+// nothing: exit 2 from a fednet too old for `-mention` (an older hub says
+// so, an older client does not know the flag), or 3 for a user not on the
+// hub's user list.
+var ErrMention = errors.New("fednet refused the mention")
+
 // PostID is Post that returns the msg_id fednet prints once the client
-// has queued the post.
-func PostID(socket, thread, text string) (string, error) {
-	stdout, _, code, err := relay("fednet client post", postArgv(socket, thread, text, nil))
+// has queued the post, with `mentions` (Slack user ids) mentioned at its
+// start. A refusal of the mentions wraps ErrMention, with fednet's first
+// line of stderr.
+func PostID(socket, thread, text string, mentions ...string) (string, error) {
+	stdout, stderr, code, err := relay("fednet client post", postArgv(socket, thread, text, nil, mentions))
+	if err == nil && len(mentions) > 0 && (code == 2 || code == 3) {
+		return "", fmt.Errorf("%w (exit status: %d): %s", ErrMention, code, firstLine(stderr))
+	}
 	if err == nil && code != 0 {
 		err = exit.Environmentf("fednet client post failed (exit status: %d); its output is not shown, run it yourself to see why", code)
 	}
@@ -71,6 +87,21 @@ func PostID(socket, thread, text string) (string, error) {
 		return "", err
 	}
 	return string(bytes.TrimSpace(stdout)), nil
+}
+
+// Delete is `fednet client delete -socket <socket> <msg-id>`, which
+// deletes from Slack a post this machine made: fednet's exit code (0 when
+// deleted) and its first line of stderr. A fednet that could not be run,
+// hit the deadline or was killed by a signal is the error.
+func Delete(socket, msgID string) (code int, reason string, err error) {
+	_, stderr, code, err := relay("fednet client delete", []string{"client", "delete", "-socket", socket, "--", msgID})
+	return code, firstLine(stderr), err
+}
+
+// firstLine is the first line of fednet's output, trimmed.
+func firstLine(out []byte) string {
+	line, _, _ := strings.Cut(strings.TrimSpace(string(out)), "\n")
+	return line
 }
 
 // ErrThread marks a failure of one thread's read: fednet answered, but
@@ -137,7 +168,7 @@ func hidden(op string, argv []string) error {
 // exit code when it exited non-zero (0 otherwise). A fednet that could not
 // be run, hit the deadline or was killed by a signal is a *exit.Failure.
 func Relay(socket, thread, text string, files []string) (stdout, stderr []byte, code int, err error) {
-	return relay("fednet client post", postArgv(socket, thread, text, files))
+	return relay("fednet client post", postArgv(socket, thread, text, files, nil))
 }
 
 // Progress is Relay for an agent's progress card: `fednet client progress`

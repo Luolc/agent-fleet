@@ -2,7 +2,9 @@
 # herdr, in a scope of their own (`quiet`, herdr session fleet-quiet, which
 # this suite starts and stops), with a fake fednet whose `read-thread`
 # answers the newest message's time from a file per thread, and the clock
-# moved through <prefix>WATCH_NOW. Six threads, each started by `inbox`:
+# moved through <prefix>WATCH_NOW. The fake's `post` refuses -mention in
+# Q6's thread as a hub older than its client does, and `delete` deletes.
+# Six threads, each started by `inbox` (a message from U0ABC):
 # Q1 has its thread agent's own question (reminders, then the session
 # reclaimed); Q2 a job (asked about each quiet spell, then why it has not
 # ended, then reclaimed when idle); Q3 a lead's question (the job ended by
@@ -29,12 +31,19 @@ case "$2" in
     f="$d/threads/$(printf %s "$last" | tr / _)"
     [ -f "$f" ] || { echo "read-thread: no thread $last" >&2; exit 1; }
     printf '{"messages":[{"ts":"1700000001.000","user":"U0ABC","text":"a"},{"ts":"%s","user":"U0ABC","text":"b"}]}\n' "$(cat "$f")" ;;
-  post) echo "m-$(wc -l < "$d/fednet.log")" ;;
+  post)
+    case " $* " in *" -thread C0706/6.6 -mention "*)
+      echo 'post: unknown command "check-mentions" (the hub runs an older fednet than this client; upgrade the hub)' >&2
+      exit 2 ;;
+    esac
+    echo "m-$(wc -l < "$d/fednet.log")" ;;
+  delete) ;;
 esac
 FEDNET
 printf '#!/bin/sh\necho "$*" >> /home/agent/quiet/atb.log\n' > "$QB/atb"
 chmod +x "$QB/fednet" "$QB/atb"
 qledger() { sqlite3 "$QDB" "$1" | tr '\n' ' '; }
+qreminder() { sqlite3 "$QDB" "SELECT reminder_msg FROM questions WHERE thread = '$1'"; }
 qname() { echo "thread-$(echo "$1" | tr '/.' '--' | tr '[:upper:]' '[:lower:]')"; }
 qfield() { "${QS[@]}" agent get "$1" 2>&1 | jq -r ".result.agent.$2 // .error.code"; }
 # Everything an agent received; the thread keys and markers are this
@@ -127,12 +136,17 @@ check "watch threads: Q6's session may not end while the moved question waits" 1
 has "watch threads: and the refusal names it" "$out" "question from q6-lead, pending: Which schema should the follow-up use? 0xQW6"
 
 qwatch 30
-check "watch threads: at 30m one reminder each for Q1 and Q3" "1 1" \
-  "$(grep -c "thread $Q1 -- Reminder 1 of 3" "$QD/fednet.log") $(grep -c "thread $Q3 -- Reminder 1 of 3" "$QD/fednet.log")"
+check "watch threads: at 30m one reminder each for Q1 and Q3, mentioning who wrote last" "1 1" \
+  "$(grep -c "thread $Q1 -mention U0ABC -- Reminder 1 of 3" "$QD/fednet.log") $(grep -c "thread $Q3 -mention U0ABC -- Reminder 1 of 3" "$QD/fednet.log")"
 has "watch threads: the reminder lists the question" "$(cat "$QD/fednet.log")" "- from $(qname "$Q1"): Which month should the import cover? 0xQW1"
 has "watch threads: Q6 is reminded of the moved question" "$(cat "$QD/fednet.log")" \
   "-thread $Q6 -- Reminder 1 of 3" "- from q6-lead: Which schema should the follow-up use? 0xQW6"
 check "watch threads: the reminder is counted with its msg_id" "1|m- " "$(qledger "SELECT reminders || '|' || substr(reminder_msg, 1, 2) FROM questions WHERE thread = '$Q1'")"
+q1first=$(qreminder "$Q1")
+check "watch threads: and kept as the thread's reminder" "$q1first|posted " "$(qledger "SELECT msg_id || '|' || state FROM reminders WHERE thread = '$Q1'")"
+lacks "watch threads: the first reminder deletes nothing" "$(cat "$QD/fednet.log")" "client delete"
+has "watch threads: Q6's older hub gets its reminder without the mention" "$(cat "$QD/watch-30.out")" \
+  "the reminder in thread $Q6 is posted without mentioning anyone" "the hub runs an older fednet than this client"
 has "watch threads: Q2's agent asked about the quiet with its job's state" "$(qreceived "$(qname "$Q2")")" \
   "[FROM: watch]" "$quiet2" "- job q2: lead q2-lead "
 lacks "watch threads: a thread with a pending question is not asked about the quiet" "$(qreceived "$(qname "$Q1")")" "rule \`thread quiet"
@@ -160,11 +174,17 @@ qwatch 150
 check "watch threads: and asked once" 1 "$(count "$(qreceived "$(qname "$Q2")")" "$nothing2")"
 
 qwatch 180
+has "watch threads: the second reminder deletes the first" "$(cat "$QD/fednet.log")" \
+  "client delete -socket /home/agent/quiet/fednet.sock -- $q1first"
+check "watch threads: and the ledger says so" "$q1first|deleted $(qreminder "$Q1")|posted " \
+  "$(qledger "SELECT msg_id || '|' || state FROM reminders WHERE thread = '$Q1' ORDER BY id")"
 qwatch 1440
 qwatch 2880
 check "watch threads: three reminders each at 30m, 3h and 24h, no more" "3 3" \
-  "$(grep -c "thread $Q1 -- Reminder" "$QD/fednet.log") $(grep -c "thread $Q3 -- Reminder" "$QD/fednet.log")"
-has "watch threads: the third reminder says so" "$(cat "$QD/fednet.log")" "thread $Q1 -- Reminder 3 of 3"
+  "$(grep -c "thread $Q1 -mention U0ABC -- Reminder" "$QD/fednet.log") $(grep -c "thread $Q3 -mention U0ABC -- Reminder" "$QD/fednet.log")"
+has "watch threads: the third reminder says so" "$(cat "$QD/fednet.log")" "thread $Q1 -mention U0ABC -- Reminder 3 of 3"
+check "watch threads: only the last reminder is left in each thread" "deleted deleted posted |deleted deleted posted " \
+  "$(qledger "SELECT state FROM reminders WHERE thread = '$Q1' ORDER BY id")|$(qledger "SELECT state FROM reminders WHERE thread = '$Q6' ORDER BY id")"
 check "watch threads: the moved question is reminded of three times too" 3 "$(grep -c "thread $Q6 -- Reminder" "$QD/fednet.log")"
 
 qwatch 4320

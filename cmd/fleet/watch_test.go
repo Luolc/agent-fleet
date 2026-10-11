@@ -313,6 +313,30 @@ func TestWatchTellsALeadOnlyWhenTheSuspectsAmongItsWorkersChange(t *testing.T) {
 	}
 }
 
+func TestWatchGivesAStartingRowItsStartBeforeCallingItGone(t *testing.T) {
+	w := newWatchWorld(t)
+	now := db.Now()
+	// a-w1's spawn reserved its row moments ago and herdr has no agent yet.
+	w.insert(watchRow{name: "a-lead", role: "lead", job: "a", parent: "thread-1", startedAt: now - 3600})
+	w.insert(watchRow{name: "a-w1", role: "worker", job: "a", parent: "a-lead", state: "starting", startedAt: now - 5})
+	w.herdrList("a-lead working 2")
+	w.screen("a-lead", claude("⏺ Spawning", "1s", "2hr 59m"))
+	out := w.run("", []string{"watch", "--scope", scope})
+	if out.code != 0 || strings.Contains(out.stdout, "suspect: a-w1") || len(w.prompts()) != 0 {
+		t.Fatalf("%+v %q", out, w.prompts())
+	}
+	// Ten minutes on, still not in herdr: the start failed or its agent
+	// went away, and the lead is told.
+	w.exec(fmt.Sprintf("UPDATE agents SET started_at = %d WHERE name = 'a-w1'", now-600))
+	out = w.run("", []string{"watch", "--scope", scope})
+	if !strings.Contains(out.stdout, "suspect: a-w1 (worker, job a, parent a-lead): gone from herdr") {
+		t.Errorf("%+v", out)
+	}
+	if prompts := w.prompts(); len(prompts) != 1 || prompts[0][0] != "a-lead" || !strings.Contains(prompts[0][1], "a-w1") {
+		t.Errorf("%q", prompts)
+	}
+}
+
 func TestWatchRefusesABadScope(t *testing.T) {
 	w := newWatchWorld(t)
 	if out := w.run("", []string{"watch", "--scope", "a/b"}); out.code != 1 {
@@ -327,7 +351,10 @@ const t0 int64 = 1_800_000_000
 // fednet and a fake atb next to the fake herdr. The fake fednet logs its
 // argv to <dir>/fednet.log; `read-thread <key>` answers one message whose
 // ts is in <dir>/threads/<key with / as _> (exit 1 without one), and
-// `post` prints a msg_id; while <dir>/fednet-down exists it exits 4. The
+// `post` prints a msg_id, but exits with the code in <dir>/mention-exit,
+// when there is one, for a post with -mention; `delete` exits with the
+// code in <dir>/delete-exit, 0 without one; while <dir>/fednet-down
+// exists it exits 4. The
 // fake atb logs its argv to <dir>/atb.log, and fails while <dir>/atb-down
 // exists.
 func watchThreadWorld(t *testing.T) *watchWorld {
@@ -345,7 +372,14 @@ case "$2" in
     [ -f "$f" ] || { echo "no thread $last" >&2; exit 1; }
     printf '{"messages":[{"ts":"1.000","user":"U1","text":"a"},{"ts":"%s","user":"U1","text":"b"}]}\n' "$(cat "$f")"
     ;;
-  post) echo "msg-$(wc -l < "$dir/fednet.log" | tr -d ' ')" ;;
+  post)
+    case " $* " in *" -mention "*) if [ -f "$dir/mention-exit" ]; then
+      echo 'post: unknown command "check-mentions" (the hub runs an older fednet than this client; upgrade the hub)' >&2
+      exit "$(cat "$dir/mention-exit")"
+    fi ;; esac
+    echo "msg-$(wc -l < "$dir/fednet.log" | tr -d ' ')" ;;
+  delete)
+    if [ -f "$dir/delete-exit" ]; then echo "delete: refused" >&2; exit "$(cat "$dir/delete-exit")"; fi ;;
 esac
 `
 	atb := `#!/bin/sh
@@ -417,6 +451,141 @@ func (w *watchWorld) watchAt(offset time.Duration, code int) result {
 		w.t.Fatalf("watch at t0+%v: %+v", offset, out)
 	}
 	return out
+}
+
+// file writes `body` to <dir>/<name>, or removes it when body is empty.
+func (w *watchWorld) file(name, body string) {
+	w.t.Helper()
+	path := filepath.Join(w.dir, name)
+	if body == "" {
+		if err := os.Remove(path); err != nil {
+			w.t.Fatal(err)
+		}
+		return
+	}
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		w.t.Fatal(err)
+	}
+}
+
+// remindersOf is the thread's reminders as `<msg_id> <state>, ...`, oldest
+// first.
+func (w *watchWorld) remindersOf(thread string) string {
+	return w.query("SELECT group_concat(msg_id || ' ' || state, ', ') FROM (SELECT * FROM reminders WHERE thread = '" +
+		thread + "' ORDER BY id)")
+}
+
+func TestWatchRemindersMentionTheLastWriterAndReplaceTheOneBefore(t *testing.T) {
+	w := watchThreadWorld(t)
+	w.file(filepath.Join("home", ".config", "fleet", scope+".json"),
+		`{"fednet": {"socket": "/run/example/fednet.sock"}, "watch": {"reminders": ["30m", "1h", "2h", "3h", "4h"]}}`)
+	w.exec("INSERT INTO threads (thread, slug, created_at, last_user) VALUES ('C1/1.0', 'c1-1-0', 0, 'U0EXAMPLE1')",
+		"INSERT INTO agents (name, role, thread, pane_id, state, started_at) VALUES ('thread-c1', 'thread', 'C1/1.0', 'p1', 'active', 0)",
+		fmt.Sprintf("INSERT INTO questions (job, thread, asked_by, text, state, asked_at) VALUES ('', 'C1/1.0', 'thread-c1', 'Which month?', 'pending', %d)", t0))
+	w.herdrList("thread-c1 idle 1")
+	w.lastMessage("C1/1.0", t0)
+	latest := func() string { return w.query("SELECT reminder_msg FROM questions") }
+	deleted := func(msg string) bool {
+		return strings.Contains(w.log("fednet.log"), "client delete -socket /run/example/fednet.sock -- "+msg+" |")
+	}
+
+	w.watchAt(30*time.Minute, 0)
+	if got := w.log("fednet.log"); !strings.Contains(got, "client post -socket /run/example/fednet.sock -thread C1/1.0 "+
+		"-mention U0EXAMPLE1 -- Reminder 1 of 5: ") || strings.Contains(got, "client delete") {
+		t.Errorf("%s", got)
+	}
+	first := latest()
+	if got := w.remindersOf("C1/1.0"); got != first+" posted" {
+		t.Errorf("reminders %q", got)
+	}
+
+	// The next reminder replaces the first, which is deleted.
+	out := w.watchAt(time.Hour, 0)
+	second := latest()
+	if !deleted(first) || !strings.Contains(out.stdout, "deleted the reminder "+first+" in thread C1/1.0") {
+		t.Errorf("%+v\n%s", out, w.log("fednet.log"))
+	}
+	if got := w.remindersOf("C1/1.0"); got != first+" deleted, "+second+" posted" {
+		t.Errorf("reminders %q", got)
+	}
+
+	// Not in Slack yet: tried again by the next run, with no reminder due.
+	w.file("delete-exit", "5")
+	out = w.watchAt(2*time.Hour, 0)
+	third := latest()
+	if got := w.remindersOf("C1/1.0"); got != first+" deleted, "+second+" stale, "+third+" posted" {
+		t.Errorf("reminders %q", got)
+	}
+	if !strings.Contains(out.stderr, "the reminder "+second+" in thread C1/1.0 is not deleted, the next run tries again: "+
+		"fednet client delete exit status 5: delete: refused") {
+		t.Errorf("%+v", out)
+	}
+	w.file("delete-exit", "")
+	w.watchAt(2*time.Hour+10*time.Minute, 0)
+	if got := w.remindersOf("C1/1.0"); got != first+" deleted, "+second+" deleted, "+third+" posted" {
+		t.Errorf("reminders %q", got)
+	}
+
+	// Gone already: counted as deleted.
+	w.file("delete-exit", "1")
+	w.watchAt(3*time.Hour, 0)
+	fourth := latest()
+	if got := w.remindersOf("C1/1.0"); !deleted(third) || !strings.HasSuffix(got, third+" deleted, "+fourth+" posted") {
+		t.Errorf("reminders %q", got)
+	}
+
+	// A hub older than its client cannot delete: the reminder stays, and
+	// no run asks again.
+	w.file("delete-exit", "2")
+	out = w.watchAt(4*time.Hour, 0)
+	fifth := latest()
+	if got := w.remindersOf("C1/1.0"); !strings.HasSuffix(got, fourth+" kept, "+fifth+" posted") {
+		t.Errorf("reminders %q", got)
+	}
+	if !strings.Contains(out.stderr, "the reminder "+fourth+" in thread C1/1.0 stays in the thread: fednet client delete exit status 2") {
+		t.Errorf("%+v", out)
+	}
+	deletes := strings.Count(w.log("fednet.log"), "client delete")
+	w.watchAt(5*time.Hour, 0)
+	if got := strings.Count(w.log("fednet.log"), "client delete"); got != deletes {
+		t.Errorf("%d deletes, then %d: %s", deletes, got, w.log("fednet.log"))
+	}
+}
+
+func TestWatchPostsTheReminderWithoutTheMentionFednetRefuses(t *testing.T) {
+	w := watchThreadWorld(t)
+	w.exec("INSERT INTO threads (thread, slug, created_at, last_user) VALUES ('C1/1.0', 'c1-1-0', 0, 'U0EXAMPLE1'), "+
+		"('C2/2.0', 'c2-2-0', 0, '')",
+		"INSERT INTO agents (name, role, thread, pane_id, state, started_at) VALUES ('thread-c1', 'thread', 'C1/1.0', 'p1', 'active', 0), "+
+			"('thread-c2', 'thread', 'C2/2.0', 'p2', 'active', 0)",
+		fmt.Sprintf("INSERT INTO questions (job, thread, asked_by, text, state, asked_at) VALUES "+
+			"('', 'C1/1.0', 'thread-c1', 'Which month?', 'pending', %d), ('', 'C2/2.0', 'thread-c2', 'Which year?', 'pending', %d)", t0, t0))
+	w.herdrList("thread-c1 idle 1", "thread-c2 idle 1")
+	w.lastMessage("C1/1.0", t0)
+	w.lastMessage("C2/2.0", t0)
+
+	// A fednet too old for -mention (exit 2), then a user not on the hub's
+	// list (exit 3): each reminder is posted again without the mention.
+	for i, code := range []string{"2", "3"} {
+		w.file("mention-exit", code)
+		out := w.watchAt([]time.Duration{30 * time.Minute, 3 * time.Hour}[i], 0)
+		n := fmt.Sprint(i + 1)
+		if got := w.log("fednet.log"); !strings.Contains(got, "-thread C1/1.0 -mention U0EXAMPLE1 -- Reminder "+n+" of 3") ||
+			!strings.Contains(got, "-thread C1/1.0 -- Reminder "+n+" of 3") {
+			t.Errorf("%s", got)
+		}
+		if !strings.Contains(out.stderr, "the reminder in thread C1/1.0 is posted without mentioning anyone: fednet refused "+
+			"the mention (exit status: "+code+"): post: unknown command") {
+			t.Errorf("%+v", out)
+		}
+		if got := w.query("SELECT reminders FROM questions WHERE thread = 'C1/1.0'"); got != n {
+			t.Errorf("reminders %s", got)
+		}
+	}
+	// Nobody has written in C2 yet: its reminders mention no one.
+	if got := w.log("fednet.log"); strings.Count(got, "-thread C2/2.0 -- Reminder") != 2 || strings.Contains(got, "-thread C2/2.0 -mention") {
+		t.Errorf("%s", got)
+	}
 }
 
 func TestWatchRemindsOfAThreadAgentsQuestionThenReclaimsTheSession(t *testing.T) {
