@@ -1,11 +1,17 @@
 // Package fednet runs `fednet client`: `post` for what fleet itself says
 // in a thread and what a thread agent posts through `fleet thread post`,
-// and `progress` for a thread agent's progress card.
+// `progress` for a thread agent's progress card, and `read-thread` for
+// when a thread last had a message.
 package fednet
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os/exec"
+	"strconv"
+	"strings"
 
 	"github.com/Luolc/agent-fleet/internal/exit"
 	"github.com/Luolc/agent-fleet/internal/herdr"
@@ -52,6 +58,65 @@ func Post(socket, thread, text string) error {
 // ends. As Post, fednet's output is hidden.
 func Footer(socket, thread, text string) error {
 	return hidden("fednet client post", []string{"client", "post", "-socket", socket, "-thread", thread, "-footer", "--", text})
+}
+
+// PostID is Post that returns the msg_id fednet prints once the client
+// has queued the post.
+func PostID(socket, thread, text string) (string, error) {
+	stdout, _, code, err := relay("fednet client post", postArgv(socket, thread, text, nil))
+	if err == nil && code != 0 {
+		err = exit.Environmentf("fednet client post failed (exit status: %d); its output is not shown, run it yourself to see why", code)
+	}
+	if err != nil {
+		return "", err
+	}
+	return string(bytes.TrimSpace(stdout)), nil
+}
+
+// ErrThread marks a failure of one thread's read: fednet answered, but
+// not with that thread (its exit 1 or 2, a thread it does not have, say),
+// unlike fednet unreachable or busy (exit 4 or 5).
+var ErrThread = errors.New("fednet could not read this thread")
+
+// Latest is the newest message of a thread (`fednet client read-thread
+// -json`, which the hub reads from Slack): its Slack timestamp and the
+// same in whole seconds. A thread with no message, or a reply that is
+// not fednet's, is an environment failure; one fednet answered with exit
+// 1 or 2 also wraps ErrThread.
+func Latest(socket, thread string) (ts string, secs int64, err error) {
+	const op = "fednet client read-thread"
+	stdout, stderr, code, err := relay(op, []string{"client", "read-thread", "-socket", socket, "-json", thread})
+	switch {
+	case err != nil:
+		return "", 0, err
+	case code == 1 || code == 2:
+		return "", 0, fmt.Errorf("%s %s failed (exit status: %d): %s: %w", op, thread, code,
+			strings.TrimSpace(string(stderr)), ErrThread)
+	case code != 0:
+		return "", 0, exit.Environmentf("%s %s failed (exit status: %d)", op, thread, code)
+	}
+	var reply struct {
+		Messages []struct {
+			TS string `json:"ts"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(stdout, &reply); err != nil {
+		return "", 0, exit.Environmentf("%s %s: not a JSON reply: %v", op, thread, err)
+	}
+	newest := -1.0
+	for _, m := range reply.Messages {
+		at, err := strconv.ParseFloat(m.TS, 64)
+		if err != nil {
+			return "", 0, exit.Environmentf("%s %s: message timestamp %q is not a number", op, thread, m.TS)
+		}
+		if at > newest {
+			ts, newest = m.TS, at
+		}
+	}
+	if ts == "" {
+		return "", 0, exit.Environmentf("%s %s: the thread has no message", op, thread)
+	}
+	return ts, int64(newest), nil
 }
 
 func hidden(op string, argv []string) error {

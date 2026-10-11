@@ -30,18 +30,22 @@ type Config struct {
 	ResourceCheck bool
 	// Linear is nil when the repo does not use Linear.
 	Linear *Linear
+	// Watch has the job's limits for `fleet watch` (WorkerStale and
+	// LeadQuestion); the rest stays at the defaults.
+	Watch Watch
 }
 
 // file is the JSON as written: a nil field was not given.
 type file struct {
-	MaxAgentsPerJob *int    `json:"max_agents_per_job"`
-	ResourceCheck   *bool   `json:"resource_check"`
-	Linear          *Linear `json:"linear"`
+	MaxAgentsPerJob *int          `json:"max_agents_per_job"`
+	ResourceCheck   *bool         `json:"resource_check"`
+	Linear          *Linear       `json:"linear"`
+	Watch           *jobWatchFile `json:"watch"`
 }
 
 // Default is the config of a job whose checkout has no `.fleet/config.json`.
 func Default() *Config {
-	return &Config{MaxAgentsPerJob: 16, ResourceCheck: true}
+	return &Config{MaxAgentsPerJob: 16, ResourceCheck: true, Watch: DefaultWatch}
 }
 
 // Path is the config file of the main checkout `checkout`.
@@ -99,10 +103,8 @@ func Parse(data []byte) (*Config, error) {
 	if err := json.Unmarshal(data, &raw); err != nil || raw == nil {
 		return nil, errors.New("not a valid config: not a JSON object")
 	}
-	for _, key := range []string{"max_agents_per_job", "resource_check", "linear"} {
-		if value, ok := raw[key]; ok && string(value) == "null" {
-			return nil, errors.New(key + ": must not be null; leave the key out for the default")
-		}
+	if err := refuseNulls(data, ""); err != nil {
+		return nil, err
 	}
 	c := Default()
 	if f.MaxAgentsPerJob != nil {
@@ -122,6 +124,11 @@ func Parse(data []byte) (*Config, error) {
 			return nil, errors.New("linear.project: must be set when linear is")
 		}
 		c.Linear = f.Linear
+	}
+	if f.Watch != nil {
+		if err := f.Watch.apply(&c.Watch); err != nil {
+			return nil, err
+		}
 	}
 	return c, nil
 }

@@ -40,7 +40,7 @@ func reportJSON(t *testing.T, conn *sql.DB) string {
 
 func TestAnEmptyLedgerReportsNothingAsked(t *testing.T) {
 	got := reportJSON(t, ledger(t))
-	want := `{"jobs":[],"threads":[],"total":{"asked":0,"answered":0,"pending":0,"wait_median_secs":null,"wait_max_secs":null}}`
+	want := `{"jobs":[],"threads":[],"total":{"asked":0,"answered":0,"pending":0,"closed":0,"wait_median_secs":null,"wait_max_secs":null}}`
 	if got != want {
 		t.Errorf("got  %s\nwant %s", got, want)
 	}
@@ -60,16 +60,17 @@ func TestQuestionsCountForTheirJobOrThreadWithWaits(t *testing.T) {
 			"('x', 'C0123/1.1', 'x-lead', 'c', 'answered', 700, 1000), "+
 			"('', 'C0123/1.1', 'thread-c0123-1-1', 'd', 'answered', 50, 60), "+
 			"('', 'C0123/1.1', 'thread-c0123-1-1', 'e', 'answered', 70, 100), "+
-			"('', 'D0456/2.2', 'thread-d0456-2-2', 'f', 'pending', 80, NULL)")
+			"('', 'D0456/2.2', 'thread-d0456-2-2', 'f', 'pending', 80, NULL), "+
+			"('', 'D0456/2.2', 'thread-d0456-2-2', 'g', 'closed', 90, NULL)")
 	got := reportJSON(t, conn)
 	want := `{"jobs":[` +
-		`{"job":"x","state":"done","started_at":100,"asked":1,"answered":1,"pending":0,"wait_median_secs":60,"wait_max_secs":60},` +
-		`{"job":"x","state":"open","started_at":500,"asked":2,"answered":1,"pending":1,"wait_median_secs":300,"wait_max_secs":300},` +
-		`{"job":"y","state":"open","started_at":550,"asked":0,"answered":0,"pending":0,"wait_median_secs":null,"wait_max_secs":null}],` +
+		`{"job":"x","state":"done","started_at":100,"asked":1,"answered":1,"pending":0,"closed":0,"wait_median_secs":60,"wait_max_secs":60},` +
+		`{"job":"x","state":"open","started_at":500,"asked":2,"answered":1,"pending":1,"closed":0,"wait_median_secs":300,"wait_max_secs":300},` +
+		`{"job":"y","state":"open","started_at":550,"asked":0,"answered":0,"pending":0,"closed":0,"wait_median_secs":null,"wait_max_secs":null}],` +
 		`"threads":[` +
-		`{"thread":"C0123/1.1","ticket":"EX-1","asked":2,"answered":2,"pending":0,"wait_median_secs":20,"wait_max_secs":30},` +
-		`{"thread":"D0456/2.2","ticket":"","asked":1,"answered":0,"pending":1,"wait_median_secs":null,"wait_max_secs":null}],` +
-		`"total":{"asked":6,"answered":4,"pending":2,"wait_median_secs":45,"wait_max_secs":300}}`
+		`{"thread":"C0123/1.1","ticket":"EX-1","asked":2,"answered":2,"pending":0,"closed":0,"wait_median_secs":20,"wait_max_secs":30},` +
+		`{"thread":"D0456/2.2","ticket":"","asked":2,"answered":0,"pending":1,"closed":1,"wait_median_secs":null,"wait_max_secs":null}],` +
+		`"total":{"asked":7,"answered":4,"pending":2,"closed":1,"wait_median_secs":45,"wait_max_secs":300}}`
 	if got != want {
 		t.Errorf("got  %s\nwant %s", got, want)
 	}
