@@ -220,6 +220,10 @@ func jobStartChecks(h *herdr.Herdr, args JobStartArgs) (*jobChecked, *sql.DB, er
 	if args.Job == threadsWorkspace {
 		return nil, nil, exit.Refusedf("the job name `%s` is reserved for thread agents", threadsWorkspace)
 	}
+	if helperNamed(args.Job + "-") {
+		return nil, nil, exit.Refusedf("the job name %q is reserved: names starting `%s` or `%s` are the helpers `fleet watch` starts",
+			args.Job, helperPrefix, revisitPrefix)
+	}
 	c := &jobChecked{me: me, id: &identity.Identity{Agent: args.Job + "-lead", Role: identity.Lead,
 		Parent: me.Agent, Scope: me.Scope, Job: args.Job}}
 	if err := CheckAgentName(c.id.Agent); err != nil {

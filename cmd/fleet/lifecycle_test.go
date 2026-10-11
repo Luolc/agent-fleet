@@ -220,6 +220,8 @@ func TestJobStartRefusalsHappenBeforeHerdrIsCalled(t *testing.T) {
 		{"item-1-a", "worker", "item-1", []string{"item-2"}, "cannot start a job"},
 		{"thread-1", "thread", "", []string{"Item_2"}, "[a-z0-9-]"},
 		{"thread-1", "thread", "", []string{"watch"}, "reserved"},
+		{"thread-1", "thread", "", []string{"unblock"}, "reserved"},
+		{"thread-1", "thread", "", []string{"revisit-x"}, "reserved"},
 		{"thread-1", "thread", "", []string{"1"}, "start with a letter"},
 		{"thread-1", "thread", "", []string{longJob}, "at most 32"},
 		{"thread-1", "thread", "", []string{"item-2", "--parent-issue", "EX-1", "--new-parent", "T"}, "exclude each other"},

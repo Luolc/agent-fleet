@@ -140,9 +140,11 @@ func TestWatchLimitsAreReadAndCheckedInBothFiles(t *testing.T) {
 	if err != nil || c.Watch.WorkerStale != 5*time.Minute || c.Watch.LeadQuestion != 72*time.Hour {
 		t.Errorf("%+v, %v", c, err)
 	}
-	s, err := ParseScope([]byte(`{"watch": {"lead_question": "48h", "thread_quiet": "1h", "reminders": ["1h", "2h"]}}`), "/home/u")
+	s, err := ParseScope([]byte(`{"watch": {"lead_question": "48h", "thread_quiet": "1h", "reminders": ["1h", "2h"],
+		"parent_stale": "24h", "parent_agents": 3}}`), "/home/u")
 	if err != nil || s.Watch.LeadQuestion != 48*time.Hour || s.Watch.ThreadQuiet != time.Hour ||
-		!slices.Equal(s.Watch.Reminders, []time.Duration{time.Hour, 2 * time.Hour}) || s.Watch.ThreadIdle != 72*time.Hour {
+		!slices.Equal(s.Watch.Reminders, []time.Duration{time.Hour, 2 * time.Hour}) || s.Watch.ThreadIdle != 72*time.Hour ||
+		s.Watch.ParentStale != 24*time.Hour || s.Watch.ParentAgents != 3 {
 		t.Errorf("%+v, %v", s, err)
 	}
 	if !slices.Equal(DefaultWatch.Reminders, []time.Duration{30 * time.Minute, 3 * time.Hour, 24 * time.Hour}) {
@@ -164,6 +166,8 @@ func TestWatchLimitsAreReadAndCheckedInBothFiles(t *testing.T) {
 		`{"watch": {"reminders": "30m"}}`:         "watch.reminders",
 		`{"watch": {"thread_idle": "0s"}}`:        "watch.thread_idle: must be a positive duration",
 		`{"watch": {"stale": "1h"}}`:              `"stale"`,
+		`{"watch": {"parent_agents": 0}}`:         "watch.parent_agents: must be a positive number",
+		`{"watch": {"parent_agents": "2"}}`:       "watch.parent_agents",
 	} {
 		if _, err := ParseScope([]byte(body), "/home/u"); err == nil || !strings.Contains(err.Error(), says) {
 			t.Errorf("%s: %v, want it to name %s", body, err, says)

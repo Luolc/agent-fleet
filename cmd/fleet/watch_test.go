@@ -348,9 +348,14 @@ case "$2" in
   post) echo "msg-$(wc -l < "$dir/fednet.log" | tr -d ' ')" ;;
 esac
 `
+	// `linear query` prints <dir>/issues.json, no started issue without it.
 	atb := `#!/bin/sh
-printf '%s\n' "$*" >> '` + w.dir + `/atb.log'
-[ -e '` + w.dir + `/atb-down' ] && exit 1
+dir='` + w.dir + `'
+printf '%s\n' "$*" >> "$dir/atb.log"
+[ -e "$dir/atb-down" ] && exit 1
+if [ "$2" = query ]; then
+  cat "$dir/issues.json" 2>/dev/null || echo '{"issues":{"nodes":[]}}'
+fi
 exit 0
 `
 	config := filepath.Join(w.dir, "home", ".config", "fleet")
@@ -894,5 +899,87 @@ func TestWatchRunsOnceAtATimeAndChecksItsClock(t *testing.T) {
 	}
 	if out := w.run("", []string{"watch", "--scope", scope}); out.code != 0 {
 		t.Errorf("%+v", out)
+	}
+}
+
+func TestWatchAsksARevisitAgentsQuestionInTheLatestJobsThreadAndSkipsParentsWhenLinearIsDown(t *testing.T) {
+	w := watchThreadWorld(t)
+	w.exec("INSERT INTO threads (thread, slug, created_at) VALUES ('C3/3.0', 'c3-3-0', 0)",
+		"INSERT INTO agents (name, role, thread, pane_id, state, started_at) VALUES ('thread-c3', 'thread', 'C3/3.0', 'p3', 'active', 0)",
+		"INSERT INTO jobs (job, parent_issue, lead_cwd, home_thread, state, outcome, started_at, ended_at) VALUES "+
+			"('r1', 'EX-5', '/c', 'C9/9.0', 'ended', 'done', 0, 1), ('r2', 'EX-5', '/c', 'C3/3.0', 'ended', 'done', 2, 3), "+
+			"('r3', 'EX-5', '/c', '', 'ended', 'done', 4, 5)",
+		"INSERT INTO jobs (job, parent_issue, lead_cwd, home_thread, state, started_at) VALUES ('o', 'EX-7', '/c', 'C3/3.0', 'open', 0)",
+		fmt.Sprintf("INSERT INTO agents (name, role, parent_issue, pane_id, state, started_at) VALUES "+
+			"('revisit-ex-5', 'revisit', 'EX-5', 'p5', 'active', %d)", t0))
+	w.insert(watchRow{name: "o-lead", role: "lead", job: "o", parent: "thread-c3"})
+	w.insert(watchRow{name: "o-w", role: "worker", job: "o", parent: "o-lead"})
+	w.herdrList("thread-c3 idle 1", "o-lead idle 1", "revisit-ex-5 idle 2")
+	w.screen("o-lead", claude("⏺ Waiting", "", ""))
+	w.lastMessage("C3/3.0", t0)
+	dir := filepath.Join(w.dir, "home", ".local", "state", "fleet", scope+"-unblock")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "revisit-ex-5-question.md"), []byte("Close EX-5? 0xQUESTION\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(w.dir, "atb-down"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out := w.watchAt(time.Minute, 5)
+	if !strings.Contains(out.stderr, "the parent issues are skipped this run, Linear could not be read") {
+		t.Errorf("%s", out.stderr)
+	}
+	// Only the parents of jobs that are not open are asked for.
+	if got := w.log("atb.log"); !strings.Contains(got, `id: {in: ["EX-5"]}`) || strings.Contains(got, "EX-7") {
+		t.Errorf("atb: %s", got)
+	}
+	// The other rules still ran: the worker gone from herdr went to its lead.
+	prompts := w.prompts()
+	if len(prompts) != 2 || prompts[0][0] != "o-lead" || !strings.Contains(prompts[0][1], "o-w") {
+		t.Fatalf("%q", prompts)
+	}
+	// The finished revisit agent is closed, its question posted to the
+	// latest job's thread that has one, and given to that thread's agent.
+	if got := w.log("fednet.log"); !strings.Contains(got, "post -socket /run/example/fednet.sock -thread C3/3.0 -- revisit-ex-5 "+
+		"looked at the parent issue EX-5, which has not changed for a while and has no job open on it, and asks: | | Close EX-5? 0xQUESTION") {
+		t.Errorf("fednet: %s", got)
+	}
+	if got := w.query("SELECT job || '|' || thread || '|' || asked_by || '|' || state FROM questions"); got != "|C3/3.0|revisit-ex-5|pending" {
+		t.Errorf("question %s", got)
+	}
+	if prompts[1][0] != "thread-c3" {
+		t.Fatalf("%q", prompts)
+	}
+	for _, want := range []string{"[FROM: watch]\n", "rule `parent issue unchanged`: revisit-ex-5 asked the people in thread C3/3.0 about the parent issue EX-5",
+		"0xQUESTION", "When they answer, carry out what they decide"} {
+		if !strings.Contains(prompts[1][1], want) {
+			t.Errorf("%q missing:\n%s", want, prompts[1][1])
+		}
+	}
+	if got := w.query("SELECT state FROM agents WHERE name = 'revisit-ex-5'"); got != "ended" {
+		t.Errorf("revisit row %s", got)
+	}
+	if data, _ := os.ReadFile(filepath.Join(w.dir, "closed")); string(data) != "p5\n" {
+		t.Errorf("closed %q", data)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "revisit-ex-5-question.md")); !os.IsNotExist(err) {
+		t.Errorf("question file left: %v", err)
+	}
+
+	// Days later the question still waits: reminded of, never timed out,
+	// and the thread agent's session is not reclaimed for it.
+	if err := os.Remove(filepath.Join(w.dir, "atb-down")); err != nil {
+		t.Fatal(err)
+	}
+	w.lastMessage("C3/3.0", t0+100*3600)
+	w.watchAt(100*time.Hour, 0)
+	if got := w.query("SELECT state || ' ' || reminders FROM questions"); got != "pending 3" {
+		t.Errorf("question %s", got)
+	}
+	if got := w.query("SELECT coalesce(reclaim_at, 'none') FROM agents WHERE name = 'thread-c3'"); got != "none" {
+		t.Errorf("reclaim_at %s", got)
 	}
 }

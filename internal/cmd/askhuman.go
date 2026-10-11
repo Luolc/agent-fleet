@@ -69,8 +69,8 @@ func AskHuman(h *herdr.Herdr, args AskHumanArgs) (exit.Code, error) {
 	if me.Role == identity.Worker {
 		return 0, exit.Refusedf("a worker does not ask people; tell your lead with `fleet send %s`", me.Parent)
 	}
-	if me.Role == identity.Unblock {
-		return 0, exit.Refusedf("a screen helper does not ask people itself; write the question to the file your task names")
+	if me.Role == identity.Unblock || me.Role == identity.Revisit {
+		return 0, exit.Refusedf("an agent fleet's watch started does not ask people itself; ask the way your task says")
 	}
 	data, err := os.ReadFile(args.File)
 	if err != nil {

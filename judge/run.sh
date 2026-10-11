@@ -13,8 +13,8 @@
 #                     that is, JUDGE_NAME upper-cased plus an underscore)
 #   JUDGE_IMAGE       use an image built elsewhere (CI) instead of building
 #   JUDGE_SUITES      the suites to run, space-separated names out of usage,
-#                     send, lifecycle, watch, worktree, thread, watchthread
-#                     and unblock; they run
+#                     send, lifecycle, watch, worktree, thread, watchthread,
+#                     unblock and revisit; they run
 #                     in that order whatever order they are given in
 #                     (default: all of them)
 #
