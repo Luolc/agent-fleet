@@ -205,16 +205,18 @@ func (u *unblocking) startRevisit(p atb.Parent, name string) error {
 }
 
 // revisitBody is the revisit agent's first message: the prompt, the issue,
-// its sub-issues, fleet's jobs on it, and last its project's instructions
-// as Linear has them.
+// its sub-issues, fleet's jobs on it, the questions earlier revisit agents
+// of the issue asked in a thread with the latest message a person posted
+// there, and last its project's instructions as Linear has them.
 func (u *unblocking) revisitBody(p atb.Parent, name string) (string, error) {
 	thread, err := parentThread(u.conn, p.Identifier)
 	if err != nil {
 		return "", err
 	}
 	ask := fmt.Sprintf("There is no thread to ask in, so ask on the issue: write the question to a file in your "+
-		"directory (what you found, the choices, and what you recommend), run `atb linear comment %s --body-file "+
-		"<file>`, then `atb linear edit %s --add-label needs-user`.", p.Identifier, p.Identifier)
+		"directory, its first line `Question from %s:`, then what you found, the choices, and what you recommend; run "+
+		"`atb linear comment %s --body-file <file>`, then `atb linear edit %s --add-label needs-user`.", name,
+		p.Identifier, p.Identifier)
 	if thread != "" && u.cfg.FednetSocket != "" {
 		ask = fmt.Sprintf("Write your question to %s: what you found, the choices, and what you recommend, in a "+
 			"short paragraph. fleet posts it to the thread %s, where its latest job on the issue reported, and once "+
@@ -264,6 +266,11 @@ func (u *unblocking) revisitBody(p atb.Parent, name string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	earlier, err := earlierSection(u.conn, name, "Earlier")
+	if err != nil {
+		return "", err
+	}
+	text += earlier
 	if p.Project == nil {
 		return text + "\n## Its project\n\nThe issue is in no project, so there are no instructions: decide by the " +
 			"issue and its sub-issues.\n", nil
