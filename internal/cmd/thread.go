@@ -67,7 +67,8 @@ const (
 		"question in it pending, yours or a lead's, or a job whose home thread it is still " +
 		"open) it is refused, naming each: the answer and the lead's messages reach the live " +
 		"session, an idle one costs nothing, and a new one starts cold. --asked-to-end ends " +
-		"it anyway; use it only when the people in the thread asked you to end. A job you " +
+		"it anyway; use it only when the people in the thread asked you to end, or `fleet watch` " +
+		"is reclaiming your session. A job you " +
 		"started keeps running. --summary-file is required and must not be empty. With a thread ticket " +
 		"(FLEET_ISSUE), first the summary is written to it as a comment headed `Session <n> " +
 		"ended` (`atb linear comment`), then the ticket is released as done (`atb linear " +
@@ -259,6 +260,8 @@ type inboundMessage struct {
 	// conclusion, which needs no answer.
 	Question   string
 	Conclusion bool
+	// Watch marks a notice from `fleet watch`, delivered as it is.
+	Watch bool
 	// Screen marks a question `watch` asks for a screen helper about an
 	// agent stopped at a screen: there is no agent to pass the answer to.
 	Screen bool
@@ -270,8 +273,17 @@ func (m inboundMessage) channel() string {
 	return channel
 }
 
+// fromFleet is whether the message came from an agent or from watch, not
+// from a person in the thread.
+func (m inboundMessage) fromFleet() bool {
+	return m.Question != "" || m.Watch
+}
+
 // sender is the header name the message is delivered under.
 func (m inboundMessage) sender() string {
+	if m.Watch {
+		return watchSender
+	}
 	if m.Question != "" {
 		return m.Question
 	}
@@ -280,6 +292,9 @@ func (m inboundMessage) sender() string {
 
 // body is the message as the thread agent reads it.
 func (m inboundMessage) body() string {
+	if m.Watch {
+		return m.Text
+	}
 	if m.Conclusion {
 		return fmt.Sprintf("Conclusion of a job from %s for the people in thread %s. Post it to the thread with "+
 			"`fleet thread post`, then read the report it names and start the next job for each follow-up that "+
@@ -301,6 +316,9 @@ func (m inboundMessage) body() string {
 
 // trigger is what the `Session <n> started` comment names.
 func (m inboundMessage) trigger() string {
+	if m.Watch {
+		return "a notice from fleet watch"
+	}
 	if m.Conclusion {
 		return "the conclusion of a job from " + m.Question
 	}
@@ -604,14 +622,14 @@ func (s *threadStart) start() (exit.Code, error) {
 
 // linearUnavailable is what `fleet inbox` does when a Linear step failed:
 // no agent (the reservation taken back), then the thread is told.
-// An agent's question (`Question` set) gets the failure back instead of
-// a post: nobody in the thread asked anything.
+// What an agent or watch sent (`fromFleet`) gets the failure back instead
+// of a post: nobody in the thread asked anything.
 func (s *threadStart) linearUnavailable(cause error) error {
 	fmt.Fprintf(os.Stderr, "fleet: Linear is unavailable, no thread agent started: %v\n", cause)
 	if err := s.unreserve(); err != nil {
 		return err
 	}
-	if s.msg.Question != "" {
+	if s.msg.fromFleet() {
 		return nil
 	}
 	return s.tell("Linear is unavailable right now, so no agent was started for this thread; please try again later.",
@@ -619,14 +637,14 @@ func (s *threadStart) linearUnavailable(cause error) error {
 }
 
 // notHere is what a start does when the thread's directory is not on this
-// machine: nothing is reserved or started, and the thread is told. An
-// agent's question gets an error instead.
+// machine: nothing is reserved or started, and the thread is told. What
+// an agent or watch sent gets an error instead.
 func (s *threadStart) notHere() error {
 	what := "the repo " + strings.TrimPrefix(s.mapping, s.cfg.Channels.RepoPrefix)
 	if strings.HasPrefix(s.mapping, s.cfg.Channels.InitiativePrefix) {
 		what = "the repo of " + s.mapping
 	}
-	if s.msg.Question != "" {
+	if s.msg.fromFleet() {
 		return exit.Environmentf("%s is not checked out at %s on this machine", what, s.cwd)
 	}
 	fmt.Fprintf(os.Stderr, "fleet: no checkout at %s, no thread agent started\n", s.cwd)
@@ -905,7 +923,7 @@ func ThreadEnd(h *herdr.Herdr, args ThreadEndArgs) (exit.Code, error) {
 		return 0, err
 	}
 	defer conn.Close()
-	e, err := newThreadEnding(conn, me, args.Force)
+	e, err := newThreadEnding(conn, me.Agent, args.Force)
 	if err != nil {
 		return 0, err
 	}
@@ -914,7 +932,7 @@ func ThreadEnd(h *herdr.Herdr, args ThreadEndArgs) (exit.Code, error) {
 			return 0, err
 		}
 	}
-	if err := e.linearSteps(me, string(summary)); err != nil {
+	if err := e.linearSteps(me.Agent, me.Issue, string(summary)); err != nil {
 		return 0, err
 	}
 	// The closing line goes before the row ends, after Linear: it is what
@@ -945,20 +963,20 @@ func ThreadEnd(h *herdr.Herdr, args ThreadEndArgs) (exit.Code, error) {
 	return exit.Ok, closeOwnTab(h, conn, me.Agent)
 }
 
-// newThreadEnding reads what the ending acts on: the caller's newest row
+// newThreadEnding reads what the ending acts on: the agent's newest row
 // (its step key and thread) and the thread's row (the session and the
 // ticket the closing line links).
-func newThreadEnding(conn *sql.DB, me *identity.Identity, force bool) (*threadEnding, error) {
-	e := &threadEnding{conn: conn, force: force, footer: "会话已结束"}
+func newThreadEnding(conn *sql.DB, agent string, force bool) (*threadEnding, error) {
+	e := &threadEnding{conn: conn, force: force, footer: endedLine}
 	var rowID int64
-	if err := conn.QueryRow("SELECT id, thread FROM agents WHERE name = ?1 ORDER BY id DESC LIMIT 1", me.Agent).Scan(&rowID, &e.thread); err != nil {
+	if err := conn.QueryRow("SELECT id, thread FROM agents WHERE name = ?1 ORDER BY id DESC LIMIT 1", agent).Scan(&rowID, &e.thread); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, exit.Refusedf("the ledger has no row for %s", me.Agent)
+			return nil, exit.Refusedf("the ledger has no row for %s", agent)
 		}
 		return nil, exit.Database(err)
 	}
 	if e.thread == "" {
-		return nil, exit.Refusedf("the ledger records no thread for %s", me.Agent)
+		return nil, exit.Refusedf("the ledger records no thread for %s", agent)
 	}
 	e.key = fmt.Sprintf("thread-end:%d", rowID)
 	row, err := threadByKey(conn, e.thread)
@@ -967,7 +985,8 @@ func newThreadEnding(conn *sql.DB, me *identity.Identity, force bool) (*threadEn
 	}
 	if row != nil {
 		e.session = row.Sessions
-		e.footer = sessionEndedLine(row.Ticket, row.TicketURL)
+		e.ticket, e.ticketURL = row.Ticket, row.TicketURL
+		e.footer = closingLine(endedLine, row.Ticket, row.TicketURL)
 	}
 	return e, nil
 }
@@ -1002,20 +1021,23 @@ func stillWaiting(conn *sql.DB, thread string) error {
 	}
 	return exit.Refusedf("thread %s still waits, so this session stays:\n  - %s\n"+
 		"A person's answer and the lead's messages reach you in this session; staying idle costs nothing. "+
-		"End anyway with --asked-to-end only when the people in the thread asked you to end.",
+		"End anyway with --asked-to-end only when the people in the thread asked you to end, or fleet watch is reclaiming this session.",
 		thread, strings.Join(waits, "\n  - "))
 }
 
-// sessionEndedLine is the closing line: `会话已结束 · <ticket>`, the ticket
-// linked, or `会话已结束` alone without one.
-func sessionEndedLine(ticket, url string) string {
+// endedLine is what the closing line of a session's ending says.
+const endedLine = "会话已结束"
+
+// closingLine is a closing line: `<text> · <ticket>`, the ticket linked,
+// or the text alone without one.
+func closingLine(text, ticket, url string) string {
 	switch {
 	case ticket == "":
-		return "会话已结束"
+		return text
 	case url == "":
-		return "会话已结束 · " + ticket
+		return text + " · " + ticket
 	}
-	return fmt.Sprintf("会话已结束 · [%s](%s)", ticket, url)
+	return fmt.Sprintf("%s · [%s](%s)", text, ticket, url)
 }
 
 // threadEnding is one `thread end`: its step key, the thread, the session
@@ -1023,20 +1045,22 @@ func sessionEndedLine(ticket, url string) string {
 // the command to finish it by hand, and whether the closing line was
 // skipped.
 type threadEnding struct {
-	conn     *sql.DB
-	key      string
-	thread   string
-	session  int64
-	footer   string
-	force    bool
-	missed   []string
-	unposted bool
+	conn      *sql.DB
+	key       string
+	thread    string
+	session   int64
+	ticket    string
+	ticketURL string
+	footer    string
+	force     bool
+	missed    []string
+	unposted  bool
 }
 
 // linearSteps are the ticket's steps, with a ticket: the summary comment,
-// then the release.
-func (e *threadEnding) linearSteps(me *identity.Identity, summary string) error {
-	if me.Issue == "" {
+// then the release in the agent's name.
+func (e *threadEnding) linearSteps(agent, issue, summary string) error {
+	if issue == "" {
 		return nil
 	}
 	file, remove, err := tempFile(fmt.Sprintf("Session %d ended\n\n%s", e.session, strings.TrimSpace(summary)+"\n"))
@@ -1044,12 +1068,12 @@ func (e *threadEnding) linearSteps(me *identity.Identity, summary string) error 
 		return err
 	}
 	defer remove()
-	if err := e.linear("comment", func() error { return atb.Comment(me.Issue, file) },
-		fmt.Sprintf("atb linear comment %s --body-file <the summary, headed `Session %d ended`>", me.Issue, e.session)); err != nil {
+	if err := e.linear("comment", func() error { return atb.Comment(issue, file) },
+		fmt.Sprintf("atb linear comment %s --body-file <the summary, headed `Session %d ended`>", issue, e.session)); err != nil {
 		return err
 	}
-	return e.linear("release", func() error { return atb.Release(me.Issue, me.Agent, false) },
-		fmt.Sprintf("atb linear release %s --agent %s --reason done --done", me.Issue, me.Agent))
+	return e.linear("release", func() error { return atb.Release(issue, agent, false) },
+		fmt.Sprintf("atb linear release %s --agent %s --reason done --done", issue, agent))
 }
 
 // step runs a step through runStep; a failure is returned, or with

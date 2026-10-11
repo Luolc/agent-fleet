@@ -1,5 +1,6 @@
 # Sourced by inside.sh: what `watch` does for agents stopped at a screen,
-# in a scope of its own (`screens`, herdr session fleet-screens) with fake
+# in a scope of its own (`screens`, herdr session fleet-screens, which
+# this suite starts and stops) with fake
 # Claudes, a fake atb and a fake fednet that log their arguments. The
 # ledger rows are inserted directly. Arms that must differ:
 #   s-trust  the folder-trust prompt for its own directory (TRUST): answered
@@ -27,7 +28,16 @@ echo "$*" >> /home/agent/screens-atb.log
 [ "$2" = create ] && echo '{"identifier":"SC-9","url":"https://linear.example.test/SC-9"}'
 exit 0
 ATB
-printf '#!/bin/sh\nprintf "%%s\\n--\\n" "$*" >> /home/agent/screens-fednet.log\necho m-posted\n' > /home/agent/fake-screens/fednet
+# The fake fednet logs every call; `read-thread` answers a message posted
+# just now, so no thread is quiet and the thread rules stay out of the way.
+cat > /home/agent/fake-screens/fednet <<'FEDNET'
+#!/bin/sh
+printf '%s\n--\n' "$*" >> /home/agent/screens-fednet.log
+case "$2" in
+  read-thread) printf '{"messages":[{"ts":"%s.000100","user":"U0ABC","text":"b"}]}\n' "$(date +%s)" ;;
+  *) echo m-posted ;;
+esac
+FEDNET
 chmod +x /home/agent/fake-screens/atb /home/agent/fake-screens/fednet
 : > /home/agent/screens-atb.log
 : > /home/agent/screens-fednet.log
@@ -92,7 +102,7 @@ has "unblock: the home thread's agent has the question" "$(received thread-s)" "
   "about an agent stopped at a screen" "Nothing to pass on"
 settled s-lead
 lead_got=$(received s-lead)
-has "unblock: the worker's lead is told about the helper" "$lead_got" "[FROM: cron]" "s-perm" "started $hperm"
+has "unblock: the worker's lead is told about the helper" "$lead_got" "[FROM: watch]" "s-perm" "started $hperm"
 has "unblock: the starter is told the start stopped at a screen" "$lead_got" "s-new" "has not had its first message"
 lacks "unblock: nobody is told about the screen the rule answered" "$lead_got" "s-trust"
 lacks "unblock: a start left at a screen just now is its starter's" "$(cat /home/agent/unblock1.out)" "s-young"

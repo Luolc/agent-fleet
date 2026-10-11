@@ -531,7 +531,7 @@ func resources(cfg *config.Config) error {
 }
 
 // CheckName refuses a name that is empty, has characters outside
-// [a-z0-9-], or is `cron`.
+// [a-z0-9-], or is `watch`, the sender name of `fleet watch`.
 func CheckName(name string) error {
 	ok := name != ""
 	for _, c := range name {
@@ -540,8 +540,8 @@ func CheckName(name string) error {
 	if !ok {
 		return exit.Refusedf("name %q must use only [a-z0-9-]", name)
 	}
-	if name == "cron" {
-		return exit.Refusedf("the name `cron` is reserved")
+	if name == watchSender {
+		return exit.Refusedf("the name `watch` is reserved")
 	}
 	return nil
 }

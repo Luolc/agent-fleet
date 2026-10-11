@@ -30,6 +30,9 @@ type Scope struct {
 	Paths Paths
 	// Channels are the channel names fleet serves.
 	Channels Channels
+	// Watch is when `fleet watch` acts on the scope's threads and its
+	// cross-repo jobs.
+	Watch Watch
 	// home is what `~/` stands for, in Paths and in Tilde.
 	home string
 }
@@ -92,6 +95,7 @@ type scopeFile struct {
 		InitiativePrefix  *string `json:"initiative_prefix"`
 		GeneralInitiative *string `json:"general_initiative"`
 	} `json:"channels"`
+	Watch *scopeWatchFile `json:"watch"`
 }
 
 // setting is one key of the `paths` or `channels` section: nil when the
@@ -170,7 +174,7 @@ func ParseScope(data []byte, home string) (*Scope, error) {
 	if err := refuseNulls(data, ""); err != nil {
 		return nil, err
 	}
-	t := &Scope{Paths: DefaultPaths, Channels: DefaultChannels, home: filepath.Clean(home)}
+	t := &Scope{Paths: DefaultPaths, Channels: DefaultChannels, Watch: DefaultWatch, home: filepath.Clean(home)}
 	if err := f.sections(t); err != nil {
 		return nil, err
 	}
@@ -199,7 +203,7 @@ func ParseScope(data []byte, home string) (*Scope, error) {
 		}
 		*p.path = expanded
 	}
-	if err := t.Channels.check(); err != nil {
+	if err := errors.Join(t.Channels.check(), f.Watch.apply(&t.Watch)); err != nil {
 		return nil, err
 	}
 	return t, nil

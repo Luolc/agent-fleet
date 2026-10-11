@@ -43,7 +43,7 @@ func TestTheHelperGetsTheScreenTheGuidanceAndThePeoplesAnswer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	u := &unblocking{conn: conn, scope: "screens", cfg: sc, dir: "/home/u/.local/state/fleet/screens-unblock"}
+	u := &unblocking{watchRun: &watchRun{conn: conn, scope: "screens", cfg: sc}, dir: "/home/u/.local/state/fleet/screens-unblock"}
 	row := stopRow{ID: 7, Name: "s-perm", Role: "worker", Job: "s", Parent: "s-lead", Cwd: "/home/u/wt/r/s", State: "active"}
 	got, err := u.helperPrompt(row, helperName(row.ID), bashPrompt, "")
 	if err != nil {

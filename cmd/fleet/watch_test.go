@@ -8,7 +8,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 	"unicode"
 
 	"github.com/Luolc/agent-fleet/internal/cmd"
@@ -21,7 +23,9 @@ const rule = "──────────────────────
 // paths baked in. `agent list` prints <dir>/list.json; `agent read <name>`
 // prints <dir>/screens/<name> and fails like herdr when there is none;
 // `agent prompt` appends the target and the text to <dir>/prompts and
-// answers with `reply`.
+// answers with `reply`; `agent get` finds the agents of list.json; a pane
+// has the tab `tab-<pane>`, and `tab close` writes the pane to
+// <dir>/closed, after which neither is found.
 func watchHerdr(dir, reply string) string {
 	return `#!/bin/sh
 if [ "$1" = --session ]; then shift 2; fi
@@ -43,6 +47,37 @@ case "$1 $2" in
     cat <<'REPLY'
 ` + reply + `
 REPLY
+    ;;
+  "status server")
+    echo '{"running":true}'
+    ;;
+  "agent get")
+    if grep -q "\"name\":\"$3\"" "$dir/list.json"; then
+      echo '{"result":{"agent":{"name":"'"$3"'"}}}'
+    else
+      echo '{"error":{"code":"agent_not_found","message":"no such agent"}}'
+    fi
+    ;;
+  "pane get")
+    if grep -qx "$3" "$dir/closed" 2>/dev/null; then
+      echo '{"error":{"code":"pane_not_found","message":"gone"}}'
+    else
+      echo '{"result":{"pane":{"tab_id":"tab-'"$3"'"}}}'
+    fi
+    ;;
+  "tab close")
+    echo "${3#tab-}" >> "$dir/closed"
+    echo '{"result":{}}'
+    ;;
+  "tab get")
+    if grep -qx "${3#tab-}" "$dir/closed" 2>/dev/null; then
+      echo '{"error":{"code":"tab_not_found","message":"gone"}}'
+    else
+      echo '{"result":{}}'
+    fi
+    ;;
+  "workspace list")
+    echo '{"result":{"workspaces":[]}}'
     ;;
   *)
     echo "fake herdr: unexpected command: $*" >&2
@@ -210,8 +245,8 @@ func TestWatchTellsALeadOnlyWhenTheSuspectsAmongItsWorkersChange(t *testing.T) {
 		t.Errorf("told %q and %q", prompts[0][0], prompts[1][0])
 	}
 	for i, want := range [][]string{
-		{"[FROM: cron]\n", "a-w2 (worker, job a, parent a-lead): no change for 1h00m", "Running the migration"},
-		{"[FROM: cron]\n", "b-w1 (worker, job b, parent b-lead): gone from herdr"},
+		{"[FROM: watch]\n", "a-w2 (worker, job a, parent a-lead): no change for 1h00m", "Running the migration"},
+		{"[FROM: watch]\n", "b-w1 (worker, job b, parent b-lead): gone from herdr"},
 	} {
 		for _, needle := range want {
 			if !strings.Contains(prompts[i][1], needle) {
@@ -281,6 +316,448 @@ func TestWatchTellsALeadOnlyWhenTheSuspectsAmongItsWorkersChange(t *testing.T) {
 func TestWatchRefusesABadScope(t *testing.T) {
 	w := newWatchWorld(t)
 	if out := w.run("", []string{"watch", "--scope", "a/b"}); out.code != 1 {
+		t.Errorf("%+v", out)
+	}
+}
+
+// t0 is the clock the thread tests start from, through FLEET_WATCH_NOW.
+const t0 int64 = 1_800_000_000
+
+// watchThreadWorld is a watch world with a fednet socket configured, a fake
+// fednet and a fake atb next to the fake herdr. The fake fednet logs its
+// argv to <dir>/fednet.log; `read-thread <key>` answers one message whose
+// ts is in <dir>/threads/<key with / as _> (exit 1 without one), and
+// `post` prints a msg_id; while <dir>/fednet-down exists it exits 4. The
+// fake atb logs its argv to <dir>/atb.log, and fails while <dir>/atb-down
+// exists.
+func watchThreadWorld(t *testing.T) *watchWorld {
+	t.Helper()
+	w := newWatchWorld(t)
+	fake := filepath.Join(w.dir, "fake-herdr")
+	fednet := `#!/bin/sh
+dir='` + w.dir + `'
+printf '%s\n' "$*" >> "$dir/fednet.log"
+[ -e "$dir/fednet-down" ] && { echo "hub unreachable" >&2; exit 4; }
+case "$2" in
+  read-thread)
+    for last; do :; done
+    f="$dir/threads/$(printf %s "$last" | tr / _)"
+    [ -f "$f" ] || { echo "no thread $last" >&2; exit 1; }
+    printf '{"messages":[{"ts":"1.000","user":"U1","text":"a"},{"ts":"%s","user":"U1","text":"b"}]}\n' "$(cat "$f")"
+    ;;
+  post) echo "msg-$(wc -l < "$dir/fednet.log" | tr -d ' ')" ;;
+esac
+`
+	atb := `#!/bin/sh
+printf '%s\n' "$*" >> '` + w.dir + `/atb.log'
+[ -e '` + w.dir + `/atb-down' ] && exit 1
+exit 0
+`
+	config := filepath.Join(w.dir, "home", ".config", "fleet")
+	for path, body := range map[string]string{filepath.Join(fake, "fednet"): fednet, filepath.Join(fake, "atb"): atb,
+		filepath.Join(config, scope+".json"): `{"fednet": {"socket": "/run/example/fednet.sock"}}`} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(w.dir, "threads"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	w.herdrList()
+	return w
+}
+
+// lastMessage sets the time of the newest message of thread `key`.
+func (w *watchWorld) lastMessage(key string, at int64) {
+	w.t.Helper()
+	path := filepath.Join(w.dir, "threads", strings.ReplaceAll(key, "/", "_"))
+	if err := os.WriteFile(path, []byte(fmt.Sprintf("%d.000100", at)), 0o644); err != nil {
+		w.t.Fatal(err)
+	}
+}
+
+func (w *watchWorld) exec(stmts ...string) {
+	w.t.Helper()
+	for _, stmt := range stmts {
+		if _, err := w.ledger.Exec(stmt); err != nil {
+			w.t.Fatalf("%s: %v", stmt, err)
+		}
+	}
+}
+
+func (w *watchWorld) query(q string) string {
+	w.t.Helper()
+	var got sql.NullString
+	if err := w.ledger.QueryRow(q).Scan(&got); err != nil {
+		w.t.Fatalf("%s: %v", q, err)
+	}
+	return got.String
+}
+
+// log is a fake's log, with `--body-file <path>` cut to `--body-file F`.
+func (w *watchWorld) log(name string) string {
+	data, _ := os.ReadFile(filepath.Join(w.dir, name))
+	fields := strings.Fields(strings.ReplaceAll(string(data), "\n", " | "))
+	for i := range fields {
+		if i > 0 && fields[i-1] == "--body-file" {
+			fields[i] = "F"
+		}
+	}
+	return strings.Join(fields, " ")
+}
+
+// watchAt runs watch with the clock at t0 + offset, expecting `code`.
+func (w *watchWorld) watchAt(offset time.Duration, code int) result {
+	w.t.Helper()
+	out := w.run("", []string{"watch", "--scope", scope}, fmt.Sprintf("FLEET_WATCH_NOW=%d", t0+int64(offset/time.Second)))
+	if out.code != code {
+		w.t.Fatalf("watch at t0+%v: %+v", offset, out)
+	}
+	return out
+}
+
+func TestWatchRemindsOfAThreadAgentsQuestionThenReclaimsTheSession(t *testing.T) {
+	w := watchThreadWorld(t)
+	w.exec("INSERT INTO threads (thread, slug, ticket, ticket_url, created_at) VALUES ('C1/1.0', 'c1-1-0', 'EX-1', 'https://linear.example.test/EX-1', 0)",
+		"INSERT INTO agents (name, role, thread, pane_id, state, started_at) VALUES ('thread-c1', 'thread', 'C1/1.0', 'p1', 'active', 0)",
+		fmt.Sprintf("INSERT INTO questions (job, thread, asked_by, text, state, asked_at) VALUES ('', 'C1/1.0', 'thread-c1', 'Which month?\nDetails.', 'pending', %d)", t0))
+	w.herdrList("thread-c1 idle 1")
+	w.lastMessage("C1/1.0", t0)
+	reminders := func() string { return w.query("SELECT reminders || ' ' || reminder_msg FROM questions") }
+
+	w.watchAt(29*time.Minute, 0)
+	if got := w.log("fednet.log"); strings.Contains(got, "post") {
+		t.Errorf("posted before 30m: %s", got)
+	}
+	w.watchAt(30*time.Minute, 0)
+	if got := w.log("fednet.log"); !strings.Contains(got, "client post -socket /run/example/fednet.sock -thread C1/1.0 -- "+
+		"Reminder 1 of 3: 1 question(s) here still wait for an answer, the first asked 30m ago: | - from thread-c1: Which month? |") {
+		t.Errorf("%s", got)
+	}
+	if got := reminders(); got != "1 msg-4" {
+		t.Errorf("reminders %q", got)
+	}
+	// Quiet for an hour, but a question waits: no notice to the agent.
+	w.watchAt(time.Hour, 0)
+	w.watchAt(3*time.Hour, 0)
+	w.watchAt(25*time.Hour, 0)
+	w.watchAt(48*time.Hour, 0)
+	if got := strings.Count(w.log("fednet.log"), "-- Reminder"); got != 3 {
+		t.Errorf("%d reminders: %s", got, w.log("fednet.log"))
+	}
+	if got := w.log("fednet.log"); !strings.Contains(got, "Reminder 2 of 3") || !strings.Contains(got, "Reminder 3 of 3") {
+		t.Errorf("%s", got)
+	}
+	if got := reminders(); !strings.HasPrefix(got, "3 msg-") {
+		t.Errorf("reminders %q", got)
+	}
+	if got := len(w.prompts()); got != 0 {
+		t.Errorf("%q", w.prompts())
+	}
+
+	// 72 hours: the question is closed and the agent asked to end.
+	w.watchAt(72*time.Hour, 0)
+	if got := w.query("SELECT state FROM questions"); got != "closed" {
+		t.Errorf("question %s", got)
+	}
+	prompts := w.prompts()
+	if len(prompts) != 1 || prompts[0][0] != "thread-c1" {
+		t.Fatalf("%q", prompts)
+	}
+	for _, want := range []string{"[FROM: watch]\n", "rule `thread question timeout`", "no answer for 3d00h",
+		"Which month?", "--asked-to-end", "within 10m"} {
+		if !strings.Contains(prompts[0][1], want) {
+			t.Errorf("%q missing:\n%s", want, prompts[0][1])
+		}
+	}
+	if got := w.query("SELECT reclaim_at FROM agents WHERE name = 'thread-c1'"); got != fmt.Sprint(t0+72*3600+600) {
+		t.Errorf("reclaim_at %s", got)
+	}
+	w.watchAt(72*time.Hour+9*time.Minute, 0)
+	if got := w.log("atb.log"); got != "" {
+		t.Errorf("atb before the grace ran out: %s", got)
+	}
+	// Ten minutes later it is still live: fleet ends the session itself.
+	out := w.watchAt(72*time.Hour+10*time.Minute, 0)
+	if got := w.log("atb.log"); got != "linear comment EX-1 --body-file F | linear release EX-1 --agent thread-c1 --reason done --done |" {
+		t.Errorf("atb: %s", got)
+	}
+	if got := w.log("fednet.log"); !strings.Contains(got, "-footer -- 会话长时间没有动静，已被回收，再说话会重新开始 · [EX-1](https://linear.example.test/EX-1)") {
+		t.Errorf("fednet: %s", got)
+	}
+	if got := w.query("SELECT state FROM agents WHERE name = 'thread-c1'"); got != "ended" {
+		t.Errorf("row %s", got)
+	}
+	if data, _ := os.ReadFile(filepath.Join(w.dir, "closed")); string(data) != "p1\n" {
+		t.Errorf("closed %q", data)
+	}
+	if !strings.Contains(out.stdout, "reclaimed the session of thread-c1 on thread C1/1.0") {
+		t.Errorf("%s", out.stdout)
+	}
+	if got := len(w.prompts()); got != 1 {
+		t.Errorf("%q", w.prompts())
+	}
+}
+
+func TestWatchAsksAboutAQuietThreadOncePerSpell(t *testing.T) {
+	w := watchThreadWorld(t)
+	w.exec("INSERT INTO threads (thread, slug, created_at) VALUES ('C2/2.0', 'c2-2-0', 0)",
+		"INSERT INTO agents (name, role, thread, pane_id, state, started_at) VALUES ('thread-c2', 'thread', 'C2/2.0', 'p2', 'active', 0)",
+		"INSERT INTO jobs (job, parent_issue, lead_cwd, home_thread, state, started_at) VALUES ('j', 'EX-9', '/c', 'C2/2.0', 'open', 0)")
+	w.insert(watchRow{name: "j-lead", role: "lead", job: "j", parent: "thread-c2"})
+	w.insert(watchRow{name: "j-w", role: "worker", job: "j", parent: "j-lead"})
+	w.herdrList("thread-c2 idle 1", "j-lead working 4")
+	w.screen("j-lead", claude("⏺ Planning", "1s", "2hr 59m"))
+	w.lastMessage("C2/2.0", t0)
+
+	w.watchAt(29*time.Minute, 0)
+	// The worker gone from herdr goes to its lead; the thread agent is not asked yet.
+	if prompts := w.prompts(); len(prompts) != 1 || prompts[0][0] != "j-lead" {
+		t.Fatalf("%q", prompts)
+	}
+	w.watchAt(30*time.Minute, 0)
+	prompts := w.prompts()
+	if len(prompts) != 2 || prompts[1][0] != "thread-c2" {
+		t.Fatalf("%q", prompts)
+	}
+	for _, want := range []string{"[FROM: watch]\n", "rule `thread quiet, jobs open`", "no new message for 30m",
+		"- job j (parent EX-9): lead j-lead working, unchanged for 1m; suspect workers: j-w"} {
+		if !strings.Contains(prompts[1][1], want) {
+			t.Errorf("%q missing:\n%s", want, prompts[1][1])
+		}
+	}
+	// The same quiet spell: not asked again.
+	w.watchAt(2*time.Hour, 0)
+	if got := len(w.prompts()); got != 2 {
+		t.Fatalf("%q", w.prompts())
+	}
+	// A new message starts the count again.
+	w.lastMessage("C2/2.0", t0+3*3600)
+	w.watchAt(3*time.Hour+29*time.Minute, 0)
+	w.watchAt(3*time.Hour+30*time.Minute, 0)
+	if prompts := w.prompts(); len(prompts) != 3 || !strings.Contains(prompts[2][1], "rule `thread quiet, jobs open`") {
+		t.Fatalf("%q", prompts)
+	}
+	// The job ended: the live agent is asked once why it has not ended.
+	w.exec("UPDATE jobs SET state = 'ended', outcome = 'done'", "UPDATE agents SET state = 'ended' WHERE job = 'j'")
+	w.lastMessage("C2/2.0", t0+4*3600)
+	w.watchAt(4*time.Hour+30*time.Minute, 0)
+	w.watchAt(5*time.Hour, 0)
+	prompts = w.prompts()
+	if len(prompts) != 4 || prompts[3][0] != "thread-c2" {
+		t.Fatalf("%q", prompts)
+	}
+	for _, want := range []string{"rule `thread quiet, nothing open`", "Why has it not ended", "no message for 3d00h"} {
+		if !strings.Contains(prompts[3][1], want) {
+			t.Errorf("%q missing:\n%s", want, prompts[3][1])
+		}
+	}
+	// Three days without a message: the session is reclaimed.
+	w.watchAt(76*time.Hour, 0)
+	prompts = w.prompts()
+	if len(prompts) != 5 || !strings.Contains(prompts[4][1], "rule `thread idle`: thread C2/2.0 has had no message for 3d00h") {
+		t.Fatalf("%q", prompts)
+	}
+	if got := w.query("SELECT reclaim_at FROM agents WHERE name = 'thread-c2'"); got != fmt.Sprint(t0+76*3600+600) {
+		t.Errorf("reclaim_at %s", got)
+	}
+}
+
+func TestWatchEndsAJobWhoseLeadsQuestionGoesUnanswered(t *testing.T) {
+	w := watchThreadWorld(t)
+	w.exec("INSERT INTO threads (thread, slug, created_at) VALUES ('C3/3.0', 'c3-3-0', 0)",
+		"INSERT INTO jobs (job, lead_cwd, home_thread, state, started_at) VALUES ('k', '/c', 'C3/3.0', 'open', 0)",
+		"INSERT INTO jobs (job, lead_cwd, home_thread, state, started_at) VALUES ('m', '/c', 'C3/3.0', 'open', 0)",
+		fmt.Sprintf("INSERT INTO questions (job, thread, asked_by, text, state, asked_at) VALUES "+
+			"('k', 'C3/3.0', 'k-lead', 'Merge it?', 'pending', %d), ('m', 'C3/3.0', 'm-lead', 'Which host?', 'pending', %d)", t0, t0+3600))
+	w.insert(watchRow{name: "k-lead", role: "lead", job: "k", parent: "thread-c3"})
+	w.exec("UPDATE agents SET issue = 'EX-20' WHERE name = 'k-lead'")
+	w.herdrList("k-lead idle 2")
+	w.screen("k-lead", claude("⏺ Waiting", "1s", "2hr 59m"))
+	w.lastMessage("C3/3.0", t0+3600)
+
+	// Watch was down for three days: one reminder, the last one, listing both.
+	w.watchAt(72*time.Hour, 0)
+	if got := w.log("fednet.log"); !strings.Contains(got, "Reminder 3 of 3: 2 question(s) here still wait for an answer, the first asked 3d00h ago: | - from k-lead: Merge it? | - from m-lead: Which host? |") {
+		t.Errorf("%s", got)
+	}
+	prompts := w.prompts()
+	if len(prompts) != 1 || prompts[0][0] != "k-lead" {
+		t.Fatalf("%q", prompts)
+	}
+	for _, want := range []string{"[FROM: watch]\n", "rule `lead question timeout`", "no answer for 3d00h", "Merge it?",
+		"Job k is ended by force at", "30m from now", "fleet job end --report-file <file> --abandon"} {
+		if !strings.Contains(prompts[0][1], want) {
+			t.Errorf("%q missing:\n%s", want, prompts[0][1])
+		}
+	}
+	w.watchAt(72*time.Hour+29*time.Minute, 0)
+	if got := w.query("SELECT state FROM jobs WHERE job = 'k'"); got != "open" {
+		t.Errorf("job k %s", got)
+	}
+	out := w.watchAt(72*time.Hour+30*time.Minute, 0)
+	if got := w.query("SELECT state || ' ' || outcome FROM jobs WHERE job = 'k'"); got != "ended abandoned" {
+		t.Errorf("job k %s", got)
+	}
+	if got := w.query("SELECT group_concat(asked_by || ' ' || state, ', ') FROM questions"); got != "k-lead closed, m-lead pending" {
+		t.Errorf("questions: %s", got)
+	}
+	if got := w.log("fednet.log"); !strings.Contains(got, "-- Job k was ended by force: its lead's question had no answer for 3d00h, "+
+		"and the job was not ended within 30m of the lead being told. Linear steps not done: | - comment the report on work order EX-20 "+
+		"| - release work order EX-20 (agent k-lead) |") {
+		t.Errorf("%s", got)
+	}
+	if !strings.Contains(out.stdout, "reclaimed job k") {
+		t.Errorf("%s", out.stdout)
+	}
+	// m's question, an hour younger, is next; nobody else is told.
+	if got := len(w.prompts()); got != 1 {
+		t.Errorf("%q", w.prompts())
+	}
+	// An answer after the lead was told: the deadline is dropped.
+	w.watchAt(73*time.Hour, 0)
+	if got := w.query("SELECT reclaim_at FROM jobs WHERE job = 'm'"); got == "" {
+		t.Fatal("m's lead was not given a deadline")
+	}
+	// A person answered, so the thread is not quiet either.
+	w.exec("UPDATE questions SET state = 'answered' WHERE job = 'm'")
+	w.lastMessage("C3/3.0", t0+74*3600-60)
+	w.watchAt(74*time.Hour, 0)
+	if got := w.query("SELECT coalesce(reclaim_at, 'none') || ' ' || state FROM jobs WHERE job = 'm'"); got != "none open" {
+		t.Errorf("job m %s", got)
+	}
+}
+
+func TestWatchEndsTheSessionOfAThreadAgentGoneFromHerdr(t *testing.T) {
+	w := watchThreadWorld(t)
+	w.exec("INSERT INTO threads (thread, slug, ticket, ticket_url, created_at) VALUES ('C4/4.0', 'c4-4-0', 'EX-4', 'https://linear.example.test/EX-4', 0)",
+		"INSERT INTO agents (name, role, thread, pane_id, state, started_at) VALUES ('thread-c4', 'thread', 'C4/4.0', 'p4', 'active', 0)")
+	w.lastMessage("C4/4.0", t0)
+	out := w.watchAt(time.Minute, 0)
+	if got := w.log("atb.log"); got != "linear release EX-4 --agent thread-c4 --reason the session ended abnormally: its agent is gone from herdr |" {
+		t.Errorf("atb: %s", got)
+	}
+	if got := w.log("fednet.log"); !strings.Contains(got, "-footer -- 会话意外中断了，再说话会重新开始 · [EX-4](https://linear.example.test/EX-4)") {
+		t.Errorf("fednet: %s", got)
+	}
+	if got := w.query("SELECT state FROM agents WHERE name = 'thread-c4'"); got != "ended" {
+		t.Errorf("row %s", got)
+	}
+	if !strings.Contains(out.stdout, "ended the session of thread-c4 on thread C4/4.0: its agent is gone from herdr") {
+		t.Errorf("%s", out.stdout)
+	}
+}
+
+func TestWatchSkipsAThreadFednetCannotGiveAndStopsWhenFednetIsDown(t *testing.T) {
+	w := watchThreadWorld(t)
+	// C5's session ended with its question pending, and fednet has no C5.
+	w.exec("INSERT INTO agents (name, role, thread, pane_id, state, started_at) VALUES ('thread-c5', 'thread', 'C5/5.0', 'p5', 'ended', 0)",
+		"INSERT INTO questions (job, thread, asked_by, text, state, asked_at) VALUES ('', 'C5/5.0', 'thread-c5', 'Q?', 'pending', 0)")
+	w.insert(watchRow{name: "n-lead", role: "lead", job: "n", parent: "thread-1"})
+	w.insert(watchRow{name: "n-w", role: "worker", job: "n", parent: "n-lead"})
+	w.herdrList("n-lead idle 1")
+	w.screen("n-lead", claude("⏺ Waiting", "1s", "2hr 59m"))
+
+	// fednet unreachable: nothing done.
+	if err := os.WriteFile(filepath.Join(w.dir, "fednet-down"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := w.watchAt(time.Minute, 5)
+	if !strings.Contains(out.stderr, "fednet client read-thread") || len(w.prompts()) != 0 || w.suspects() != "" {
+		t.Errorf("%+v %q %q", out, w.prompts(), w.suspects())
+	}
+	// fednet answers, but not for C5: the thread is skipped, the rest runs.
+	if err := os.Remove(filepath.Join(w.dir, "fednet-down")); err != nil {
+		t.Fatal(err)
+	}
+	out = w.watchAt(2*time.Minute, 5)
+	if !strings.Contains(out.stderr, "thread C5/5.0 skipped: fednet client read-thread C5/5.0 failed (exit status: 1): no thread C5/5.0") {
+		t.Errorf("%+v", out)
+	}
+	if prompts := w.prompts(); len(prompts) != 1 || prompts[0][0] != "n-lead" || w.suspects() != "n-w" {
+		t.Errorf("%q %q", prompts, w.suspects())
+	}
+}
+
+func TestWatchPostsNothingWhenItCannotStartAThreadAgent(t *testing.T) {
+	w := watchThreadWorld(t)
+	checkout := filepath.Join(w.dir, "home", "dev", "r")
+	w.exec("INSERT INTO threads (thread, slug, mapping, cwd, created_at) VALUES ('C6/6.0', 'c6-6-0', 'repo-r', '"+checkout+"', 0)",
+		"INSERT INTO jobs (job, lead_cwd, home_thread, state, started_at) VALUES ('o', '/c', 'C6/6.0', 'open', 0)")
+	if err := os.WriteFile(filepath.Join(w.dir, "home", ".config", "fleet", scope+".json"),
+		[]byte(`{"linear": {"team": "EX"}, "fednet": {"socket": "/run/example/fednet.sock"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	w.lastMessage("C6/6.0", t0)
+	// No checkout on this machine, then Linear down: no agent, no post.
+	out := w.watchAt(30*time.Minute, 5)
+	if !strings.Contains(out.stderr, "is not checked out at") {
+		t.Errorf("%+v", out)
+	}
+	if err := os.MkdirAll(checkout, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(w.dir, "atb-down"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out = w.watchAt(31*time.Minute, 5)
+	if !strings.Contains(out.stderr, "Linear is unavailable") || !strings.Contains(w.log("atb.log"), "linear create --team EX") {
+		t.Errorf("%+v %s", out, w.log("atb.log"))
+	}
+	if got := w.log("fednet.log"); strings.Contains(got, "client post") {
+		t.Errorf("posted: %s", got)
+	}
+	if got := w.query("SELECT quiet_asked || ' ' || sessions FROM threads"); got != " 0" {
+		t.Errorf("thread row %q", got)
+	}
+}
+
+func TestWatchDoesNotSuspectABlockedAgent(t *testing.T) {
+	w := newWatchWorld(t)
+	anHourAgo := db.Now() - 3600
+	blocked := "Do you want to proceed?\n❯ 1. Yes\n"
+	w.insert(watchRow{name: "b-lead", role: "lead", job: "b", parent: "thread-1", startedAt: anHourAgo})
+	w.insert(watchRow{name: "b-w1", role: "worker", job: "b", parent: "b-lead", startedAt: anHourAgo,
+		lastStatus: "blocked", lastSeq: 3, lastScreenHash: cmd.Hash(cmd.FilterClaudeScreen(blocked)), lastChangeAt: anHourAgo})
+	// The people were already asked about its screen, so the unblocking
+	// (judge/unblock.sh) waits for them and does nothing here.
+	if _, err := w.ledger.Exec("INSERT INTO questions (job, thread, asked_by, text, state, asked_at) " +
+		"SELECT 'b', 'C1/1.0', 'unblock-' || id, 'what to press?', 'pending', 0 FROM agents WHERE name = 'b-w1'"); err != nil {
+		t.Fatal(err)
+	}
+	w.herdrList("b-lead working 2", "b-w1 blocked 3")
+	w.screen("b-lead", claude("⏺ Planning", "1s", "2hr 59m"))
+	w.screen("b-w1", blocked)
+	if out := w.run("", []string{"watch", "--scope", scope}); out.code != 0 || w.suspects() != "" || len(w.prompts()) != 0 {
+		t.Errorf("%+v %q %q", out, w.suspects(), w.prompts())
+	}
+}
+
+func TestWatchRunsOnceAtATimeAndChecksItsClock(t *testing.T) {
+	w := newWatchWorld(t)
+	w.herdrList()
+	if out := w.run("", []string{"watch", "--scope", scope}, "FLEET_WATCH_NOW=soon"); out.code != 1 ||
+		!strings.Contains(out.stderr, "FLEET_WATCH_NOW") {
+		t.Errorf("%+v", out)
+	}
+	lock, err := os.OpenFile(filepath.Join(w.dir, "home", ".local", "state", "fleet", scope+".watch.lock"), os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatal(err)
+	}
+	if out := w.run("", []string{"watch", "--scope", scope}); out.code != 1 || !strings.Contains(out.stderr, "another fleet watch is running") {
+		t.Errorf("%+v", out)
+	}
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_UN); err != nil {
+		t.Fatal(err)
+	}
+	if out := w.run("", []string{"watch", "--scope", scope}); out.code != 0 {
 		t.Errorf("%+v", out)
 	}
 }

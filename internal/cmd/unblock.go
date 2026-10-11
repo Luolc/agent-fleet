@@ -16,11 +16,9 @@ import (
 	"time"
 
 	"github.com/Luolc/agent-fleet/internal/atb"
-	"github.com/Luolc/agent-fleet/internal/config"
 	"github.com/Luolc/agent-fleet/internal/db"
 	"github.com/Luolc/agent-fleet/internal/exit"
 	"github.com/Luolc/agent-fleet/internal/fednet"
-	"github.com/Luolc/agent-fleet/internal/herdr"
 	"github.com/Luolc/agent-fleet/internal/identity"
 )
 
@@ -155,40 +153,26 @@ func (r stopRow) who() string {
 
 // unblocking is one watch run's look at the stopped agents.
 type unblocking struct {
-	h       *herdr.Herdr
-	conn    *sql.DB
-	scope   string
-	cfg     *config.Scope
+	*watchRun
 	inHerdr map[string]InHerdr
-	now     int64
 	// dir is where helpers run and write their questions.
-	dir  string
-	code exit.Code
+	dir string
 }
 
-// Unblock looks at every live agent stopped at a screen: an active one
+// unblock looks at every live agent stopped at a screen: an active one
 // herdr reports blocked, or one whose start was left at a screen for
 // startGraceSecs. It first closes the helpers that are done. A failure
-// for one agent is printed and the others are still looked at; the code
-// is the first that was not ok.
-func Unblock(h *herdr.Herdr, conn *sql.DB, inHerdr map[string]InHerdr, now int64) (exit.Code, error) {
-	scope, err := identity.Scope()
+// for one agent is recorded on the run and the others are still looked
+// at, while the run has time.
+func (r *watchRun) unblock(inHerdr map[string]InHerdr) error {
+	ledger, err := db.Path(r.scope)
 	if err != nil {
-		return 0, err
+		return err
 	}
-	cfg, err := config.LoadScope(scope)
+	u := &unblocking{watchRun: r, inHerdr: inHerdr, dir: strings.TrimSuffix(ledger, ".db") + "-unblock"}
+	rows, err := stopRows(r.conn)
 	if err != nil {
-		return 0, err
-	}
-	ledger, err := db.Path(scope)
-	if err != nil {
-		return 0, err
-	}
-	u := &unblocking{h: h, conn: conn, scope: scope, cfg: cfg, inHerdr: inHerdr, now: now,
-		dir: strings.TrimSuffix(ledger, ".db") + "-unblock", code: exit.Ok}
-	rows, err := stopRows(conn)
-	if err != nil {
-		return 0, err
+		return err
 	}
 	live := map[string]stopRow{}
 	for _, row := range rows {
@@ -199,13 +183,19 @@ func Unblock(h *herdr.Herdr, conn *sql.DB, inHerdr map[string]InHerdr, now int64
 		if row.Role != identity.Unblock.String() {
 			continue
 		}
+		if u.outOfTime() {
+			return nil
+		}
 		busy, err := u.helper(row, live)
-		u.failed(row.Name, err)
+		u.failedFor(row.Name, err)
 		helped[row.Parent] = busy || err != nil
 	}
 	for _, row := range rows {
 		if row.Role == identity.Unblock.String() {
 			continue
+		}
+		if u.outOfTime() {
+			return nil
 		}
 		screen, stopped, err := u.stopped(row)
 		if err == nil && stopped {
@@ -215,24 +205,15 @@ func Unblock(h *herdr.Herdr, conn *sql.DB, inHerdr map[string]InHerdr, now int64
 			}
 			err = u.handle(row, screen)
 		}
-		u.failed(row.Name, err)
+		u.failedFor(row.Name, err)
 	}
-	return u.code, nil
+	return nil
 }
 
-// failed prints a failure for one agent and keeps the first code.
-func (u *unblocking) failed(name string, err error) {
-	if err == nil {
-		return
-	}
-	fmt.Fprintf(os.Stderr, "fleet: unblock %s: %v\n", name, err)
-	code := exit.Environment
-	var failure *exit.Failure
-	if errors.As(err, &failure) {
-		code = failure.Code
-	}
-	if u.code == exit.Ok {
-		u.code = code
+// failedFor records a failure for the stopped agent or helper `name`.
+func (u *unblocking) failedFor(name string, err error) {
+	if err != nil {
+		u.failed(fmt.Errorf("unblock %s: %w", name, err))
 	}
 }
 
@@ -421,7 +402,7 @@ func (u *unblocking) tell(row stopRow, what string) {
 	} else {
 		text += "\nNothing to do on your side unless it stays stopped: the screen is not yours to answer.\n"
 	}
-	message, err := WithHeader(sender, text)
+	message, err := WithHeader(watchSender, text)
 	if err == nil {
 		var code exit.Code
 		code, err = Deliver(u.h, row.Parent, message)
@@ -519,7 +500,7 @@ func (u *unblocking) startHelper(row stopRow, helper, screen string) error {
 		return failed(err, 0)
 	}
 	created = append(created, fmt.Sprintf("tab %s (%s)", helper, place.TabID))
-	code, err := startAndDeliver(u.h, u.conn, id, place, u.dir, nil, nil, sender, body, &created)
+	code, err := startAndDeliver(u.h, u.conn, id, place, u.dir, nil, nil, watchSender, body, &created)
 	if err != nil || code != exit.Ok {
 		return failed(err, code)
 	}

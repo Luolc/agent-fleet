@@ -37,7 +37,7 @@ const longAbout = "Runs and coordinates coding agents through herdr.\n\n" +
 	"  5  environment error (herdr, atb, git or the database failed)"
 
 const scopeHelp = "Scope to act in: its ledger, settings and herdr session fleet-<NAME>. " +
-	"Default: FLEET_SCOPE, which every agent has, then `main`. Use it from cron or a plain shell"
+	"Default: FLEET_SCOPE, which every agent has, then `main`. Use it from a timer or a plain shell"
 
 const topUsage = "Usage: fleet [OPTIONS] <COMMAND>"
 
@@ -132,7 +132,7 @@ var threadEndHelp = cmd.ThreadEndLongAbout + "\n\n" + threadEndUsage + `
 Options:
       --summary-file <PATH>  The session's summary, written to the thread ticket and given to the next session
       --force                Finish the local cleanup even when a Linear step keeps failing; the steps left are printed
-      --asked-to-end         End even with a question pending or a job open; only when the people in the thread asked you to end
+      --asked-to-end         End even with a question pending or a job open; only when the people in the thread asked you to end, or fleet watch reclaims the session
       --scope <NAME>         ` + scopeHelp + `
   -h, --help                 Print help
 `

@@ -4,8 +4,10 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Luolc/agent-fleet/internal/exit"
 )
@@ -129,6 +131,42 @@ func TestScopePathsAndChannelsRefuseWhatCannotWork(t *testing.T) {
 	} {
 		if _, err := ParseScope([]byte(body), "/home/u"); err == nil || !strings.Contains(err.Error(), says) {
 			t.Errorf("%s: %v, want it to say %s", body, err, says)
+		}
+	}
+}
+
+func TestWatchLimitsAreReadAndCheckedInBothFiles(t *testing.T) {
+	c, err := Parse([]byte(`{"watch": {"worker_stale": "5m"}}`))
+	if err != nil || c.Watch.WorkerStale != 5*time.Minute || c.Watch.LeadQuestion != 72*time.Hour {
+		t.Errorf("%+v, %v", c, err)
+	}
+	s, err := ParseScope([]byte(`{"watch": {"lead_question": "48h", "thread_quiet": "1h", "reminders": ["1h", "2h"]}}`), "/home/u")
+	if err != nil || s.Watch.LeadQuestion != 48*time.Hour || s.Watch.ThreadQuiet != time.Hour ||
+		!slices.Equal(s.Watch.Reminders, []time.Duration{time.Hour, 2 * time.Hour}) || s.Watch.ThreadIdle != 72*time.Hour {
+		t.Errorf("%+v, %v", s, err)
+	}
+	if !slices.Equal(DefaultWatch.Reminders, []time.Duration{30 * time.Minute, 3 * time.Hour, 24 * time.Hour}) {
+		t.Errorf("%v", DefaultWatch.Reminders)
+	}
+	for body, says := range map[string]string{
+		`{"watch": {"thread_quiet": "1h"}}`:   `"thread_quiet"`,
+		`{"watch": {"worker_stale": "soon"}}`: "watch.worker_stale: must be a positive duration",
+		`{"watch": {"worker_stale": 600}}`:    "watch.worker_stale",
+		`{"watch": {"lead_question": null}}`:  "watch.lead_question: must not be null",
+		`{"watch": {"lead_question": "-1h"}}`: "watch.lead_question: must be a positive duration",
+	} {
+		if _, err := Parse([]byte(body)); err == nil || !strings.Contains(err.Error(), says) {
+			t.Errorf("%s: %v, want it to name %s", body, err, says)
+		}
+	}
+	for body, says := range map[string]string{
+		`{"watch": {"reminders": ["3h", "30m"]}}`: "watch.reminders: must be in increasing order",
+		`{"watch": {"reminders": "30m"}}`:         "watch.reminders",
+		`{"watch": {"thread_idle": "0s"}}`:        "watch.thread_idle: must be a positive duration",
+		`{"watch": {"stale": "1h"}}`:              `"stale"`,
+	} {
+		if _, err := ParseScope([]byte(body), "/home/u"); err == nil || !strings.Contains(err.Error(), says) {
+			t.Errorf("%s: %v, want it to name %s", body, err, says)
 		}
 	}
 }
