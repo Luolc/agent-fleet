@@ -49,13 +49,26 @@ const (
 		"thread fednet answers it cannot give (its exit 1 or 2): that thread's rules are skipped, " +
 		"saying so, and the exit is 5. Then it acts; " +
 		"whatever it sends an agent goes through the same path as `fleet send`, headed `[FROM: " +
-		"watch]`, naming the rule and its evidence. It never calls a model and never sends keys.\n\n" +
+		"watch]`, naming the rule and its evidence. It never calls a model, and sends keys only " +
+		"as Screens says.\n\n" +
 		"Jobs: a lead's or worker's status, `state_change_seq` and screen hash (the screen with the " +
 		"spinner line, the input box and the footer stripped) are recorded; an agent is a suspect " +
 		"when all three have been unchanged for `worker_stale` (10m), or when it is gone from " +
 		"herdr; an agent blocked at a prompt is not. Each lead is told when the set of suspects " +
 		"among its workers changes; a lead blocked or gone is told again next run. A lead's own " +
 		"state goes into the quiet-thread notice below.\n\n" +
+		"Screens: then every live agent stopped at a screen (herdr status blocked, or a start " +
+		"left at a screen for 10 minutes), thread agents included. The folder-trust dialog for " +
+		"the agent's own directory is answered as a start answers it, and nobody is told. A usage " +
+		"limit, a model switch, a usage reset or a purchase is never pressed: the people in the " +
+		"agent's home thread are asked, once. Any other screen gets a helper agent " +
+		"(`unblock-<row id>`, in the `threads` workspace), one at a time and at most 3 per agent, " +
+		"which presses keys as fleet's guidance says or writes a question that the next run asks " +
+		"the people; no helper is started while that question waits for an answer. Questions about " +
+		"a screen are reminded of like the others, but never time out. A worker's lead " +
+		"is told when a helper starts or the people are asked, and so is the starter of a lead or " +
+		"worker whose start stopped at the screen. Helpers that finished their turn, or worked for " +
+		"30 minutes, are closed.\n\n" +
 		"Threads (only with a fednet socket): a live thread agent gone from herdr has its session " +
 		"ended as abnormal (its ticket released without --done, a closing line saying the session " +
 		"broke off). A thread with no message for `thread_idle` (72h) has its live session " +
@@ -185,6 +198,9 @@ func Watch(h *herdr.Herdr) (exit.Code, error) {
 	}
 	r := &watchRun{h: h, conn: conn, cfg: cfg, scope: scope, now: now, start: start}
 	if err := r.jobs(all); err != nil {
+		return 0, err
+	}
+	if err := r.unblock(inHerdr); err != nil {
 		return 0, err
 	}
 	if !on {

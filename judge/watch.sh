@@ -85,6 +85,10 @@ INSERT INTO agents (name, role, job, parent, state, started_at) VALUES
     ('v-lead', 'lead', 'v', 'thread-1', 'active', $now),
     ('fake', 'worker', 'v', 'v-lead', 'active', $now);
 SQL
+# The people were already asked about fake's screen, so watch leaves the
+# screen to them (unblock.sh is the suite of the screens).
+sqlite3 "$DB" "INSERT INTO questions (job, thread, asked_by, text, state, asked_at)
+    SELECT 'v', 'C0V/1.0', 'unblock-' || id, 'what to press?', 'pending', $now FROM agents WHERE name = 'fake' AND state != 'ended'"
 watch 33 >/home/agent/watch4.out 2>&1; rc=$?
 check "watch: fourth run exit 0" 0 "$rc"
 watch 44 >/home/agent/watch5.out 2>&1; rc=$?

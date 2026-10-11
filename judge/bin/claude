@@ -8,8 +8,11 @@
 # The screen is redrawn in full at every change (transcript, then the state's
 # footer), like a TUI, so no stale spinner line can keep herdr in `working`.
 #
-# A message that contains BLOCK draws the permission prompt and waits for one
-# more line. While ~/.fake-claude/stall exists, a message is shown without ever
+# A message whose last line contains BLOCK draws the permission prompt and
+# waits for one more line; LIMIT draws a usage-limit menu the same way;
+# TRUST draws the folder-trust prompt for the cwd and answers keys as at a
+# start (below). Only the last non-empty line counts, so a message that
+# quotes a stopped agent's screen does not stop the agent reading it. While ~/.fake-claude/stall exists, a message is shown without ever
 # entering working, which makes `herdr agent prompt --wait` report
 # agent_prompt_stalled (the tool's own header line comes first, so the message
 # text cannot carry the trigger).
@@ -39,6 +42,11 @@ working() {
   printf '\033]0;\xe2\xa0\x8b Working\007'
   draw
   printf '\n\xe2\x9c\xbb Thinking\xe2\x80\xa6 (2s \xc2\xb7 esc to interrupt)\n'
+}
+limit() {
+  printf '\033]0;\xe2\x9c\xb3 Claude Code\007'
+  draw
+  printf '\n%s\n You have hit your usage limit \xc2\xb7 resets 3pm (UTC)\n\n \xe2\x9d\xaf 1. Stop and wait for limit to reset\n   2. Request extra usage\n\n Enter to confirm \xc2\xb7 Esc to cancel\n' "$rule"
 }
 blocked() {
   # The title must not carry the spinner: osc_title_working outranks every
@@ -99,9 +107,8 @@ if [ -e "$fake/unknown-screen" ]; then
   printf ' Choose the text style that looks best with your terminal\n\n \xe2\x9d\xaf 1. Dark mode\n   2. Light mode\n'
   while :; do sleep 60; done
 fi
-if [ -e "$fake/trust" ] && ! grep -qxF "$(pwd)" "$fake/trusted" 2>/dev/null; then
+trust_dialog() {
   cursor=0
-  named=$(cat "$fake/trust-path" 2>/dev/null || pwd)
   trust_screen() {
     local no='  ' yes='  '
     if [ "$cursor" = 0 ]; then no=$'\xe2\x9d\xaf '; else yes=$'\xe2\x9d\xaf '; fi
@@ -123,6 +130,10 @@ if [ -e "$fake/trust" ] && ! grep -qxF "$(pwd)" "$fake/trusted" 2>/dev/null; the
       '') [ "$cursor" = 1 ] || exit 1; pwd >> "$fake/trusted"; break ;;
     esac
   done
+}
+if [ -e "$fake/trust" ] && ! grep -qxF "$(pwd)" "$fake/trusted" 2>/dev/null; then
+  named=$(cat "$fake/trust-path" 2>/dev/null || pwd)
+  trust_dialog
 fi
 idle
 while IFS= read -r line; do
@@ -151,8 +162,12 @@ while IFS= read -r line; do
   esac
   working
   sleep "${FAKE_CLAUDE_WORK_SECS:-2}"
-  case "$line" in
+  last=$line
+  while [ "${last%$'\n'}" != "$last" ]; do last=${last%$'\n'}; done
+  case "${last##*$'\n'}" in
     *BLOCK*) blocked; read -r _ ;;
+    *LIMIT*) limit; read -r _ ;;
+    *TRUST*) named=$(pwd); trust_dialog ;;
   esac
   transcript+=("" "$(printf '\xe2\x8f\xba fake reply to: %s' "${line##*$'\n'}")")
   idle
