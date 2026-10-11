@@ -58,7 +58,7 @@ replaced is behind the new built-in one.
 To replace a prompt, start from a copy of the built-in one:
 
 ```sh
-cd ~/.config/fleet && mkdir -p prompts
+mkdir -p ~/.config/fleet/prompts && cd ~/.config/fleet
 fleet prompt show lead --builtin > prompts/lead.base.md
 cp prompts/lead.base.md prompts/lead.md   # then edit prompts/lead.md
 ```
