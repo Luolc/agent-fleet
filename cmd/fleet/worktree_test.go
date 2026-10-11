@@ -314,6 +314,18 @@ func TestWorktreeFailsWith5WhenGitFails(t *testing.T) {
 	}
 }
 
+func TestWorktreeSaysGitCannotRunWhenGitIsMissing(t *testing.T) {
+	w := newWorld(t)
+	w.origin()
+	// The last PATH wins: one with no git on it.
+	out := w.run("", []string{"worktree", dataset, "--branch", "fix/foo"},
+		"FLEET_AGENT=item-1-a", "FLEET_ROLE=worker", "FLEET_PARENT=item-1-lead", "FLEET_SCOPE="+scope,
+		"FLEET_JOB=item-1", "PATH="+t.TempDir())
+	if out.code != 5 || out.stdout != "" || !strings.Contains(out.stderr, "cannot run git") {
+		t.Errorf("%+v, want exit 5 saying git cannot run", out)
+	}
+}
+
 // closeHerdr is a fake herdr with no workspaces and the given agents.
 func (w *world) closeHerdr(agents string) {
 	w.t.Helper()
