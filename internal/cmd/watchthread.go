@@ -509,7 +509,7 @@ func (r *watchRun) postReminder(t *watchedThread) error {
 	if err != nil {
 		return exit.Database(err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	for _, stmt := range []struct {
 		query string
 		args  []any
