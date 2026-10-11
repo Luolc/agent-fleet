@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -127,8 +128,13 @@ func worktreeAdd(detach *string, checkout, path, branch string) ([]string, error
 		}
 		return []string{"-C", checkout, "worktree", "add", "--detach", path, base}, nil
 	}
-	if _, err := Git("check-ref-format", "--branch", branch); err != nil {
+	// Only a git that ran and exited non-zero judged the name; any other
+	// failure means git cannot run.
+	var exitErr *exec.ExitError
+	if err := exec.Command("git", "check-ref-format", "--branch", branch).Run(); errors.As(err, &exitErr) {
 		return nil, exit.Refusedf("%q is not a valid branch name", branch)
+	} else if err != nil {
+		return nil, exit.Environmentf("cannot run git: %v", err)
 	}
 	if _, err := Git("-C", checkout, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch); err == nil {
 		return nil, exit.Refusedf("branch %s already exists in %s", branch, checkout)
