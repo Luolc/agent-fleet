@@ -34,7 +34,9 @@ const (
 		"follow: one shows what changed in the built-in text, the other records the new base once the " +
 		"replacement has taken the change in. A replacement without a base cannot be checked. A note " +
 		"follows when you can write the config file, its directory, a file it names or that file's " +
-		"directory: so can an agent running as you. Run it after every change to the config and after " +
+		"directory: so can an agent running as you. No note does not make them safe from such an agent: " +
+		"a directory can still be renamed away by whoever can write its parent, and another put in its " +
+		"place. Run it after every change to the config and after " +
 		"every upgrade of fleet.\n\n" +
 		"With NAME: that text put together, each part under a line `==> <source> <==`. The model slots " +
 		"are filled from the config's `models`; every other slot stays as written ({{job}}, say), since " +
@@ -203,14 +205,12 @@ func shellWord(sc *config.Scope, path string) string {
 	return "'" + strings.ReplaceAll(path, "'", `'\''`) + "'"
 }
 
-// unusedSlots are the slots of the built-in text `p` replaces that no part
-// of `p` uses, sorted.
+// unusedSlots are the slots of the built-in text `p` replaces that the
+// replacement does not use, sorted; an addition does not count.
 func unusedSlots(p *promptText) []string {
 	used := map[string]bool{}
-	for _, part := range p.Parts {
-		for _, m := range slotPattern.FindAllStringSubmatch(part.Text, -1) {
-			used[m[1]] = true
-		}
+	for _, m := range slotPattern.FindAllStringSubmatch(p.Parts[0].Text, -1) {
+		used[m[1]] = true
 	}
 	var unused []string
 	for _, m := range slotPattern.FindAllStringSubmatch(specOf(p.Name).builtin, -1) {

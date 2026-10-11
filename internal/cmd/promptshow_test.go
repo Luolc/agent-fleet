@@ -137,11 +137,11 @@ func TestEveryTextThatCannotBeUsedIsListedAndExits1(t *testing.T) {
 func TestOneTextShowsEachPartUnderItsSourceWithOnlyTheModelSlotsFilled(t *testing.T) {
 	promptConfig(t, `{"models": {"lead": {"model": "example-large", "effort": "low"}},
 		"prompts": {"thread": {"replace": "t.md", "append": "a.md"}}}`,
-		map[string]string{"t.md": "Start leads with {{lead_model}} at {{lead_effort}} in {{cwd}}.\n", "a.md": "One more rule.\n"})
+		map[string]string{"t.md": "Start leads with {{lead_model}} at {{lead_effort}} in {{cwd}}.\n", "a.md": "One more rule for {{agent}}.\n"})
 	thread := "thread"
 	got := show(PromptShowArgs{Name: &thread})
 	want := "==> prompts.thread.replace (~/.config/fleet/t.md) <==\nStart leads with example-large at low in {{cwd}}.\n\n" +
-		"==> prompts.thread.append (~/.config/fleet/a.md) <==\nOne more rule.\n\n==> safety default <==\n" + safetyPrompt
+		"==> prompts.thread.append (~/.config/fleet/a.md) <==\nOne more rule for {{agent}}.\n\n==> safety default <==\n" + safetyPrompt
 	if got.err != nil || got.stdout != want {
 		t.Errorf("err %v, stdout:\n%s", got.err, got.stdout)
 	}

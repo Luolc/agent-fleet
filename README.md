@@ -53,8 +53,11 @@ worker prompt for every worker started from then on. After each change, run
 `fleet prompt show`: it lists each prompt's parts and every file that would
 stop an agent from starting (`fleet prompt show worker` prints the whole
 text). Run it again after upgrading fleet, to see whether a prompt you
-replaced is behind the new built-in one. Replacing a prompt, the model
-settings and the rest are in [docs/design.md](docs/design.md).
+replaced is behind the new built-in one. To replace one, start from a copy, in `~/.config/fleet`:
+`fleet prompt show lead --builtin > prompts/lead.base.md`, copy that to
+`prompts/lead.md`, edit it, and set `"lead": {"replace": "prompts/lead.md",
+"base": "prompts/lead.base.md"}`. The model settings and the rest are in
+[docs/design.md](docs/design.md).
 
 The design is in [docs/design.md](docs/design.md).
 
