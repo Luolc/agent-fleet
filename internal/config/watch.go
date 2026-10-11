@@ -27,6 +27,11 @@ type Watch struct {
 	// Reminders are when the people are reminded of a thread's pending
 	// questions, counted from the oldest, in increasing order.
 	Reminders []time.Duration
+	// ParentStale is how long a parent issue of the scope's jobs stays
+	// unchanged before watch starts an agent to look at it; ParentAgents
+	// bounds those starts in one run.
+	ParentStale  time.Duration
+	ParentAgents int
 }
 
 // DefaultWatch is what an absent key means.
@@ -37,6 +42,8 @@ var DefaultWatch = Watch{
 	ThreadQuiet:    30 * time.Minute,
 	ThreadQuestion: 72 * time.Hour,
 	Reminders:      []time.Duration{30 * time.Minute, 3 * time.Hour, 24 * time.Hour},
+	ParentStale:    72 * time.Hour,
+	ParentAgents:   1,
 }
 
 // jobWatchFile is the `watch` section of a repo's config, as written:
@@ -53,6 +60,8 @@ type scopeWatchFile struct {
 	ThreadQuiet    *string   `json:"thread_quiet"`
 	ThreadQuestion *string   `json:"thread_question"`
 	Reminders      *[]string `json:"reminders"`
+	ParentStale    *string   `json:"parent_stale"`
+	ParentAgents   *int      `json:"parent_agents"`
 }
 
 // duration parses one positive duration, naming the key on an error.
@@ -97,7 +106,7 @@ func (f *scopeWatchFile) apply(w *Watch) error {
 		value *string
 		into  *time.Duration
 	}{{"thread_idle", f.ThreadIdle, &w.ThreadIdle}, {"thread_quiet", f.ThreadQuiet, &w.ThreadQuiet},
-		{"thread_question", f.ThreadQuestion, &w.ThreadQuestion}} {
+		{"thread_question", f.ThreadQuestion, &w.ThreadQuestion}, {"parent_stale", f.ParentStale, &w.ParentStale}} {
 		if s.value == nil {
 			continue
 		}
@@ -119,6 +128,12 @@ func (f *scopeWatchFile) apply(w *Watch) error {
 			}
 			w.Reminders = append(w.Reminders, d)
 		}
+	}
+	if f.ParentAgents != nil {
+		if *f.ParentAgents <= 0 {
+			return errors.New("watch.parent_agents: must be a positive number")
+		}
+		w.ParentAgents = *f.ParentAgents
 	}
 	return nil
 }

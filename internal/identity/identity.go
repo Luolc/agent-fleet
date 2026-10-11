@@ -14,13 +14,16 @@ import (
 type Role int
 
 // The roles: a thread agent (one conversation on a Slack thread; it starts
-// jobs), a lead (one per job), a worker (started by a lead) and a screen
-// helper (`unblock`, started by `watch` for an agent stopped at a screen).
+// jobs), a lead (one per job), a worker (started by a lead), a screen
+// helper (`unblock`, started by `watch` for an agent stopped at a screen)
+// and a revisit agent (`revisit`, started by `watch` for a parent issue
+// that stays unchanged).
 const (
 	Thread Role = iota
 	Lead
 	Worker
 	Unblock
+	Revisit
 )
 
 // ParseRole reads a `FLEET_ROLE` value; ok is false for an unknown one.
@@ -34,6 +37,8 @@ func ParseRole(value string) (role Role, ok bool) {
 		return Worker, true
 	case "unblock":
 		return Unblock, true
+	case "revisit":
+		return Revisit, true
 	default:
 		return 0, false
 	}
@@ -47,6 +52,8 @@ func (r Role) String() string {
 		return "lead"
 	case Unblock:
 		return "unblock"
+	case Revisit:
+		return "revisit"
 	default:
 		return "worker"
 	}
@@ -121,7 +128,7 @@ func FromEnv() (*Identity, error) {
 	roleValue := os.Getenv("FLEET_ROLE")
 	role, ok := ParseRole(roleValue)
 	if !ok {
-		return nil, exit.Refusedf("FLEET_ROLE is %q, expected thread, lead, worker or unblock: %s", roleValue, hint)
+		return nil, exit.Refusedf("FLEET_ROLE is %q, expected thread, lead, worker, unblock or revisit: %s", roleValue, hint)
 	}
 	scope, err := Scope()
 	if err != nil {

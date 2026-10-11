@@ -8,6 +8,7 @@ import (
 	"errors"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/Luolc/agent-fleet/internal/exit"
 	"github.com/Luolc/agent-fleet/internal/herdr"
@@ -115,6 +116,67 @@ type issueData struct {
 type issueNode struct {
 	Team    *struct{ Key string }  `json:"team"`
 	Project *struct{ Name string } `json:"project"`
+}
+
+// Parent is a parent issue as StartedIssues reads it.
+type Parent struct {
+	Identifier, Title, URL string
+	UpdatedAt              time.Time
+	State                  State
+	Team                   *struct{ Key string }
+	Project                *struct{ Name, Description, Content string }
+	Children               struct{ Nodes []Child }
+}
+
+// Child is a sub-issue of a Parent.
+type Child struct {
+	Identifier, Title, URL string
+	UpdatedAt              time.Time
+	State                  State
+}
+
+// State is an issue's workflow state: its name, and its type (`started`,
+// `completed`, `canceled`, ...).
+type State struct{ Name, Type string }
+
+// StartedIssues reads, with one `atb linear query`, those of `issues` that
+// are in a started state, with their team, project and sub-issues (at
+// most 250 issues, 100 sub-issues each). A query that fails or prints
+// something else than the issues is exit 5, its output not shown.
+func StartedIssues(issues []string) ([]Parent, error) {
+	quoted := make([]string, len(issues))
+	for i, issue := range issues {
+		if err := CheckIdentifier(issue); err != nil {
+			return nil, err
+		}
+		quoted[i] = `"` + issue + `"`
+	}
+	fields := "identifier title url updatedAt state { name type }"
+	op := "atb linear query of the started parent issues"
+	out, err := Query(op, `{ issues(first: 250, filter: {id: {in: [`+strings.Join(quoted, ", ")+`]}, `+
+		`state: {type: {eq: "started"}}}) { nodes { `+fields+` team { key } project { name description content } `+
+		`children(first: 100) { nodes { `+fields+` } } } } }`)
+	if err != nil {
+		return nil, err
+	}
+	type issuesData struct {
+		Issues *struct{ Nodes []Parent }
+	}
+	var reply struct {
+		issuesData
+		Data *issuesData
+	}
+	if json.Unmarshal(out, &reply) != nil {
+		return nil, exit.Environmentf("%s printed no JSON; its output is not shown", op)
+	}
+	found := reply.Issues
+	if found == nil && reply.Data != nil {
+		found = reply.Data.Issues
+	}
+	if found == nil {
+		return nil, exit.Environmentf("%s printed no issues; its output is not shown", op)
+	}
+	return found.Nodes, nil
 }
 
 // Query is `atb linear query <graphql>`: the reply's JSON (the query's

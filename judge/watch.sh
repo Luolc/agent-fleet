@@ -41,7 +41,12 @@ done
 # The clock jumps 11 minutes a run, but TICK's screen moves only once a
 # second, so each run waits for it to move in real time too.
 T0=$(date +%s)
-watch() { sleep 2; env "${P}WATCH_NOW=$((T0 + $1 * 60))" "$T" --scope "$SCOPE" watch; }
+# In a full run lifecycle.sh leaves an ended job with a parent issue; the
+# fake atb answers that Linear has it in no started state.
+mkdir -p /home/agent/watch-atb
+printf '#!/bin/sh\necho %s\n' "'{\"issues\":{\"nodes\":[]}}'" > /home/agent/watch-atb/atb
+chmod +x /home/agent/watch-atb/atb
+watch() { sleep 2; PATH=/home/agent/watch-atb:$PATH env "${P}WATCH_NOW=$((T0 + $1 * 60))" "$T" --scope "$SCOPE" watch; }
 suspects() { sqlite3 "$DB" "SELECT group_concat(name, ' ') FROM (SELECT name FROM agents WHERE suspect = 1 ORDER BY name)"; }
 
 watch 0 >/home/agent/watch1.out 2>&1; rc=$?
