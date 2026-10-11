@@ -732,7 +732,7 @@ func TestWatchAsksAboutAQuietThreadOncePerSpell(t *testing.T) {
 	if len(prompts) != 4 || prompts[3][0] != "thread-c2" {
 		t.Fatalf("%q", prompts)
 	}
-	for _, want := range []string{"rule `thread quiet, nothing open`", "Why has it not ended", "no message for 3d00h"} {
+	for _, want := range []string{"rule `thread quiet, nothing open`", "when nothing is left to do, end it", "no message for 3d00h"} {
 		if !strings.Contains(prompts[3][1], want) {
 			t.Errorf("%q missing:\n%s", want, prompts[3][1])
 		}
@@ -1131,7 +1131,7 @@ func TestWatchAsksARevisitAgentsQuestionInTheLatestJobsThreadAndSkipsParentsWhen
 		t.Fatalf("%q", prompts)
 	}
 	for _, want := range []string{"[FROM: watch]\n", "rule `parent issue unchanged`: revisit-ex-5 asked the people in thread C3/3.0 about the parent issue EX-5",
-		"0xQUESTION", "When they answer, carry out what they decide"} {
+		"0xQUESTION", "when they answer, carry out what they decide"} {
 		if !strings.Contains(prompts[1][1], want) {
 			t.Errorf("%q missing:\n%s", want, prompts[1][1])
 		}

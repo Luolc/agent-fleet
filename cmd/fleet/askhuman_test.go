@@ -77,7 +77,7 @@ func TestAskHumanReachesTheLiveThreadAgentAndIsAnsweredByTheNextMessage(t *testi
 	}
 	argv := w.file("argv")
 	if !strings.HasPrefix(argv, "agent\nprompt\nthread-c0123-1700000000-123\n[FROM: item-1-lead]\nQuestion from item-1-lead for the people in thread "+
-		threadKey+", already posted there by fleet; first check whether the rules leave it to the lead (your prompt says how); "+
+		threadKey+", already posted there by fleet. Your prompt says what to do under \"Messages from fleet\"; at the least, "+
 		"when the people answer, pass the answer on with `fleet send item-1-lead --file <file>`.\n\n"+
 		"Which month: September or October?\n") {
 		t.Errorf("argv = %q", argv)
@@ -341,9 +341,8 @@ func TestJobEndTakesTheConclusionToTheHomeThread(t *testing.T) {
 	}
 	argv := w.file("argv")
 	if !strings.HasPrefix(argv, "agent\nprompt\nthread-c0123-1700000000-123\n[FROM: item-1-lead]\nConclusion of a job from item-1-lead for the people in thread "+
-		threadKey+". Post it to the thread with `fleet thread post`, then read the report it names and start the next job for each "+
-		"follow-up that serves what the people asked here, saying so in the thread; ask only about what needs a person's yes "+
-		"or lies outside their request.\n\nJob item-1 ended: done.\n") {
+		threadKey+". Your prompt says what to do under \"Messages from fleet\"; at the least, post it to the thread with "+
+		"`fleet thread post`.\n\nJob item-1 ended: done.\n") {
 		t.Errorf("argv = %q", argv)
 	}
 	if got := questions(w); got != "" {

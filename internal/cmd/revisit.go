@@ -312,9 +312,9 @@ func (u *unblocking) askAboutParent(row stopRow, question string) error {
 	}
 	fmt.Fprintf(os.Stdout, "revisit: %s: asked the people in thread %s\n", row.ParentIssue, thread)
 	notice := fmt.Sprintf("fleet watch, rule `parent issue unchanged`: %s asked the people in thread %s about the "+
-		"parent issue %s, and fleet posted it there:\n\n%s\n\nWhen they answer, carry out what they decide: close "+
-		"the issue, open a sub-issue, or start a job on it. Nobody else will; the question is reminded of but never "+
-		"times out.\n", row.Name, thread, row.ParentIssue, question)
+		"parent issue %s, and fleet posted it there:\n\n%s\n\nThe question is reminded of but never times out. %s; "+
+		"at the least, when they answer, carry out what they decide.\n", row.Name, thread, row.ParentIssue, question,
+		seePrompt)
 	msg := inboundMessage{Thread: thread, Text: notice, Watch: true}
 	if code, err := toThread(u.h, u.conn, u.scope, u.cfg, msg); err != nil || code != exit.Ok {
 		fmt.Fprintf(os.Stderr, "fleet: revisit %s: the question is posted, but did not reach the agent of thread %s "+
