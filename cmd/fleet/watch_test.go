@@ -514,6 +514,14 @@ func TestWatchRemindersMentionTheLastWriterAndReplaceTheOneBefore(t *testing.T) 
 		t.Errorf("reminders %q", got)
 	}
 
+	// A post that fails deletes nothing: the reminder before it stays.
+	w.file("mention-exit", "4")
+	w.watchAt(2*time.Hour, 5)
+	if got := w.remindersOf("C1/1.0"); deleted(second) || got != first+" deleted, "+second+" posted" {
+		t.Errorf("reminders %q: %s", got, w.log("fednet.log"))
+	}
+	w.file("mention-exit", "")
+
 	// Not in Slack yet: tried again by the next run, with no reminder due.
 	w.file("delete-exit", "5")
 	out = w.watchAt(2*time.Hour, 0)
