@@ -130,6 +130,7 @@ Its last try is done.', 'answered', 1699500000, 1699500100),
 		t.Fatal(err)
 	}
 	for _, want := range []string{"never ask the people the same thing twice",
+		"They answered: unless it is done already (a sub-issue or a comment on EX-1 after the answer shows it",
 		"take it as the answer only when it plainly answers the question",
 		"with `needs-user` still on and no reply after it: they have not answered yet. Do nothing",
 		"do not ask it again. Leave a comment on EX-1 saying that the earlier question got no clear answer",
