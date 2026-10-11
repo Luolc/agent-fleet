@@ -25,16 +25,25 @@ import (
 // JobListLongAbout are the help texts of `job` and its subcommands.
 const (
 	JobAbout          = "Start a job, or list the open jobs"
-	JobStartAbout     = "Start a job: its lead, in a workspace named after the job (thread agents only)"
-	JobStartLongAbout = "Start a job: its lead, in a workspace named after the job (thread agents only).\n\n" +
+	JobStartAbout     = "Start a job: its lead, in a workspace named after the job (thread agents, or callers without FLEET_ROLE)"
+	JobStartLongAbout = "Start a job: its lead, in a workspace named after the job (thread agents, or callers without FLEET_ROLE).\n\n" +
 		"<JOB> is the job id; the lead is named `<job>-lead`. With --repo the job is a " +
-		"single-repo job and the lead runs in the repo's main checkout <checkouts>/<repo>, which " +
-		"must exist (read-only by convention: the lead plans and spawns, it does not edit " +
+		"single-repo job and the lead runs in the repo's main checkout <checkouts>/<repo>, or, " +
+		"when there is none and <repo> is an initiative's repo <initiative prefix><I>, in the " +
+		"initiative's checkout <initiatives>/<I>, as `fleet worktree` finds it; one must exist " +
+		"(read-only by convention: the lead plans and spawns, it does not edit " +
 		"there). Without --repo it is a cross-repo job and the lead runs in <job>/ inside the " +
 		"checkout of your thread's initiative, <initiatives>/<I>/ (the general initiative's " +
 		"for a thread of a single repo), which must exist; <job>/ is created. The directories " +
 		"and the general initiative are the scope's settings (see `fleet inbox --help`; by " +
-		"default ~/dev/<repo>, ~/x-repo/<I>/ and ~/x-repo/general/). No " +
+		"default ~/dev/<repo>, ~/x-repo/<I>/ and ~/x-repo/general/).\n\n" +
+		"A caller without FLEET_ROLE (a timer, a shell) starts only single-repo jobs (--repo " +
+		"is required), under the name `fleet`: the lead's FLEET_PARENT, the sender of its first " +
+		"message and the source of the claims. Such a job has no home thread; the lead's " +
+		"first message says so in place of the latest message, and its first `fleet " +
+		"ask-human` opens one (see `fleet ask-human --help`). The scope is --scope or " +
+		"FLEET_SCOPE, as for any caller. Leads, workers and the helpers of `fleet watch` are refused.\n\n" +
+		"No " +
 		"worktree is made; agents open theirs with `fleet worktree` (`--detach <ref>` for a " +
 		"review checkout of a PR head), never with `git worktree add`, so `job end` removes them.\n\n" +
 		"Settings: a single-repo job reads .fleet/config.json in its main checkout (`max_agents_per_job`, " +
@@ -207,12 +216,9 @@ type jobChecked struct {
 // task file, the flags, the repo and the config, the ledger, herdr's view,
 // the resources. `conn` is open on success.
 func jobStartChecks(h *herdr.Herdr, args JobStartArgs) (*jobChecked, *sql.DB, error) {
-	me, err := identity.FromEnv()
+	me, err := jobStarter(args)
 	if err != nil {
 		return nil, nil, err
-	}
-	if me.Role != identity.Thread {
-		return nil, nil, exit.Refusedf("a %s cannot start a job; only a thread agent does", me.Role)
 	}
 	if err := CheckName(args.Job); err != nil {
 		return nil, nil, err
@@ -255,6 +261,37 @@ func jobStartChecks(h *herdr.Herdr, args JobStartArgs) (*jobChecked, *sql.DB, er
 	return c, conn, nil
 }
 
+// plainStarter is the name a caller without FLEET_ROLE starts a job
+// under: the lead's parent, the sender of its first message and the
+// source of its claims. No agent can have it.
+const plainStarter = "fleet"
+
+// jobStarter is who may start a job: a thread agent, or a caller without
+// FLEET_ROLE (a timer, a shell) when the job is single-repo, since a
+// cross-repo job runs in its thread's initiative. Such a caller has no
+// thread, so the job has no home thread.
+func jobStarter(args JobStartArgs) (*identity.Identity, error) {
+	if os.Getenv("FLEET_ROLE") == "" {
+		if args.Repo == nil {
+			return nil, exit.Refusedf("--repo is required without FLEET_ROLE: a cross-repo job runs in the " +
+				"initiative of the thread agent that starts it")
+		}
+		scope, err := identity.Scope()
+		if err != nil {
+			return nil, err
+		}
+		return &identity.Identity{Agent: plainStarter, Role: identity.Thread, Scope: scope}, nil
+	}
+	me, err := identity.FromEnv()
+	if err != nil {
+		return nil, err
+	}
+	if me.Role != identity.Thread {
+		return nil, exit.Refusedf("a %s cannot start a job; only a thread agent does, or a caller without FLEET_ROLE", me.Role)
+	}
+	return me, nil
+}
+
 // flags checks what needs no file or ledger: the parent flags, --key and
 // --repo as text.
 func (c *jobChecked) flags(args JobStartArgs) error {
@@ -293,9 +330,8 @@ func (c *jobChecked) repoAndLinear(args JobStartArgs) error {
 		return err
 	}
 	if c.repo != "" {
-		c.cwd = filepath.Join(c.sc.Paths.Checkouts, c.repo)
-		if info, err := os.Stat(c.cwd); err != nil || !info.IsDir() {
-			return exit.Refusedf("no checkout at %s", c.cwd)
+		if c.cwd, err = sourceCheckout(c.sc, c.repo); err != nil {
+			return err
 		}
 	} else {
 		if args.NewParent != nil {
@@ -503,15 +539,17 @@ func JobStart(h *herdr.Herdr, args JobStartArgs) (exit.Code, error) {
 	if err != nil {
 		return startFailed(c.id.Agent, err, 0, created, hint)
 	}
-	latest, err := latestMessage(conn, c.me.Thread)
-	if err != nil {
-		return startFailed(c.id.Agent, err, 0, created, hint)
+	section := noHomeThreadSection(jobMapping(c.sc, c.repo, c.cwd), generalMapping(c.sc.Channels))
+	if c.me.Agent != plainStarter {
+		latest, err := latestMessage(conn, c.me.Thread)
+		if err == nil {
+			section, err = latestMessageSection(latest)
+		}
+		if err != nil {
+			return startFailed(c.id.Agent, err, 0, created, hint)
+		}
 	}
-	section, err := latestMessageSection(latest)
-	if err != nil {
-		return startFailed(c.id.Agent, err, 0, created, hint)
-	}
-	body := rolePrompt(c.sc, c.id, c.cwd, c.repo, filepath.Dir(c.cwd), c.cfg.MaxAgentsPerJob, issue, c.parent) +
+	body := rolePrompt(c.sc, c.id, c.cwd, c.repo, c.cwd, c.cfg.MaxAgentsPerJob, issue, c.parent) +
 		section + taskSection(issue.URL, c.body)
 	code, err := startAndDeliver(h, conn, c.id, place, c.cwd, args.Model, args.Effort, c.me.Agent, body, &created)
 	if err != nil || code != exit.Ok {
@@ -565,6 +603,20 @@ func latestMessageSection(m *threadMessage) (string, error) {
 		return "", exit.Environmentf("json: %v", err)
 	}
 	return head + "The one JSON object on the next line is fleet's record of it (user, ts, text as written):\n" + buf.String(), nil
+}
+
+// noHomeThreadSection takes the place of the latest message for a job
+// started by a caller without FLEET_ROLE (single-repo, no thread): it says there is
+// no home thread until the lead asks, and where `ask-human` opens one: in
+// the repo's channel, else the general initiative's.
+func noHomeThreadSection(channel, general string) string {
+	return "\n## Latest message from a person in the home thread\n\n" +
+		"None: this job has no home thread. A caller outside fleet's threads started it (a timer or a shell; " +
+		"FLEET_PARENT=" + plainStarter + " stands for it), not a thread agent, so the task below is all there is, " +
+		"and no person follows the job until you ask. Your first `fleet ask-human` opens a thread in the channel #" +
+		channel + ", or in #" + general + " when fleet knows no thread of #" + channel + " (then say which repo the " +
+		"question is about in its first line); it becomes the job's home thread, and its thread agent passes the " +
+		"people's answers on. Until then `fleet job end` posts the conclusion nowhere.\n"
 }
 
 // jobLine is one job as `job list` prints it.

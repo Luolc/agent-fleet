@@ -388,13 +388,22 @@ func (u *unblocking) askOnce(row stopRow, step, text string) error {
 // thread agent, else its job's), records it as a question pending from
 // the row's helper, and then, unless the stopped agent is the thread's
 // own, delivers it to the thread's agent as `ask-human` does; a delivery
-// that fails is printed, since the question is out.
+// that fails is printed, since the question is out. A single-repo job
+// without a home thread gets one opened first, as `ask-human` opens it.
 func (u *unblocking) ask(row stopRow, text string) error {
 	thread := row.Thread
 	if row.Role != "thread" {
-		err := u.conn.QueryRow("SELECT home_thread FROM jobs WHERE job = ?1 AND state = 'open'", row.Job).Scan(&thread)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return exit.Database(err)
+		job, err := openJob(u.conn, row.Job)
+		if err != nil {
+			return err
+		}
+		if job != nil {
+			thread = job.HomeThread
+		}
+		if thread == "" && job != nil && job.Repo != "" && u.cfg.FednetSocket != "" {
+			if thread, err = openHomeThread(u.conn, u.cfg, job); err != nil {
+				return err
+			}
 		}
 	}
 	if thread == "" {
@@ -439,9 +448,10 @@ func (u *unblocking) post(thread, job, asker, text string) error {
 // tell lets whoever has to know about a screen fleet did not answer by
 // rule know `what` fleet did: a worker's lead, and the starter of a lead
 // or worker whose start stopped at the screen. A thread agent's start is
-// finished by `inbox` with the next message, so nobody is told about it.
+// finished by `inbox` with the next message, so nobody is told about it;
+// nor is the caller without a role that started a lead, which is no agent.
 func (u *unblocking) tell(row stopRow, what string) {
-	if row.Role == "thread" || row.Parent == "" || row.Role == "lead" && row.State != "starting" {
+	if row.Role == "thread" || row.Parent == "" || row.Parent == plainStarter || row.Role == "lead" && row.State != "starting" {
 		return
 	}
 	text := fmt.Sprintf("fleet watch: %s (%s) is stopped at a screen; %s.\n", row.Name, row.who(), what)

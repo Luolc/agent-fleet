@@ -196,9 +196,10 @@ Options:
                           The job's parent issue, such as ABC-12 (with Linear on; excludes --new-parent)
       --new-parent <TITLE>
                           Create the parent issue with this title first (single-repo jobs with Linear on)
-      --repo <REPO>       Directory name of the main checkout (under ~/dev by default): a single-repo
-                          job, the lead runs there. Without it the job is cross-repo and the lead runs
-                          in <job>/ of the initiative's checkout (~/x-repo/<I>/<job>/ by default)
+      --repo <REPO>       Directory name of the main checkout (under ~/dev by default; for x-repo-<I>
+                          without one, ~/x-repo/<I>): a single-repo job, the lead runs there. Without
+                          it the job is cross-repo and the lead runs in <job>/ of the initiative's
+                          checkout (~/x-repo/<I>/<job>/ by default). Required without FLEET_ROLE
       --key <KEY>         Dedup key: refused when an open job of the scope has the same key
       --model <MODEL>     Model passed to the agent as --model. Default: the agent's own
       --effort <EFFORT>   Effort passed to the agent as --effort. Default: the agent's own

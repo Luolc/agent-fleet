@@ -100,12 +100,14 @@ exit 0
 `
 }
 
-// threadFednet is a fake fednet: every call logged; the post fails while
-// <dir>/fednet-down exists.
+// threadFednet is a fake fednet: every call logged; every call fails
+// while <dir>/fednet-down exists; `open-thread` prints the key of a new
+// thread in the channel it is given.
 const threadFednet = `#!/bin/sh
 dir="$(dirname "$0")/.."
 echo "fednet $*" >> "$dir/calls"
 [ -e "$dir/fednet-down" ] && { echo "post: hub unreachable" >&2; exit 4; }
+[ "$2" = open-thread ] && { echo "$6/1700000099.000"; exit 0; }
 echo m-posted
 `
 

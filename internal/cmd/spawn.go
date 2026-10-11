@@ -6,7 +6,6 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/Luolc/agent-fleet/internal/config"
 	"github.com/Luolc/agent-fleet/internal/db"
@@ -224,7 +223,7 @@ func Spawn(h *herdr.Herdr, args SpawnArgs) (exit.Code, error) {
 		return startFailed(c.id.Agent, err, 0, created, hint)
 	}
 	created = append(created, fmt.Sprintf("tab %s (%s)", args.Name, place.TabID))
-	body := rolePrompt(c.sc, c.id, c.cwd, c.job.Repo, filepath.Dir(c.job.LeadCwd), c.cfg.MaxAgentsPerJob, issue, c.job.ParentIssue) +
+	body := rolePrompt(c.sc, c.id, c.cwd, c.job.Repo, c.job.LeadCwd, c.cfg.MaxAgentsPerJob, issue, c.job.ParentIssue) +
 		taskSection(issue.URL, c.body)
 	code, err := startAndDeliver(h, conn, c.id, place, c.cwd, args.Model, args.Effort, c.me.Agent, body, &created)
 	if err != nil || code != exit.Ok {

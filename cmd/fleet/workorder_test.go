@@ -903,3 +903,69 @@ func TestJobListShowsTheJobsOfTheCallersChannelUnlessAll(t *testing.T) {
 		}
 	}
 }
+
+// A caller without FLEET_ROLE (a timer, a shell) starts a single-repo job
+// under the name fleet; the job has no home thread, and the lead is told
+// where its first question opens one.
+func TestJobStartWithoutARoleStartsASingleRepoJobWithNoHomeThread(t *testing.T) {
+	w := newWorld(t)
+	checkout := w.configure(`{"resource_check": false}`)
+	w.useStartHerdr()
+	taskFile := task(w, "task.md", "Find out why main is red\n")
+	out := w.run("", []string{"job", "start", "item-2", "--task-file", taskFile}, "FLEET_SCOPE="+scope)
+	if out.code != 1 || !strings.Contains(out.stderr, "--repo is required without FLEET_ROLE") || w.calls() != "" {
+		t.Fatalf("without --repo: %+v, calls %q", out, w.calls())
+	}
+	out = w.run("", []string{"job", "start", "item-2", "--repo", "example-dataset", "--task-file", taskFile, "--key", "red-1"},
+		"FLEET_SCOPE="+scope)
+	if out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	wsArgv, _ := os.ReadFile(filepath.Join(w.dir, "workspace-argv"))
+	if !strings.Contains(string(wsArgv), "--env\nFLEET_PARENT=fleet\n") {
+		t.Errorf("workspace create argv = %q", wsArgv)
+	}
+	argv, _ := os.ReadFile(filepath.Join(w.dir, "argv"))
+	for _, want := range []string{"agent\nprompt\nitem-2-lead\n[FROM: fleet]\nYou are a lead run by fleet",
+		"\n## Latest message from a person in the home thread\n\nNone: this job has no home thread.",
+		"Your first `fleet ask-human` opens a thread in the channel #repo-example-dataset, or in #x-repo-general when",
+		"\n## Your task\n\nFind out why main is red\n"} {
+		if !strings.Contains(string(argv), want) {
+			t.Errorf("delivered argv = %q, want %q in it", argv, want)
+		}
+	}
+	if got := jobRow(w, "item-2"); got != " red-1 example-dataset "+checkout+" open" {
+		t.Errorf("job row = %s", got)
+	}
+	// The key still dedups.
+	out = w.run("", []string{"job", "start", "item-3", "--repo", "example-dataset", "--task-file", taskFile, "--key", "red-1"},
+		"FLEET_SCOPE="+scope)
+	if out.code != 1 || !strings.Contains(out.stderr, "job item-2 is open with the same key") {
+		t.Errorf("same key: %+v", out)
+	}
+}
+
+// --repo names an initiative's repo with no main checkout: the job runs
+// in the initiative's checkout, as `fleet worktree` finds it, and the
+// lead's channel is the initiative's.
+func TestJobStartFindsAnInitiativesRepoInItsCheckout(t *testing.T) {
+	w := newWorld(t)
+	w.useStartHerdr()
+	checkout := dir(w, filepath.Join("home", "x-repo", "example-init"))
+	taskFile := task(w, "task.md", "Find out why main is red\n")
+	out := w.run("", []string{"job", "start", "item-2", "--repo", "x-repo-example-init", "--task-file", taskFile},
+		"FLEET_SCOPE="+scope)
+	if out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	argv, _ := os.ReadFile(filepath.Join(w.dir, "argv"))
+	for _, want := range []string{"its repo is x-repo-example-init, main checkout ~/x-repo/example-init;",
+		"read the `## Fleet` section of ~/x-repo/example-init/AGENTS.md", "opens a thread in the channel #x-repo-example-init,"} {
+		if !strings.Contains(string(argv), want) {
+			t.Errorf("delivered argv = %q, want %q in it", argv, want)
+		}
+	}
+	if got := jobRow(w, "item-2"); got != "  x-repo-example-init "+checkout+" open" {
+		t.Errorf("job row = %s", got)
+	}
+}

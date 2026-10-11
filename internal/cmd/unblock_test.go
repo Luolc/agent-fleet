@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -112,5 +113,50 @@ func TestATrustDialogTheRuleDoesNotGetPastStartsNoHelper(t *testing.T) {
 	if err := conn.QueryRow("SELECT (SELECT count(*) FROM agents) + (SELECT count(*) FROM questions) + " +
 		"(SELECT count(*) FROM steps)").Scan(&rows); err != nil || rows != 0 {
 		t.Errorf("%d rows, %v", rows, err)
+	}
+}
+
+// The lead of a job started without FLEET_ROLE has no home thread; when
+// the people must be asked about its screen, one is opened in its repo's
+// channel, as `ask-human` opens it, and the question goes there.
+func TestAScreenOfALeadWithoutAHomeThreadOpensOne(t *testing.T) {
+	bin := t.TempDir()
+	calls := filepath.Join(bin, "calls")
+	fake := "#!/bin/sh\necho \"$*\" >> " + calls + "\n[ \"$2\" = open-thread ] && { echo \"$6/1700000099.000\"; exit 0; }\necho m-posted\n"
+	if err := os.WriteFile(filepath.Join(bin, "fednet"), []byte(fake), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+":/usr/bin:/bin")
+	conn, err := db.OpenAt(filepath.Join(t.TempDir(), "screens.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	sc, err := config.ParseScope([]byte(`{"fednet": {"socket": "/run/fednet.sock"}}`), "/home/u")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range []string{
+		"INSERT INTO jobs (job, repo, lead_cwd, state, started_at) VALUES ('r', 'example-dataset', '/home/u/dev/example-dataset', 'open', 0)",
+		"INSERT INTO threads (thread, slug, channel, mapping, cwd, created_at) VALUES ('C0123/1.0', 'c0123-1-0', 'C0123', 'repo-example-dataset', '', 0)",
+	} {
+		if _, err := conn.Exec(stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	u := &unblocking{watchRun: &watchRun{conn: conn, scope: "screens", cfg: sc}, dir: t.TempDir()}
+	row := stopRow{ID: 7, Name: "r-lead", Role: "lead", Job: "r", Parent: plainStarter, State: "active"}
+	if err := u.ask(row, "r-lead is at a usage limit; wait for the reset?"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(calls)
+	if !strings.HasPrefix(string(got), "client open-thread -socket /run/fednet.sock -channel C0123 -- Questions from job r in example-dataset") ||
+		!strings.Contains(string(got), "client post -socket /run/fednet.sock -thread C0123/1700000099.000 -- r-lead is at a usage limit") {
+		t.Errorf("fednet calls = %q", got)
+	}
+	var home, asked string
+	if err := conn.QueryRow("SELECT j.home_thread, q.thread FROM jobs j, questions q WHERE j.job = 'r'").Scan(&home, &asked); err != nil ||
+		home != "C0123/1700000099.000" || asked != home {
+		t.Errorf("home thread %q, question in %q, %v", home, asked, err)
 	}
 }

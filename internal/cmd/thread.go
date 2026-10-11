@@ -218,6 +218,17 @@ func MappingDir(sc *config.Scope, mapping string) string {
 	return filepath.Join(sc.Paths.Checkouts, strings.TrimPrefix(mapping, sc.Channels.RepoPrefix))
 }
 
+// jobMapping is the channel of a single-repo job's repo, by the checkout
+// its lead runs in: the initiative's channel, whose name is the repo's,
+// for an initiative's repo run in the initiative's checkout (as `fleet
+// worktree` finds it); else the repo's channel `<repo prefix><R>`.
+func jobMapping(sc *config.Scope, repo, checkout string) string {
+	if strings.HasPrefix(repo, sc.Channels.InitiativePrefix) && MappingDir(sc, repo) == checkout {
+		return repo
+	}
+	return sc.Channels.RepoPrefix + repo
+}
+
 // crossRepoRoot is the directory the cross-repo jobs of a thread put their
 // leads' directories in: the thread's own for an initiative's channel, the
 // general initiative's for a repo's.
@@ -425,6 +436,23 @@ func (s *threadStart) unreserve() error {
 	return nil
 }
 
+// ticketDescription is a new thread ticket's description: where the
+// thread is, its first message with who wrote it and when (or, for a
+// thread fleet opened for a job, which agent asked), and the channel's
+// context when it came with the message.
+func (s *threadStart) ticketDescription() string {
+	first := fmt.Sprintf("from %s at %s", s.msg.User, s.msg.TS)
+	if s.msg.fromFleet() {
+		first = s.msg.trigger()
+	}
+	description := fmt.Sprintf("channel: %s\nthread: %s\nfirst message, %s:\n\n%s\n",
+		s.msg.channel(), s.msg.Thread, first, s.msg.Text)
+	if s.msg.Context != "" {
+		description += "\nchannel context:\n\n" + s.msg.Context + "\n"
+	}
+	return description
+}
+
 // linearSteps are the thread ticket's steps when the scope has a Linear
 // team: a new thread gets its ticket created (label `thread`, no project)
 // and claimed; a known thread gets its ticket claimed again, a `Session
@@ -439,12 +467,7 @@ func (s *threadStart) linearSteps() error {
 		if title == "" {
 			title = "Thread " + s.msg.Thread
 		}
-		description := fmt.Sprintf("channel: %s\nthread: %s\nfirst message, from %s at %s:\n\n%s\n",
-			s.msg.channel(), s.msg.Thread, s.msg.User, s.msg.TS, s.msg.Text)
-		if s.msg.Context != "" {
-			description += "\nchannel context:\n\n" + s.msg.Context + "\n"
-		}
-		file, remove, err := tempFile(description)
+		file, remove, err := tempFile(s.ticketDescription())
 		if err != nil {
 			return err
 		}

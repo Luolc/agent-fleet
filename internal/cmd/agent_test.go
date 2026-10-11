@@ -282,10 +282,10 @@ func TestRolePromptsFillEveryPlaceholderForBothRolesAndBothJobKinds(t *testing.T
 		t.Fatal(err)
 	}
 	for name, got := range map[string]string{
-		"lead single":   rolePrompt(sc, lead, "/home/u/dev/example-dataset", "example-dataset", "", 4, issue, "QT-10"),
-		"worker single": rolePrompt(sc, worker, "/home/u/wt/example-dataset/wire", "example-dataset", "", 4, atb.Issue{}, ""),
-		"lead cross":    rolePrompt(sc, lead, "/home/u/x-repo/example-init/wire", "", "/home/u/x-repo/example-init", 3, atb.Issue{}, ""),
-		"worker cross":  rolePrompt(sc, worker, "/home/u/x-repo/example-init/wire", "", "/home/u/x-repo/example-init", 3, issue, "QT-10"),
+		"lead single":   rolePrompt(sc, lead, "/home/u/dev/example-dataset", "example-dataset", "/home/u/dev/example-dataset", 4, issue, "QT-10"),
+		"worker single": rolePrompt(sc, worker, "/home/u/wt/example-dataset/wire", "example-dataset", "/home/u/dev/example-dataset", 4, atb.Issue{}, ""),
+		"lead cross":    rolePrompt(sc, lead, "/home/u/x-repo/example-init/wire", "", "/home/u/x-repo/example-init/wire", 3, atb.Issue{}, ""),
+		"worker cross":  rolePrompt(sc, worker, "/home/u/x-repo/example-init/wire", "", "/home/u/x-repo/example-init/wire", 3, issue, "QT-10"),
 	} {
 		if strings.Contains(got, "{{") || strings.Contains(got, "}}") {
 			t.Errorf("%s: a placeholder is left in %q", name, got)
@@ -299,14 +299,14 @@ func TestRolePromptsFillEveryPlaceholderForBothRolesAndBothJobKinds(t *testing.T
 			t.Errorf("%s names the wrong scratch directory", name)
 		}
 	}
-	got := rolePrompt(sc, lead, "/home/u/dev/example-dataset", "example-dataset", "", 4, issue, "QT-10")
+	got := rolePrompt(sc, lead, "/home/u/dev/example-dataset", "example-dataset", "/home/u/dev/example-dataset", 4, issue, "QT-10")
 	for _, want := range []string{"FLEET_ISSUE=QT-12 (your work order, https://linear.example.test/QT-12). The job's parent issue is QT-10;",
 		"The job's cap is 4 live agents", "read the `## Fleet` section of ~/dev/example-dataset/AGENTS.md", "`wire-<name>`"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("lead single: %q not in the prompt", want)
 		}
 	}
-	got = rolePrompt(sc, worker, "/home/u/x-repo/example-init/wire", "", "/home/u/x-repo/example-init", 3, atb.Issue{}, "")
+	got = rolePrompt(sc, worker, "/home/u/x-repo/example-init/wire", "", "/home/u/x-repo/example-init/wire", 3, atb.Issue{}, "")
 	for _, want := range []string{"FLEET_ISSUE= (empty: this job has no Linear work orders)", "for your lead wire-lead",
 		"read /home/u/x-repo/example-init/AGENTS.md (the initiative's charter)"} {
 		if !strings.Contains(got, want) {
@@ -318,13 +318,13 @@ func TestRolePromptsFillEveryPlaceholderForBothRolesAndBothJobKinds(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	got = rolePrompt(sc, lead, "/srv/src/example-dataset", "example-dataset", "", 4, issue, "QT-10")
+	got = rolePrompt(sc, lead, "/srv/src/example-dataset", "example-dataset", "/srv/src/example-dataset", 4, issue, "QT-10")
 	for _, want := range []string{"main checkout /srv/src/example-dataset;", "/srv/src/example-dataset/AGENTS.md", "~/notes/example-dataset/"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("lead single, configured: %q not in the prompt", want)
 		}
 	}
-	got = rolePrompt(sc, worker, "/home/u/x-repo/example-init/wire", "", "/home/u/x-repo/example-init", 3, atb.Issue{}, "")
+	got = rolePrompt(sc, worker, "/home/u/x-repo/example-init/wire", "", "/home/u/x-repo/example-init/wire", 3, atb.Issue{}, "")
 	for _, want := range []string{"the initiative multi-example-init", "main checkout /srv/src/<repo>", "~/notes/multi-example-init/"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("worker cross, configured: %q not in the prompt", want)
