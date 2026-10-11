@@ -91,7 +91,8 @@ func promptScope(t *testing.T, prompts map[string]map[string]string, models stri
 }
 
 // renders are the first messages of the six texts' agents (the guidance
-// in the helper's), from fixed contexts, under the scope `sc`.
+// in the helper's) under the scope `sc`, from the contexts of the golden
+// files `goldenOf` names.
 func renders(t *testing.T, sc *config.Scope) map[string]string {
 	t.Helper()
 	conn, err := db.OpenAt(filepath.Join(t.TempDir(), "main.db"))
@@ -101,7 +102,8 @@ func renders(t *testing.T, sc *config.Scope) map[string]string {
 	t.Cleanup(func() { conn.Close() })
 	lead := &identity.Identity{Agent: "wire-lead", Role: identity.Lead, Parent: "thread-x", Scope: "main", Job: "wire"}
 	worker := &identity.Identity{Agent: "wire-a", Role: identity.Worker, Parent: "wire-lead", Scope: "main", Job: "wire"}
-	thread := &threadStart{cfg: sc, mapping: "repo-example-dataset", cwd: MappingDir(sc, "repo-example-dataset"),
+	issue := atb.Issue{Identifier: "QT-12", URL: "https://linear.example.test/QT-12"}
+	thread := &threadStart{cfg: sc, mapping: "x-repo-example-init", cwd: MappingDir(sc, "x-repo-example-init"),
 		id:  &identity.Identity{Agent: "thread-c1-1-0", Role: identity.Thread, Scope: "main", Thread: "C1/1.0"},
 		msg: inboundMessage{Thread: "C1/1.0", Text: "import the A table", User: "U0ABC", TS: "1700000000.000"}}
 	u := &unblocking{watchRun: &watchRun{conn: conn, scope: "main", cfg: sc, now: 1700000000},
@@ -117,11 +119,25 @@ func renders(t *testing.T, sc *config.Scope) map[string]string {
 	}
 	return map[string]string{
 		"thread":  thread.prompt(),
-		"lead":    rolePrompt(sc, lead, "/home/u/dev/example-dataset", "example-dataset", "/home/u/dev/example-dataset", 4, atb.Issue{}, ""),
+		"lead":    rolePrompt(sc, lead, "/home/u/dev/example-dataset", "example-dataset", "/home/u/dev/example-dataset", 4, issue, "QT-10"),
 		"worker":  rolePrompt(sc, worker, "/home/u/wt/example-dataset/wire", "example-dataset", "/home/u/dev/example-dataset", 4, atb.Issue{}, ""),
 		"revisit": revisit,
 		"unblock": helper,
 	}
+}
+
+// goldenOf names the golden file of each of renders' first messages.
+var goldenOf = map[string]string{"thread": "thread-initiative", "lead": "lead-single-issue", "worker": "worker-single",
+	"revisit": "revisit", "unblock": "unblock"}
+
+// golden is the golden file of renders' first message `name`.
+func golden(t *testing.T, name string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("testdata", "prompts", goldenOf[name]+".golden"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
 }
 
 func TestEveryBuiltInSlotIsInItsTextsTable(t *testing.T) {
@@ -165,7 +181,7 @@ func TestATextIsTheReplacementThenTheAdditionThenTheSafetyDefault(t *testing.T) 
 		fields map[string]string
 		want   string
 	}{
-		{"lead", map[string]string{"append": "a.md"}, leadPromptFilled() + "\nAdded, wire.\n"},
+		{"lead", map[string]string{"append": "a.md"}, golden(t, "lead") + "\nAdded, wire.\n"},
 		{"lead", map[string]string{"replace": "r.md", "base": "base.md"}, "Replaced, wire-lead.\n\n" + safetyPrompt},
 		{"lead", map[string]string{"replace": "r.md", "append": "a.md"}, "Replaced, wire-lead.\n\nAdded, wire.\n\n" + safetyPrompt},
 		{"worker", map[string]string{"replace": "r.md"}, "Replaced, wire-a.\n\n" + safetyPrompt},
@@ -187,16 +203,6 @@ func TestATextIsTheReplacementThenTheAdditionThenTheSafetyDefault(t *testing.T) 
 			t.Errorf("%s replaced: %q", name, got)
 		}
 	}
-}
-
-// leadPromptFilled is the lead's built-in prompt as renders fills it.
-func leadPromptFilled() string {
-	sc, err := config.ParseScope([]byte(`{}`), "/home/u")
-	if err != nil {
-		panic(err)
-	}
-	lead := &identity.Identity{Agent: "wire-lead", Role: identity.Lead, Parent: "thread-x", Scope: "main", Job: "wire"}
-	return rolePrompt(sc, lead, "/home/u/dev/example-dataset", "example-dataset", "/home/u/dev/example-dataset", 4, atb.Issue{}, "")
 }
 
 func TestTheGuidanceAdditionComesBeforeTheScreen(t *testing.T) {
@@ -284,15 +290,20 @@ func TestTheSameMistakeHasOneDigestAndAnotherAnother(t *testing.T) {
 	}
 }
 
-// The control arms of the golden files: the same contexts with an addition
-// or another model are the golden text plus the addition, or the golden
-// text with only the model sentences changed, so the golden files tell a
+// The control arms of the golden files: with no prompts or models the
+// first messages are the golden files; the same contexts with an addition
+// or other models are the golden text plus the addition, or the golden
+// text with only the model sentences changed. So the golden files tell a
 // start that read the config from one that did not.
 func TestAnAdditionOrAModelChangesOnlyWhatItSays(t *testing.T) {
-	plain := renders(t, promptScope(t, nil, "", nil))
+	for name, got := range renders(t, promptScope(t, nil, "", nil)) {
+		if got != golden(t, name) {
+			t.Errorf("%s without prompts or models is not its golden file", name)
+		}
+	}
 	added := renders(t, promptScope(t, map[string]map[string]string{"worker": {"append": "w.md"}}, "",
 		map[string]string{"w.md": "List every file you changed.\n"}))
-	if added["worker"] != plain["worker"]+"\nList every file you changed.\n" {
+	if added["worker"] != golden(t, "worker")+"\nList every file you changed.\n" {
 		t.Errorf("worker with an addition:\n%q", added["worker"])
 	}
 	other := renders(t, promptScope(t, nil, `{"lead": {"model": "example-large"}, "worker": {"effort": "low"}}`, nil))
@@ -300,14 +311,14 @@ func TestAnAdditionOrAModelChangesOnlyWhatItSays(t *testing.T) {
 		"lead":   {"Both run `--model opus --effort high`. Research gets one read-only worker (`opus`, `high`)", "Both run `--model opus --effort low`. Research gets one read-only worker (`opus`, `low`)"},
 		"thread": {"--model opus --effort high` starts a job: its lead, on `opus` at `high` effort", "--model example-large --effort high` starts a job: its lead, on `example-large` at `high` effort"},
 	} {
-		if !strings.Contains(plain[name], sentences[0]) {
-			t.Errorf("%s: the built-in sentence is not %q", name, sentences[0])
+		if !strings.Contains(golden(t, name), sentences[0]) {
+			t.Errorf("%s: the golden file lacks %q", name, sentences[0])
 		}
-		if want := strings.Replace(plain[name], sentences[0], sentences[1], 1); other[name] != want {
+		if want := strings.Replace(golden(t, name), sentences[0], sentences[1], 1); other[name] != want {
 			t.Errorf("%s with other models differs elsewhere:\n%q", name, other[name])
 		}
 	}
-	if other["worker"] != plain["worker"] {
+	if other["worker"] != golden(t, "worker") {
 		t.Error("the models changed the worker prompt, which names none")
 	}
 }
