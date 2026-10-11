@@ -81,7 +81,7 @@ const (
 		"opens a sub-issue to continue it, or asks the people: in the home thread of the latest " +
 		"job on it, whose thread agent then carries out their answer, else on the issue with the " +
 		"`needs-user` label. None is started while one is live for the issue or its question " +
-		"waits, nor again until the issue changes.\n\n" +
+		"waits, nor within `parent_stale` of the last one started for it.\n\n" +
 		"Threads (only with a fednet socket): a live thread agent gone from herdr has its session " +
 		"ended as abnormal (its ticket released without --done, a closing line saying the session " +
 		"broke off). A thread with no message for `thread_idle` (72h) has its live session " +
