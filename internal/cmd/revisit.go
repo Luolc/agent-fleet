@@ -229,7 +229,7 @@ func (u *unblocking) revisitBody(p atb.Parent, name string) (string, error) {
 	}
 	text := strings.NewReplacer("{{agent}}", name, "{{scope}}", u.scope, "{{dir}}", u.cfg.Tilde(u.dir),
 		"{{issue}}", p.Identifier, "{{unchanged}}", Duration(u.now-p.UpdatedAt.Unix()), "{{create}}", create,
-		"{{ask}}", ask).Replace(revisitPrompt)
+		"{{ask}}", ask, "{{again}}", Duration(secs(u.cfg.Watch.ParentStale))).Replace(revisitPrompt)
 	at := func(t time.Time) string { return t.UTC().Format(time.RFC3339) }
 	text += fmt.Sprintf("\n## The issue\n\n%s: %s (%s), state %s, last changed %s.\n", p.Identifier, p.Title, p.URL,
 		p.State.Name, at(p.UpdatedAt))

@@ -72,7 +72,7 @@ func TestTheRevisitAgentGetsTheIssueTheJobsTheInstructionsAndWhereToAsk(t *testi
 		t.Fatal(err)
 	}
 	for _, want := range []string{"You are revisit-ex-1, a revisit agent", "in ~/.local/state/fleet/main-unblock,",
-		"has not changed in Linear for 3d08h", "`atb linear claim EX-1 --agent revisit-ex-1 --source watch --scope " +
+		"has not changed in Linear for 3d08h", "no other agent for EX-1 until 3d00h have passed, and then only once it has gone 3d00h without a change", "`atb linear claim EX-1 --agent revisit-ex-1 --source watch --scope " +
 			"'fleet watch revisit agent: closing EX-1'`", "When the claim exits 3",
 		"atb linear create --team EX --project 'Example project' --parent EX-1 --title",
 		"/home/u/.local/state/fleet/main-unblock/revisit-ex-1-question.md", "fleet posts it to the thread C1/1.0",

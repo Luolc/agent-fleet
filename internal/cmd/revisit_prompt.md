@@ -12,4 +12,4 @@ Follow the project's instructions wherever they say anything about this: a diffe
 - Continue it: something inside its goal is left that nobody is working on. Write a file in your directory with what is left, what is already done and how to pick it up, then run `{{create}}`, and comment on {{issue}} naming the new sub-issue. You only create the issue: a thread agent or a person starts the work.
 - Ask the people: you cannot tell from the issue, its sub-issues and the instructions, or the instructions say a person decides. {{ask}}
 
-When you are done, end your turn: fleet closes your tab on its next run and starts no other agent for {{issue}} until it changes in Linear. Do not wait for anything.
+When you are done, end your turn: fleet closes your tab on its next run and starts no other agent for {{issue}} until {{again}} have passed, and then only once it has gone {{again}} without a change. Do not wait for anything.
