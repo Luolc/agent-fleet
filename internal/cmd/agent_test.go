@@ -221,7 +221,7 @@ func TestNamesAreChecked(t *testing.T) {
 			t.Errorf("%s: %v", good, err)
 		}
 	}
-	for _, bad := range []string{"", "Item", "a_b", "a b", "cron", "x/y"} {
+	for _, bad := range []string{"", "Item", "a_b", "a b", "watch", "x/y"} {
 		if err := CheckName(bad); err == nil {
 			t.Errorf("%q accepted", bad)
 		}

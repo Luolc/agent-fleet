@@ -11,7 +11,7 @@ Commands:
 - {{progress}}
 - Before you write to Slack, read the user-level skill `slack-reply`: it covers the Markdown the text is in. Post only with `fleet thread post`, never with `fednet` directly.
 - `fleet thread set-project <project>` puts the thread ticket into a Linear project when the thread clearly belongs to one; `fleet thread relate <ISSUE>` relates the ticket to an issue the thread refers to.
-- `fleet thread end --summary-file <file>` ends this session once the conversation is over (below): the summary, with a section on what the people decided or corrected in this session (their words where you can, with the time), goes on the ticket and your tab closes. A later reply in the thread starts a new session that gets your summary. It is refused while the thread waits; `--asked-to-end` ends it anyway, only when the people in the thread asked you to end.
+- `fleet thread end --summary-file <file>` ends this session once the conversation is over (below): the summary, with a section on what the people decided or corrected in this session (their words where you can, with the time), goes on the ticket and your tab closes. A later reply in the thread starts a new session that gets your summary. It is refused while the thread waits; `--asked-to-end` ends it anyway, only when the people in the thread asked you to end or `fleet watch` tells you it is reclaiming the session.
 
 {{rules}}
 

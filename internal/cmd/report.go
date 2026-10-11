@@ -23,8 +23,9 @@ const (
 		"is pending records nothing new. One line per job, open and ended, in start order, with its " +
 		"state (open, its outcome, or unknown when the ledger has no row for the job), including the " +
 		"jobs that asked nothing; then the questions thread agents asked themselves, one line per thread; then " +
-		"the total. For each: questions asked, answered and pending, and the median and longest wait " +
-		"of the answered ones.\n\n" +
+		"the total. For each: questions asked, answered, pending and closed (given up on: its job " +
+		"ended, or `fleet watch` reclaimed the session that asked it), and the median and longest " +
+		"wait of the answered ones.\n\n" +
 		"A question is answered when the next message a person posts in its thread arrives, and that " +
 		"message marks every question pending there answered: the wait runs to that message, which " +
 		"is not necessarily the answer to the question.\n\n" +
@@ -44,6 +45,7 @@ type asked struct {
 	Asked          int    `json:"asked"`
 	Answered       int    `json:"answered"`
 	Pending        int    `json:"pending"`
+	Closed         int    `json:"closed"`
 	WaitMedianSecs *int64 `json:"wait_median_secs"`
 	WaitMaxSecs    *int64 `json:"wait_max_secs"`
 	waits          []int64
@@ -74,8 +76,12 @@ type attention struct {
 // add counts one question.
 func (a *asked) add(state string, wait *int64) {
 	a.Asked++
-	if state == "pending" {
+	switch state {
+	case "pending":
 		a.Pending++
+		return
+	case "closed":
+		a.Closed++
 		return
 	}
 	a.Answered++
@@ -215,7 +221,7 @@ func AttentionReport(args ReportArgs) (exit.Code, error) {
 		for _, j := range report.Jobs {
 			rows = append(rows, append([]string{j.Job, j.State}, j.cells()...))
 		}
-		printAligned([]string{"JOB", "STATE", "ASKED", "ANSWERED", "PENDING", "WAIT-MEDIAN", "WAIT-MAX"}, rows)
+		printAligned([]string{"JOB", "STATE", "ASKED", "ANSWERED", "PENDING", "CLOSED", "WAIT-MEDIAN", "WAIT-MAX"}, rows)
 	}
 	fmt.Fprintln(os.Stdout)
 	if len(report.Threads) == 0 {
@@ -225,18 +231,18 @@ func AttentionReport(args ReportArgs) (exit.Code, error) {
 		for _, t := range report.Threads {
 			rows = append(rows, append([]string{t.Thread, orDash(t.Ticket)}, t.cells()...))
 		}
-		printAligned([]string{"THREAD", "TICKET", "ASKED", "ANSWERED", "PENDING", "WAIT-MEDIAN", "WAIT-MAX"}, rows)
+		printAligned([]string{"THREAD", "TICKET", "ASKED", "ANSWERED", "PENDING", "CLOSED", "WAIT-MEDIAN", "WAIT-MAX"}, rows)
 	}
 	fmt.Fprintln(os.Stdout)
 	t := report.Total
-	fmt.Fprintf(os.Stdout, "total: %d asked, %d answered, %d pending; wait median %s, longest %s\n",
-		t.Asked, t.Answered, t.Pending, durationOrDash(t.WaitMedianSecs), durationOrDash(t.WaitMaxSecs))
+	fmt.Fprintf(os.Stdout, "total: %d asked, %d answered, %d pending, %d closed; wait median %s, longest %s\n",
+		t.Asked, t.Answered, t.Pending, t.Closed, durationOrDash(t.WaitMedianSecs), durationOrDash(t.WaitMaxSecs))
 	return exit.Ok, nil
 }
 
 // cells are the counts and waits as table cells.
 func (a *asked) cells() []string {
-	return []string{strconv.Itoa(a.Asked), strconv.Itoa(a.Answered), strconv.Itoa(a.Pending),
+	return []string{strconv.Itoa(a.Asked), strconv.Itoa(a.Answered), strconv.Itoa(a.Pending), strconv.Itoa(a.Closed),
 		durationOrDash(a.WaitMedianSecs), durationOrDash(a.WaitMaxSecs)}
 }
 

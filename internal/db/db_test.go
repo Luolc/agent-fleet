@@ -310,3 +310,44 @@ func TestAThreadHasAtMostOneLiveThreadAgentAndAMessageOneRow(t *testing.T) {
 		t.Error("a second row for msg_id m1 was accepted")
 	}
 }
+
+func TestAVersion10LedgerKeepsItsQuestionsAndMayCloseThem(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fleet.db")
+	conn, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range append(migrations[:10:10],
+		"INSERT INTO questions (job, thread, asked_by, text, state, asked_at, answered_at) VALUES ('a', 'C1/1.1', 'a-lead', 'Q?', 'answered', 1, 5)",
+		"PRAGMA user_version = 10") {
+		if _, err := conn.Exec(step); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	conn, err = OpenAt(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	var row string
+	if err := conn.QueryRow("SELECT id || ' ' || job || ' ' || state || ' ' || answered_at || ' ' || reminders || ' [' || reminder_msg || ']' FROM questions").Scan(&row); err != nil {
+		t.Fatal(err)
+	}
+	if row != "1 a answered 5 0 []" {
+		t.Errorf("%q", row)
+	}
+	if _, err := conn.Exec("UPDATE questions SET state = 'closed'"); err != nil {
+		t.Error(err)
+	}
+	if _, err := conn.Exec("UPDATE questions SET state = 'gone'"); err == nil {
+		t.Error("state gone was accepted")
+	}
+	for _, column := range []string{"SELECT reclaim_at FROM agents", "SELECT reclaim_at FROM jobs", "SELECT quiet_asked FROM threads"} {
+		if _, err := conn.Exec(column); err != nil {
+			t.Error(err)
+		}
+	}
+}

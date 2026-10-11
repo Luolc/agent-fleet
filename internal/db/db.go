@@ -17,7 +17,7 @@ import (
 	"github.com/Luolc/agent-fleet/internal/exit"
 )
 
-const schemaVersion = 10
+const schemaVersion = 11
 
 // Version 1: the `agents` table. Ended rows are kept as history, so `name`
 // is unique only among rows that have not ended.
@@ -188,8 +188,39 @@ ALTER TABLE threads ADD COLUMN last_user TEXT NOT NULL DEFAULT '';
 ALTER TABLE threads ADD COLUMN last_ts TEXT NOT NULL DEFAULT '';
 `
 
+// Version 11: what `fleet watch` keeps. A question may be `closed`
+// (its job ended, or watch gave up on it) and counts the reminders posted
+// for it, with the msg_id of the latest; `agents.reclaim_at` is when watch
+// closes a thread agent it asked to end its session, `jobs.reclaim_at`
+// when it ends a job whose lead it told that its question expired; and
+// `threads.quiet_asked` is the timestamp of the thread's last message when
+// watch last asked the thread agent about the quiet, so it asks once per
+// quiet spell. SQLite cannot change a CHECK, so `questions` is rebuilt.
+const schemaV11 = `
+CREATE TABLE questions_v11 (
+    id           INTEGER PRIMARY KEY,
+    job          TEXT    NOT NULL DEFAULT '',
+    thread       TEXT    NOT NULL,
+    asked_by     TEXT    NOT NULL,
+    text         TEXT    NOT NULL,
+    approval     INTEGER NOT NULL DEFAULT 0,
+    state        TEXT    NOT NULL CHECK (state IN ('pending', 'answered', 'closed')),
+    asked_at     INTEGER NOT NULL,
+    answered_at  INTEGER,
+    reminders    INTEGER NOT NULL DEFAULT 0,
+    reminder_msg TEXT    NOT NULL DEFAULT ''
+);
+INSERT INTO questions_v11 (id, job, thread, asked_by, text, approval, state, asked_at, answered_at)
+    SELECT id, job, thread, asked_by, text, approval, state, asked_at, answered_at FROM questions;
+DROP TABLE questions;
+ALTER TABLE questions_v11 RENAME TO questions;
+ALTER TABLE agents ADD COLUMN reclaim_at INTEGER;
+ALTER TABLE jobs ADD COLUMN reclaim_at INTEGER;
+ALTER TABLE threads ADD COLUMN quiet_asked TEXT NOT NULL DEFAULT '';
+`
+
 // migrations[v] upgrades a ledger at version v to v+1.
-var migrations = [schemaVersion]string{schema, schemaV2, schemaV3, schemaV4, schemaV5, schemaV6, schemaV7, schemaV8, schemaV9, schemaV10}
+var migrations = [schemaVersion]string{schema, schemaV2, schemaV3, schemaV4, schemaV5, schemaV6, schemaV7, schemaV8, schemaV9, schemaV10, schemaV11}
 
 // Path is where the ledger of `scope` lives:
 // `$XDG_STATE_HOME/fleet/<scope>.db`, with `~/.local/state` when

@@ -473,33 +473,7 @@ func jobEndForced(h *herdr.Herdr, args JobEndArgs) (exit.Code, error) {
 		return 0, err
 	}
 	defer conn.Close()
-	open, err := openJob(conn, job)
-	if err != nil {
-		return 0, err
-	}
-	dirs, err := jobDirs(conn, open, job, sc.Paths.Initiatives)
-	if err != nil {
-		return 0, err
-	}
-	workspaces, err := closeWorkspaces(h, job)
-	if err != nil {
-		return 0, err
-	}
-	if err := removeDirs(h, workspaces, dirs, ""); err != nil {
-		return 0, err
-	}
-	left, err := whatIsLeft(h, job, workspaces, dirs, "", false)
-	if err != nil {
-		return 0, err
-	}
-	if len(left) > 0 {
-		return 0, exit.Environmentf("%d left after reclaiming %s: %s", len(left), job, strings.Join(left, ", "))
-	}
-	pending, err := linearPending(conn, open, job)
-	if err != nil {
-		return 0, err
-	}
-	ended, err := endJob(conn, job, "abandoned")
+	ended, pending, err := reclaimJob(h, conn, sc, job)
 	if err != nil {
 		return 0, err
 	}
@@ -511,6 +485,44 @@ func jobEndForced(h *herdr.Herdr, args JobEndArgs) (exit.Code, error) {
 		}
 	}
 	return exit.Ok, nil
+}
+
+// reclaimJob closes the job's workspaces, removes its directories, and
+// ends it as abandoned with its live rows: the reclaim of `job end
+// --force`, which `watch` also runs. It returns the rows ended and the
+// Linear steps of the ending not recorded.
+func reclaimJob(h *herdr.Herdr, conn *sql.DB, sc *config.Scope, job string) (int64, []string, error) {
+	open, err := openJob(conn, job)
+	if err != nil {
+		return 0, nil, err
+	}
+	dirs, err := jobDirs(conn, open, job, sc.Paths.Initiatives)
+	if err != nil {
+		return 0, nil, err
+	}
+	workspaces, err := closeWorkspaces(h, job)
+	if err != nil {
+		return 0, nil, err
+	}
+	if err := removeDirs(h, workspaces, dirs, ""); err != nil {
+		return 0, nil, err
+	}
+	left, err := whatIsLeft(h, job, workspaces, dirs, "", false)
+	if err != nil {
+		return 0, nil, err
+	}
+	if len(left) > 0 {
+		return 0, nil, exit.Environmentf("%d left after reclaiming %s: %s", len(left), job, strings.Join(left, ", "))
+	}
+	pending, err := linearPending(conn, open, job)
+	if err != nil {
+		return 0, nil, err
+	}
+	ended, err := endJob(conn, job, "abandoned")
+	if err != nil {
+		return 0, nil, err
+	}
+	return ended, pending, nil
 }
 
 // linearPending are the Linear steps of the ending of `open` (the open

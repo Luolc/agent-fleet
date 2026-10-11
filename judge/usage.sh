@@ -91,7 +91,7 @@ D=/home/agent/somedir
 spawn_refused "a worker" "cannot spawn" item-1-a worker item-1 x --cwd $D --task-file /home/agent/tasks/usage.md
 spawn_refused "a thread agent" "cannot spawn" thread-1 thread "" x --cwd $D --task-file /home/agent/tasks/usage.md
 spawn_refused "an upper-case name" "[a-z0-9-]" item-1-lead lead item-1 Item_2 --cwd $D --task-file /home/agent/tasks/usage.md
-spawn_refused "the name cron" "reserved" item-1-lead lead item-1 cron --cwd $D --task-file /home/agent/tasks/usage.md
+spawn_refused "the name watch" "reserved" item-1-lead lead item-1 watch --cwd $D --task-file /home/agent/tasks/usage.md
 spawn_refused "a 33-character agent name" "at most 32" item-1-lead lead item-1 abcdefghij-abcdefghij-abcd --cwd $D --task-file /home/agent/tasks/usage.md
 spawn_refused "a missing task file" "cannot read" item-1-lead lead item-1 d --cwd $D --task-file /home/agent/tasks/missing.md
 spawn_refused "an empty task file" "empty" item-1-lead lead item-1 d --cwd $D --task-file /home/agent/tasks/empty.md
