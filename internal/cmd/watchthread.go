@@ -41,6 +41,13 @@ type question struct {
 	reminders          int
 }
 
+// screen is whether the question is about an agent stopped at a screen,
+// asked under its helper's name: it is reminded of, but never times out,
+// since a screen waiting for a person is not a job or session gone stale.
+func (q question) screen() bool {
+	return strings.HasPrefix(q.askedBy, helperPrefix)
+}
+
 // session is a thread's live thread agent.
 type session struct {
 	name      string
@@ -241,7 +248,7 @@ func (r *watchRun) thread(t *watchedThread, all []watched) error {
 func (r *watchRun) questions(t *watchedThread, all []watched) error {
 	var expired, left []question
 	for _, q := range t.questions {
-		if q.job == "" && r.now-q.askedAt >= secs(r.cfg.Watch.ThreadQuestion) {
+		if q.job == "" && !q.screen() && r.now-q.askedAt >= secs(r.cfg.Watch.ThreadQuestion) {
 			expired = append(expired, q)
 		} else {
 			left = append(left, q)
@@ -273,7 +280,7 @@ func (r *watchRun) questions(t *watchedThread, all []watched) error {
 
 // leadQuestion runs the lead-question rule on one job.
 func (r *watchRun) leadQuestion(t *watchedThread, j *watchedJob, all []watched) error {
-	i := slices.IndexFunc(t.questions, func(q question) bool { return q.job == j.job })
+	i := slices.IndexFunc(t.questions, func(q question) bool { return q.job == j.job && !q.screen() })
 	expired := i >= 0 && r.now-t.questions[i].askedAt >= secs(j.limits.LeadQuestion)
 	switch {
 	case !expired && j.reclaimAt.Valid:
@@ -303,6 +310,7 @@ func (r *watchRun) leadQuestion(t *watchedThread, j *watchedJob, all []watched) 
 	case r.now < j.reclaimAt.Int64:
 		return nil
 	}
+	askedAt := t.questions[i].askedAt
 	ended, pending, err := reclaimJob(r.h, r.conn, r.cfg, j.job)
 	if err != nil {
 		return err
@@ -320,7 +328,7 @@ func (r *watchRun) leadQuestion(t *watchedThread, j *watchedJob, all []watched) 
 		return err
 	}
 	text := fmt.Sprintf("Job %s was ended by force: its lead's question had no answer for %s, and the job was not "+
-		"ended within %s of the lead being told.", j.job, Duration(r.now-gone[0].askedAt), Duration(leadGrace))
+		"ended within %s of the lead being told.", j.job, Duration(r.now-askedAt), Duration(leadGrace))
 	if len(pending) > 0 {
 		text += " Linear steps not done:\n- " + strings.Join(pending, "\n- ")
 	}

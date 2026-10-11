@@ -103,7 +103,7 @@ has "unblock: the home thread's agent has the question" "$(received thread-s)" "
 settled s-lead
 lead_got=$(received s-lead)
 has "unblock: the worker's lead is told about the helper" "$lead_got" "[FROM: watch]" "s-perm" "started $hperm"
-has "unblock: the starter is told the start stopped at a screen" "$lead_got" "s-new" "has not had its first message"
+has "unblock: the starter is told the start stopped at a screen" "$lead_got" "s-new" "may not have its task"
 lacks "unblock: nobody is told about the screen the rule answered" "$lead_got" "s-trust"
 lacks "unblock: a start left at a screen just now is its starter's" "$(cat /home/agent/unblock1.out)" "s-young"
 

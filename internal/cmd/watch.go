@@ -64,7 +64,8 @@ const (
 		"agent's home thread are asked, once. Any other screen gets a helper agent " +
 		"(`unblock-<row id>`, in the `threads` workspace), one at a time and at most 3 per agent, " +
 		"which presses keys as fleet's guidance says or writes a question that the next run asks " +
-		"the people; no helper is started while that question waits for an answer. A worker's lead " +
+		"the people; no helper is started while that question waits for an answer. Questions about " +
+		"a screen are reminded of like the others, but never time out. A worker's lead " +
 		"is told when a helper starts or the people are asked, and so is the starter of a lead or " +
 		"worker whose start stopped at the screen. Helpers that finished their turn, or worked for " +
 		"30 minutes, are closed.\n\n" +

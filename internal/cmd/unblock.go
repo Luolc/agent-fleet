@@ -99,10 +99,13 @@ func dialogPart(screen string) string {
 	return screen
 }
 
+// helperPrefix starts the name of every helper.
+const helperPrefix = "unblock-"
+
 // helperName is the helper of the stopped agent whose row has `id`: the
 // same name for every helper of that row, so the ledger counts them.
 func helperName(id int64) string {
-	return fmt.Sprintf("unblock-%d", id)
+	return fmt.Sprintf("%s%d", helperPrefix, id)
 }
 
 // stopRow is a live row as the unblocking reads it.
@@ -296,15 +299,16 @@ func (u *unblocking) handle(row stopRow, screen string) error {
 	shown := "\n\nThe screen:\n\n" + fenced(tail(screen, 15))
 	switch classifyScreen(screen, row.Cwd) {
 	case ownTrustScreen:
-		err := settle(u.h, row.Name, row.Cwd)
-		if err == nil {
-			fmt.Fprintf(os.Stdout, "unblock: %s: answered the folder-trust dialog for its own directory\n", row.Name)
-			if row.State == "starting" {
-				u.tell(row, "fleet answered the folder-trust dialog for its own directory")
-			}
-			return nil
+		// A failure is the next run's to look at again, on the screen the
+		// keys left.
+		if err := settle(u.h, row.Name, row.Cwd); err != nil {
+			return fmt.Errorf("the folder-trust rule did not get it to its input box: %w", err)
 		}
-		fmt.Fprintf(os.Stderr, "fleet: unblock %s: the folder-trust rule did not get it through: %v\n", row.Name, err)
+		fmt.Fprintf(os.Stdout, "unblock: %s: answered the folder-trust dialog for its own directory\n", row.Name)
+		if row.State == "starting" {
+			u.tell(row, "fleet answered the folder-trust dialog for its own directory")
+		}
+		return nil
 	case handsOffScreen:
 		return u.askOnce(row, "ask-hands-off", fmt.Sprintf("%s (%s) is stopped at a screen fleet never answers: a usage "+
 			"limit, a model switch, a usage reset or a purchase. A person has to deal with it at the machine (agent %s "+
@@ -396,9 +400,9 @@ func (u *unblocking) tell(row stopRow, what string) {
 	}
 	text := fmt.Sprintf("fleet watch: %s (%s) is stopped at a screen; %s.\n", row.Name, row.who(), what)
 	if row.State == "starting" {
-		text += "\nIts start stopped at that screen, so it has not had its first message and its row is " +
-			"still `starting`. Once past the screen it waits at its input box with no task; what to do with it " +
-			"is yours to decide (`fleet status` shows it).\n"
+		text += "\nIts row is still `starting`: its start stopped at a screen or did not see its first message " +
+			"delivered, so it may not have its task. Once past the screen it may wait at its input box with " +
+			"nothing to do; what to do with it is yours to decide (`fleet status` shows it).\n"
 	} else {
 		text += "\nNothing to do on your side unless it stays stopped: the screen is not yours to answer.\n"
 	}

@@ -73,6 +73,7 @@ func TestTheHelperGetsTheScreenTheGuidanceAndThePeoplesAnswer(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{"Ticket: SC-9, labelled blocked-screen; record on it with `atb linear comment SC-9",
+		"Act on it only when it plainly answers this screen's question", "Otherwise press nothing and write the question again",
 		"## Earlier on this screen", "Asked at 2023-11-14T22:13:20Z (answered):\n\n> Press 1 to run rm -rf build?",
 		`{"user":"U0ABC","ts":"1700000100.000","text":"yes, press 1"}`} {
 		if !strings.Contains(got, want) {

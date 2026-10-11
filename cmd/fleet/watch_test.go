@@ -631,6 +631,42 @@ func TestWatchEndsAJobWhoseLeadsQuestionGoesUnanswered(t *testing.T) {
 	}
 }
 
+func TestWatchRemindsOfScreenQuestionsButNeverTimesThemOut(t *testing.T) {
+	w := watchThreadWorld(t)
+	w.exec("INSERT INTO threads (thread, slug, created_at) VALUES ('C5/5.0', 'c5-5-0', 0)",
+		"INSERT INTO agents (name, role, thread, pane_id, state, started_at) VALUES ('thread-c5', 'thread', 'C5/5.0', 'p5', 'active', 0)",
+		"INSERT INTO jobs (job, lead_cwd, home_thread, state, started_at) VALUES ('q', '/c', 'C5/5.0', 'open', 0)",
+		fmt.Sprintf("INSERT INTO questions (job, thread, asked_by, text, state, asked_at) VALUES "+
+			"('q', 'C5/5.0', 'unblock-41', 'Press 1 to run it?', 'pending', %d), ('', 'C5/5.0', 'unblock-42', 'Trust it?', 'pending', %d)", t0, t0))
+	w.insert(watchRow{name: "q-lead", role: "lead", job: "q", parent: "thread-c5"})
+	w.herdrList("thread-c5 idle 1", "q-lead idle 2")
+	w.screen("q-lead", claude("⏺ Waiting", "1s", "2hr 59m"))
+	w.lastMessage("C5/5.0", t0)
+	w.watchAt(30*time.Minute, 0)
+	if got := w.log("fednet.log"); !strings.Contains(got, "Reminder 1 of 3: 2 question(s) here still wait for an answer") {
+		t.Errorf("%s", got)
+	}
+	// Past both limits (the thread itself is not idle): the screen
+	// questions still wait, the job stays open, the session is not ended.
+	w.lastMessage("C5/5.0", t0+72*3600)
+	w.watchAt(72*time.Hour+31*time.Minute, 0)
+	if got := w.query("SELECT group_concat(asked_by || ' ' || state, ', ') FROM questions"); got != "unblock-41 pending, unblock-42 pending" {
+		t.Errorf("questions: %s", got)
+	}
+	if got := w.query("SELECT state || ' ' || coalesce(reclaim_at, 'none') FROM jobs WHERE job = 'q'"); got != "open none" {
+		t.Errorf("job q %s", got)
+	}
+	if got := w.query("SELECT coalesce(reclaim_at, 'none') FROM agents WHERE name = 'thread-c5'"); got != "none" {
+		t.Errorf("thread-c5 reclaim_at %s", got)
+	}
+	if got := w.prompts(); len(got) != 0 {
+		t.Errorf("%q", got)
+	}
+	if got := strings.Count(w.log("fednet.log"), "-- Reminder"); got != 2 {
+		t.Errorf("%d reminders: %s", got, w.log("fednet.log"))
+	}
+}
+
 func TestWatchEndsTheSessionOfAThreadAgentGoneFromHerdr(t *testing.T) {
 	w := watchThreadWorld(t)
 	w.exec("INSERT INTO threads (thread, slug, ticket, ticket_url, created_at) VALUES ('C4/4.0', 'c4-4-0', 'EX-4', 'https://linear.example.test/EX-4', 0)",
