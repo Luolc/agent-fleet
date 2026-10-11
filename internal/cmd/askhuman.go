@@ -35,11 +35,12 @@ const (
 		"A single-repo job without a home thread (started by a caller without FLEET_ROLE) gets " +
 		"one at its lead's first ask: fleet opens a thread with `fednet client open-thread` in " +
 		"the channel of the job's repo (`<repo prefix><repo>`, or the initiative's channel for " +
-		"an initiative's repo run in the initiative's checkout), or, when fleet knows no thread " +
+		"an initiative's repo run in the initiative's checkout), or, when fleet knows no id " +
 		"of that channel, in the general initiative's channel (`<initiative prefix><general " +
-		"initiative>`); the question should then name the repo in its first line. fleet knows " +
-		"a channel's id only from the threads of it this scope has seen (the newest; direct " +
-		"messages left out). The thread is recorded as the job's home thread, and the " +
+		"initiative>`); the question should then name the repo in its first line. fleet takes " +
+		"a channel's id from the newest thread of it this scope has seen, or else from fednet's " +
+		"routes (`fednet client routes -json`), the route with the channel's name (direct " +
+		"messages left out in both); routes fednet cannot give count as naming none. The thread is recorded as the job's home thread, and the " +
 		"question goes on as above. Until it is recorded nothing of the question is.\n\n" +
 		"The post and the delivery are recorded in the ledger (table `steps`), so running it " +
 		"again with the same question while it is pending continues where it stopped and " +
@@ -223,17 +224,21 @@ func askedIn(conn *sql.DB, me *identity.Identity) (thread, job string, row *jobR
 
 // openHomeThread opens a thread for the questions of a single-repo job
 // without a home thread, in its repo's channel, or the general
-// initiative's when fleet knows no thread of the repo's, and records it as
+// initiative's when fleet knows no id of the repo's, and records it as
 // the job's home thread and as a thread of that channel, so its agent
-// starts in that channel's directory. A channel's id is the one of the
-// newest thread this scope has seen there, since fleet knows channels only
-// from their threads; direct messages, which have the general mapping too,
+// starts in that channel's directory, and the next lookup finds the
+// channel in the ledger. A channel's id is the one of the newest thread
+// this scope has seen there, or else the one fednet's routes give the
+// channel's name; direct messages, which have the general mapping too,
 // are left out: their Slack ids start with D, and no thread opens there.
-// Until the thread is recorded nothing of the question is.
+// Routes fednet cannot give count as naming no channel, with a line on
+// stderr. Until the thread is recorded nothing of the question is.
 func openHomeThread(conn *sql.DB, cfg *config.Scope, row *jobRow) (string, error) {
 	tried := []string{jobMapping(cfg, row.Repo, row.LeadCwd), generalMapping(cfg.Channels)}
+	var routes map[string]string
 	var mapping, channel string
-	for _, mapping = range tried {
+	for i, m := range tried {
+		mapping = m
 		err := conn.QueryRow("SELECT channel FROM threads WHERE mapping = ?1 AND channel != '' AND channel NOT LIKE 'D%' "+
 			"ORDER BY id DESC LIMIT 1",
 			mapping).Scan(&channel)
@@ -243,11 +248,20 @@ func openHomeThread(conn *sql.DB, cfg *config.Scope, row *jobRow) (string, error
 		if !errors.Is(err, sql.ErrNoRows) {
 			return "", exit.Database(err)
 		}
+		if i == 0 {
+			if routes, err = fednet.Channels(cfg.FednetSocket); err != nil {
+				fmt.Fprintf(os.Stderr, "fleet: %v; channel ids are taken from the ledger only\n", err)
+			}
+		}
+		if channel = routes[mapping]; channel != "" {
+			break
+		}
 	}
 	if channel == "" {
 		return "", exit.Refusedf("job %s has no home thread, and fleet cannot open one: no thread of #%s or #%s has "+
-			"reached this scope, so their ids are unknown (a message to the bot in either makes it known); "+
-			"nothing is recorded, run ask-human again then", row.Job, tried[0], tried[1])
+			"reached this scope, and fednet's routes name neither, so their ids are unknown (a message to the bot in "+
+			"either, or a route with the channel's name, makes it known); nothing is recorded, run ask-human again then",
+			row.Job, tried[0], tried[1])
 	}
 	text := fmt.Sprintf("Questions from job %s in %s, which started without a thread; fleet posts them below.", row.Job, row.Repo)
 	thread, err := fednet.OpenThread(cfg.FednetSocket, channel, text)
