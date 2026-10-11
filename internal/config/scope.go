@@ -33,6 +33,11 @@ type Scope struct {
 	// Watch is when `fleet watch` acts on the scope's threads and its
 	// cross-repo jobs.
 	Watch Watch
+	// Prompts are the built-in texts the scope changes, by name (one of
+	// PromptNames).
+	Prompts map[string]Prompt
+	// Models fill the prompts' model and effort slots.
+	Models Models
 	// home is what `~/` stands for, in Paths and in Tilde.
 	home string
 }
@@ -95,7 +100,9 @@ type scopeFile struct {
 		InitiativePrefix  *string `json:"initiative_prefix"`
 		GeneralInitiative *string `json:"general_initiative"`
 	} `json:"channels"`
-	Watch *scopeWatchFile `json:"watch"`
+	Watch   *scopeWatchFile        `json:"watch"`
+	Prompts map[string]*promptFile `json:"prompts"`
+	Models  *modelsFile            `json:"models"`
 }
 
 // setting is one key of the `paths` or `channels` section: nil when the
@@ -135,7 +142,9 @@ func ScopePath(scope string) (string, error) {
 }
 
 // LoadScope reads the settings of `scope`. A missing file is all
-// defaults; a file that cannot be read or is not valid is exit 1.
+// defaults; a file that cannot be read or is not valid is exit 1. The
+// prompt files it names are not read here, only where a prompt is put
+// together, so a broken one stops only the starts that need it.
 func LoadScope(scope string) (*Scope, error) {
 	path, err := ScopePath(scope)
 	if err != nil {
@@ -155,12 +164,14 @@ func LoadScope(scope string) (*Scope, error) {
 	if err != nil {
 		return nil, exit.Refusedf("%s: %v", path, err)
 	}
+	resolve(t.Prompts, filepath.Dir(path))
 	return t, nil
 }
 
 // ParseScope reads a scope config's content, expanding `~/` in paths to
 // `home`. Unknown keys, wrong types and nulls are errors; a section that
-// is given must name its value.
+// is given must name its value. A relative prompt path stays relative:
+// LoadScope resolves it against the config file's directory.
 func ParseScope(data []byte, home string) (*Scope, error) {
 	var f scopeFile
 	if err := decodeStrict(data, &f); err != nil {
@@ -174,7 +185,8 @@ func ParseScope(data []byte, home string) (*Scope, error) {
 	if err := refuseNulls(data, ""); err != nil {
 		return nil, err
 	}
-	t := &Scope{Paths: DefaultPaths, Channels: DefaultChannels, Watch: DefaultWatch, home: filepath.Clean(home)}
+	t := &Scope{Paths: DefaultPaths, Channels: DefaultChannels, Watch: DefaultWatch, Models: DefaultModels,
+		home: filepath.Clean(home)}
 	if err := f.sections(t); err != nil {
 		return nil, err
 	}
@@ -203,7 +215,11 @@ func ParseScope(data []byte, home string) (*Scope, error) {
 		}
 		*p.path = expanded
 	}
-	if err := errors.Join(t.Channels.check(), f.Watch.apply(&t.Watch)); err != nil {
+	if err := errors.Join(t.Channels.check(), f.Watch.apply(&t.Watch), f.Models.apply(&t.Models)); err != nil {
+		return nil, err
+	}
+	var err error
+	if t.Prompts, err = prompts(f.Prompts, home); err != nil {
 		return nil, err
 	}
 	return t, nil

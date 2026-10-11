@@ -263,6 +263,40 @@ func TestJobStartRefusalsHappenBeforeHerdrIsCalled(t *testing.T) {
 	}
 }
 
+// A lead prompt file that cannot be used refuses the start before herdr,
+// Linear or the ledger is touched: a start that loaded the prompt where it
+// fills it would get to herdr first and fail there instead.
+func TestJobStartRefusesABrokenLeadPromptBeforeAnything(t *testing.T) {
+	w := newWorld(t)
+	taskFile := task(w, "task.md", "build item 2\n")
+	checkout := dir(w, filepath.Join("home", "dev", "example-dataset", ".fleet"))
+	if err := os.WriteFile(filepath.Join(checkout, "config.json"),
+		[]byte(`{"linear": {"team": "EX", "project": "Example project"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	config := dir(w, filepath.Join("home", ".config", "fleet", "prompts"))
+	if err := os.WriteFile(filepath.Join(config, "lead.md"), []byte("Read {{repo}} first.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(filepath.Dir(config), scope+".json"),
+		[]byte(`{"prompts": {"lead": {"append": "prompts/lead.md"}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	w.fakeAtb("")
+	ledgerWith(w, nil)
+	out := w.asThread("job", "start", "item-2", "--repo", "example-dataset", "--parent-issue", "EX-1", "--task-file", taskFile)
+	if out.code != 1 || !strings.Contains(out.stderr,
+		"prompts.lead.append (~/.config/fleet/prompts/lead.md:1:6): unknown slot {{repo}}; lead has {{agent}}") {
+		t.Errorf("%+v", out)
+	}
+	if calls := w.calls(); calls != "" {
+		t.Errorf("calls before the refusal: %s", calls)
+	}
+	if got := jobState(w, "item-2"); got != "none" {
+		t.Errorf("a refused start wrote a job row: %s", got)
+	}
+}
+
 func TestDoneReportsToTheParentAndEndsTheRow(t *testing.T) {
 	w := newWorld(t)
 	ledgerWith(w, []struct{ name, role, job string }{{"item-1-a", "worker", "item-1"}})

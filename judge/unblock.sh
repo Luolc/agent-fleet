@@ -137,7 +137,33 @@ has "unblock: it gets their question and answer" "$(received "$hperm")" "## Earl
 check "unblock: it keeps the first helper's ticket" "SC-9|2 " \
   "$(ledger "SELECT issue, (SELECT count(*) FROM agents WHERE name = '$hperm') FROM agents WHERE name = '$hperm' AND state != 'ended'")"
 check "unblock: no second ticket for s-perm" 1 "$(grep -c 'title s-perm stopped' /home/agent/screens-atb.log)"
-for out in /home/agent/unblock1.out /home/agent/unblock2.out /home/agent/unblock3.out; do
+# An unblock prompt addition with a slot the prompt does not have: no
+# helper and no ticket for a newly stopped agent; its home thread is told
+# once, naming the file and line, and the next run does not say it again.
+start_fake s-bad >/dev/null
+sqlite3 "$DB" "INSERT INTO agents (name, role, job, parent, cwd, state, started_at, pane_id)
+  VALUES ('s-bad', 'worker', 's', 's-lead', '/home/agent', 'active', $now, '')"
+"${S[@]}" agent prompt s-bad "please BLOCK" --wait --until working --timeout 20000 >/dev/null
+"${S[@]}" agent wait s-bad --until blocked --timeout 20000 >/dev/null
+hbad=unblock-$(rowid s-bad)
+mkdir -p "/home/agent/.config/$T/prompts"
+printf 'Say hello.\nThen read {{repo}}.\n' > "/home/agent/.config/$T/prompts/unblock.append.md"
+cp "/home/agent/.config/$T/$SCOPE.json" /home/agent/screens.json.keep
+jq -c '. + {"prompts": {"unblock": {"append": "prompts/unblock.append.md"}}}' /home/agent/screens.json.keep \
+  > "/home/agent/.config/$T/$SCOPE.json"
+uwatch >/home/agent/unblock4.out 2>&1; rc=$?
+check "unblock: a broken unblock prompt fails the run, exit 1" 1 "$rc"
+has "unblock: the run names the file, line and slot" "$(cat /home/agent/unblock4.out)" \
+  "prompts.unblock.append (~/.config/$T/prompts/unblock.append.md:2:11): unknown slot {{repo}}"
+check "unblock: no helper and no ticket for s-bad" "0 0" \
+  "$(ledger "SELECT count(*) FROM agents WHERE name = '$hbad'")$(grep -c 'title s-bad stopped' /home/agent/screens-atb.log)"
+has "unblock: the home thread is told what was not started and why" "$(cat /home/agent/screens-fednet.log)" \
+  "-thread $KS -- fleet watch did not start a screen helper for" "fleet's prompt config is broken (prompts.unblock.append"
+uwatch >/home/agent/unblock5.out 2>&1; rc=$?
+check "unblock: the next run fails the same way" 1 "$rc"
+check "unblock: the thread is told once" 1 "$(grep -c "fleet's prompt config is broken" /home/agent/screens-fednet.log)"
+mv /home/agent/screens.json.keep "/home/agent/.config/$T/$SCOPE.json"
+for out in /home/agent/unblock1.out /home/agent/unblock2.out /home/agent/unblock3.out /home/agent/unblock4.out /home/agent/unblock5.out; do
   [ "$fail" = 0 ] || { echo "--- $out"; cat "$out"; }
 done
 "${S[@]}" server stop >/dev/null

@@ -11,6 +11,7 @@ import (
 	_ "embed" // the built-in prompts
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -846,15 +847,15 @@ var leadPrompt string
 //go:embed worker_prompt.md
 var workerPrompt string
 
-// rolePrompt is the built-in prompt of a lead or a worker with its
-// placeholders filled: the agent's identity, where it runs, what Linear
-// holds for it, and where its files go. `cap` is the job's agent cap;
+// roleSlots are the values of a lead's or a worker's prompt slots: the
+// agent's identity, where it runs, what Linear holds for it, where its
+// files go, and the models the scope names. `cap` is the job's agent cap;
 // `issue` the agent's work order (zero without Linear); `parentIssue` the
 // job's parent issue; `leadCwd` where the job's lead runs: the checkout
 // of a single-repo job, whose repo is `repo`, or `<job>/` in the
-// initiative's checkout of a cross-repo job; `sc` the scope's paths and
-// channels.
-func rolePrompt(sc *config.Scope, id *identity.Identity, cwd, repo, leadCwd string, cap int, issue atb.Issue, parentIssue string) string {
+// initiative's checkout of a cross-repo job; `sc` the scope's paths,
+// channels and models.
+func roleSlots(sc *config.Scope, id *identity.Identity, cwd, repo, leadCwd string, cap int, issue atb.Issue, parentIssue string) map[string]string {
 	issueNote := " (your work order, " + issue.URL + ")"
 	if issue.Identifier == "" {
 		issueNote = " (empty: this job has no Linear work orders)"
@@ -881,14 +882,11 @@ func rolePrompt(sc *config.Scope, id *identity.Identity, cwd, repo, leadCwd stri
 			"of %s/<R>/AGENTS.md of every repo R the job touches, and follow them.", filepath.Join(root, "AGENTS.md"), checkouts)
 		scratch += "/" + initiative
 	}
-	prompt, lead := leadPrompt, id.Parent
-	if id.Role == identity.Worker {
-		prompt = workerPrompt
-	}
-	return strings.NewReplacer("{{job}}", id.Job, "{{scope}}", id.Scope, "{{agent}}", id.Agent,
-		"{{parent}}", id.Parent, "{{lead}}", lead, "{{cwd}}", cwd, "{{repo_line}}", repoLine,
-		"{{issue}}", issue.Identifier, "{{issue_note}}", issueNote, "{{linear}}", linear, "{{agents_md}}", agentsMD,
-		"{{cap}}", strconv.Itoa(cap), "{{scratch}}", scratch).Replace(prompt)
+	slots := map[string]string{"job": id.Job, "scope": id.Scope, "agent": id.Agent, "parent": id.Parent,
+		"lead": id.Parent, "cwd": cwd, "repo_line": repoLine, "issue": issue.Identifier, "issue_note": issueNote,
+		"linear": linear, "agents_md": agentsMD, "cap": strconv.Itoa(cap), "scratch": scratch}
+	maps.Copy(slots, modelValues(sc))
+	return slots
 }
 
 // taskSection is the last part of a first message, `## Your task`: the

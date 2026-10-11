@@ -19,9 +19,13 @@ var update = flag.Bool("update", false, "rewrite the golden files in testdata/pr
 // TestBuiltInPromptsMatchTheirGoldenFiles renders the first messages of
 // every role from fixed contexts and compares them byte for byte with
 // testdata/prompts: a change to a prompt or to how it is filled shows up as
-// a diff of the golden files. The contexts are the fewest that take every
-// branch of the filling. `go test ./internal/cmd -run Golden -update`
-// rewrites the files.
+// a diff of the golden files. The contexts take both sides of the job
+// kind, the work order, the channel, the socket, the ticket, the thread to
+// ask in and the project; other branches (the stopped agent's role,
+// earlier questions, the kinds of thread message) are not covered. The
+// scope configs have no prompts or models, so these are the texts a start
+// sends by default. `go test ./internal/cmd -run Golden -update` rewrites
+// the files.
 func TestBuiltInPromptsMatchTheirGoldenFiles(t *testing.T) {
 	sc, err := config.ParseScope([]byte(`{}`), "/home/u")
 	if err != nil {

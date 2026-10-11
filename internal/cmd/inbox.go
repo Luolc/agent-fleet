@@ -270,8 +270,9 @@ func inboxLedger(scope, thread, mapping string) (*sql.DB, error) {
 
 // route delivers the message to the thread's live agent, or starts one.
 // exit.Ok means the agent has the message, or (`dropped`) that no agent
-// was started because the thread's checkout is not on this machine or
-// Linear is unavailable, and the thread was told.
+// was started because the thread's checkout is not on this machine,
+// Linear is unavailable or the thread prompt is broken, and the thread
+// was told.
 // Shared with `ask-human` and the job's conclusion, which reach the
 // job's home thread the same way.
 func route(h *herdr.Herdr, conn *sql.DB, scope string, cfg *config.Scope, msg inboundMessage) (code exit.Code, dropped bool, err error) {
@@ -288,8 +289,7 @@ func route(h *herdr.Herdr, conn *sql.DB, scope string, cfg *config.Scope, msg in
 			return 0, false, err
 		}
 		if present && state == "starting" {
-			code, err := resumeThreadStart(h, conn, scope, cfg, msg, name)
-			return code, false, err
+			return resumeThreadStart(h, conn, scope, cfg, msg, name)
 		}
 		if present {
 			text, err := WithHeader(msg.sender(), msg.body())
@@ -316,6 +316,9 @@ func startThread(h *herdr.Herdr, conn *sql.DB, scope string, cfg *config.Scope, 
 	}
 	if info, err := os.Stat(s.cwd); err != nil || !info.IsDir() {
 		return exit.Ok, true, s.notHere()
+	}
+	if s.text, err = loadPrompt(cfg, "thread"); err != nil {
+		return s.promptBroken(err)
 	}
 	// The session is started only for a thread that gets an agent.
 	if err := ensureSession(h, scope); err != nil {

@@ -327,6 +327,28 @@ ATB
 out=$(thr job start item-4 --repo "$R" --key PR-4 --task-file "$(task item-4 'keyed')" 2>&1); rc=$?
 check "job start --key: exit 0" 0 "$rc"
 check "job start --key: the key is recorded" "|PR-4|$R|$DEV|open| " "$(job_row item-4)"
+# The scope's config adds a file to the worker prompt: it follows the
+# prompt and comes before the task. With a slot the worker prompt does not
+# have, the spawn is refused before anything is made, naming the file and
+# where the slot is.
+SC_CONFIG=/home/agent/.config/$T/$SCOPE.json
+mkdir -p "/home/agent/.config/$T/prompts"
+echo '{"prompts": {"worker": {"append": "prompts/worker.append.md"}}}' > "$SC_CONFIG"
+printf 'Then list every file you changed. 0xAPPEND\n' > "/home/agent/.config/$T/prompts/worker.append.md"
+out=$(as item-4-lead lead thread-1 item-4 -- spawn p --cwd "$DEV" --task-file "$(task p 'worker p 0xWORKP')" 2>&1); rc=$?
+check "spawn with a prompt addition: exit 0" 0 "$rc"
+[ "$rc" = 0 ] || printf '%s\n' "$out"
+has "spawn with a prompt addition: it follows the worker prompt, before the task" "$(received item-4-p | tr '\n' '|')" \
+  "and never publish a release.||Then list every file you changed. 0xAPPEND||## Your task||worker p 0xWORKP"
+printf 'Before anything else,\nread {{repo}}.\n' > "/home/agent/.config/$T/prompts/worker.append.md"
+tabs=$("${S[@]}" tab list --workspace "$(agent_field item-4-lead workspace_id)" | jq '.result.tabs | length')
+out=$(as item-4-lead lead thread-1 item-4 -- spawn q --cwd "$DEV" --task-file "$(task q 'worker q')" 2>&1); rc=$?
+check "spawn with an unknown slot in the addition: exit 1" 1 "$rc"
+has "spawn with an unknown slot: names the key, the file, its line and column" "$out" \
+  "prompts.worker.append (~/.config/$T/prompts/worker.append.md:2:6): unknown slot {{repo}}; worker has {{agent}}"
+check "spawn with an unknown slot: no row, no agent, no tab" "0 agent_not_found $tabs" \
+  "$(ledger "SELECT count(*) FROM agents WHERE name = 'item-4-q'")$(agent_field item-4-q agent_status) $("${S[@]}" tab list --workspace "$(agent_field item-4-lead workspace_id)" | jq '.result.tabs | length')"
+rm -r "$SC_CONFIG" "/home/agent/.config/$T/prompts"
 out=$(thr job start item-5 --repo "$R" --key PR-4 --task-file "$(task item-5 'same key')" 2>&1); rc=$?
 check "job start: the same key refused with exit 1" 1 "$rc"
 has "job start: key refusal names the open job" "$out" "job item-4 is open with the same key"

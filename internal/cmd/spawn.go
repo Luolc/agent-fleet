@@ -81,6 +81,7 @@ type spawnChecked struct {
 	job       *jobRow
 	sc        *config.Scope
 	cfg       *config.Config
+	prompt    *promptText
 	linear    *linear
 	body      string
 	task      string
@@ -132,8 +133,8 @@ func spawnChecks(h *herdr.Herdr, args SpawnArgs) (*spawnChecked, *sql.DB, error)
 	return c, conn, nil
 }
 
-// ledgerAndHerdr is the ledger checks, the config, herdr's view and the
-// resources.
+// ledgerAndHerdr is the ledger checks, the config and the worker prompt,
+// herdr's view and the resources.
 func (c *spawnChecked) ledgerAndHerdr(h *herdr.Herdr, conn *sql.DB) error {
 	var err error
 	if c.job, err = openJob(conn, c.me.Job); err != nil {
@@ -143,6 +144,9 @@ func (c *spawnChecked) ledgerAndHerdr(h *herdr.Herdr, conn *sql.DB) error {
 		return exit.Refusedf("job %s is not open in scope %s", c.me.Job, c.me.Scope)
 	}
 	if c.sc, err = config.LoadScope(c.me.Scope); err != nil {
+		return err
+	}
+	if c.prompt, err = loadPrompt(c.sc, "worker"); err != nil {
 		return err
 	}
 	if c.cfg, err = jobConfig(c.job.Repo, c.job.LeadCwd); err != nil {
@@ -223,7 +227,8 @@ func Spawn(h *herdr.Herdr, args SpawnArgs) (exit.Code, error) {
 		return startFailed(c.id.Agent, err, 0, created, hint)
 	}
 	created = append(created, fmt.Sprintf("tab %s (%s)", args.Name, place.TabID))
-	body := rolePrompt(c.sc, c.id, c.cwd, c.job.Repo, c.job.LeadCwd, c.cfg.MaxAgentsPerJob, issue, c.job.ParentIssue) +
+	body := c.prompt.fill(roleSlots(c.sc, c.id, c.cwd, c.job.Repo, c.job.LeadCwd, c.cfg.MaxAgentsPerJob, issue,
+		c.job.ParentIssue)) +
 		taskSection(issue.URL, c.body)
 	code, err := startAndDeliver(h, conn, c.id, place, c.cwd, args.Model, args.Effort, c.me.Agent, body, &created)
 	if err != nil || code != exit.Ok {
