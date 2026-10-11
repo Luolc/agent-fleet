@@ -188,9 +188,9 @@ ALTER TABLE threads ADD COLUMN last_user TEXT NOT NULL DEFAULT '';
 ALTER TABLE threads ADD COLUMN last_ts TEXT NOT NULL DEFAULT '';
 `
 
-// Version 11: what `fleet watch` keeps. A question may be `closed`
-// (its job ended, or watch gave up on it) and counts the reminders posted
-// for it, with the msg_id of the latest; `agents.reclaim_at` is when watch
+// Version 11: what `fleet watch` keeps. A question may be `closed` (watch
+// gave up on it) and counts the reminders posted for it, with the msg_id
+// of the latest; `agents.reclaim_at` is when watch
 // closes a thread agent it asked to end its session, `jobs.reclaim_at`
 // when it ends a job whose lead it told that its question expired; and
 // `threads.quiet_asked` is the timestamp of the thread's last message when

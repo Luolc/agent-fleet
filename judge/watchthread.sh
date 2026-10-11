@@ -2,12 +2,14 @@
 # herdr, in a scope of their own (`quiet`, herdr session fleet-quiet, which
 # this suite starts and stops), with a fake fednet whose `read-thread`
 # answers the newest message's time from a file per thread, and the clock
-# moved through <prefix>WATCH_NOW. Five threads, each started by `inbox`:
+# moved through <prefix>WATCH_NOW. Six threads, each started by `inbox`:
 # Q1 has its thread agent's own question (reminders, then the session
 # reclaimed); Q2 a job (asked about each quiet spell, then why it has not
 # ended, then reclaimed when idle); Q3 a lead's question (the job ended by
 # force); Q4 a thread agent that vanishes (the session ended as broken off);
-# Q5 a job whose thread agent ended (watch starts one to ask about it).
+# Q5 a job whose thread agent ended (watch starts one to ask about it); Q6
+# a job its lead ended with its question pending (the question moves to
+# the thread: its agent told, reminders go on, closed without reclaiming).
 need_repo
 QS=(herdr --session fleet-quiet)
 herdr --session fleet-quiet server >/home/agent/server-fleet-quiet.log 2>&1 &
@@ -66,8 +68,8 @@ qlead() { # <job> <thread> -- <arguments...>: as the job's lead
 }
 last_msg() { printf '%s.000100\n' "$2" > "$QD/threads/$(printf %s "$1" | tr / _)"; }
 
-Q1=C0701/1.1 Q2=C0702/2.2 Q3=C0703/3.3 Q4=C0704/4.4 Q5=C0705/5.5
-for q in 1 2 3 4 5; do
+Q1=C0701/1.1 Q2=C0702/2.2 Q3=C0703/3.3 Q4=C0704/4.4 Q5=C0705/5.5 Q6=C0706/6.6
+for q in 1 2 3 4 5 6; do
   key=C070$q/$q.$q
   qinbox "wq$q" "$key" >/home/agent/quiet/inbox$q.out 2>&1; rc=$?
   check "watch threads: inbox starts the agent of Q$q" "0 $(qname "$key")" "$rc $(qfield "$(qname "$key")" name)"
@@ -76,7 +78,7 @@ done
 printf 'Which month should the import cover? 0xQW1\n' > "$QD/q1.md"
 qthr "$Q1" -- ask-human --file "$QD/q1.md" >/dev/null 2>&1
 check "watch threads: Q1's agent asked" "pending " "$(qledger "SELECT state FROM questions WHERE thread = '$Q1'")"
-for q in 2 3 5; do
+for q in 2 3 5 6; do
   key=C070$q/$q.$q
   out=$(qthr "$key" -- job start "q$q" --repo "$R" --task-file "$(task "q$q" "job of Q$q")" 2>&1); rc=$?
   check "watch threads: job q$q started from Q$q" 0 "$rc"
@@ -85,6 +87,12 @@ done
 printf 'Merge the import? 0xQW3\n' > "$QD/q3.md"
 qlead q3 "$Q3" -- ask-human --file "$QD/q3.md" >/dev/null 2>&1
 check "watch threads: q3's lead asked" "pending " "$(qledger "SELECT state FROM questions WHERE job = 'q3'")"
+printf 'Which schema should the follow-up use? 0xQW6\n' > "$QD/q6.md"
+qlead q6 "$Q6" -- ask-human --file "$QD/q6.md" >/dev/null 2>&1
+printf 'Done; the schema question is for the follow-up. 0xQ6DONE\n' > "$QD/report6.md"
+qlead q6 "$Q6" -- job end --report-file "$QD/report6.md" >/dev/null 2>&1
+check "watch threads: q6 ended by its lead, its question pending" "ended pending " \
+  "$(qledger "SELECT state FROM jobs WHERE job = 'q6'")$(qledger "SELECT state FROM questions WHERE job = 'q6'")"
 "${QS[@]}" pane close "$(qfield "$(qname "$Q4")" pane_id)" >/dev/null
 check "watch threads: Q4's agent is gone" agent_not_found "$(qfield "$(qname "$Q4")" name)"
 printf 'Started q5.\n' > "$QD/summary5.md"
@@ -94,6 +102,7 @@ check "watch threads: Q5's session ended with its job open" "agent_not_found ope
 
 T0=$(date +%s)
 for q in 1 2 3 4 5; do last_msg "C070$q/$q.$q" "$T0"; done
+last_msg "$Q6" $((T0 + 60 * 60))
 : > "$QD/fednet.log"
 qwatch() { # <minutes>: one run at T0 + minutes, its output in watch-<minutes>.out
   PATH=$QB:$PATH env "${P}WATCH_NOW=$((T0 + $1 * 60))" "$T" --scope quiet watch >"$QD/watch-$1.out" 2>&1; rc=$?
@@ -108,11 +117,21 @@ has "watch threads: the vanished agent's session ended, the thread told" "$(cat 
 check "watch threads: the vanished agent's row ended" "ended " "$(qledger "SELECT state FROM agents WHERE name = '$(qname "$Q4")'")"
 lacks "watch threads: no reminder before 30m" "$(cat "$QD/fednet.log")" "-- Reminder"
 check "watch threads: no quiet notice before 30m" 0 "$(count "$(qreceived "$(qname "$Q2")")" "$quiet2")"
+has "watch threads: Q6's agent is told its ended job's question is the thread's now" "$(qreceived "$(qname "$Q6")")" \
+  "[FROM: watch]" "rule \`questions of an ended job\`: 1 question(s) a lead asked in thread $Q6" "- job q6, from q6-lead, asked at " \
+  "Which schema should the follow-up use? 0xQW6"
+check "watch threads: the moved question stays pending, still q6's" "q6|q6-lead|pending " \
+  "$(qledger "SELECT job || '|' || asked_by || '|' || state FROM questions WHERE thread = '$Q6'")"
+out=$(qthr "$Q6" -- thread end --summary-file "$QD/summary5.md" 2>&1); rc=$?
+check "watch threads: Q6's session may not end while the moved question waits" 1 "$rc"
+has "watch threads: and the refusal names it" "$out" "question from q6-lead, pending: Which schema should the follow-up use? 0xQW6"
 
 qwatch 30
 check "watch threads: at 30m one reminder each for Q1 and Q3" "1 1" \
   "$(grep -c "thread $Q1 -- Reminder 1 of 3" "$QD/fednet.log") $(grep -c "thread $Q3 -- Reminder 1 of 3" "$QD/fednet.log")"
 has "watch threads: the reminder lists the question" "$(cat "$QD/fednet.log")" "- from $(qname "$Q1"): Which month should the import cover? 0xQW1"
+has "watch threads: Q6 is reminded of the moved question" "$(cat "$QD/fednet.log")" \
+  "-thread $Q6 -- Reminder 1 of 3" "- from q6-lead: Which schema should the follow-up use? 0xQW6"
 check "watch threads: the reminder is counted with its msg_id" "1|m- " "$(qledger "SELECT reminders || '|' || substr(reminder_msg, 1, 2) FROM questions WHERE thread = '$Q1'")"
 has "watch threads: Q2's agent asked about the quiet with its job's state" "$(qreceived "$(qname "$Q2")")" \
   "[FROM: watch]" "$quiet2" "- job q2: lead q2-lead "
@@ -122,6 +141,7 @@ has "watch threads: Q5 got a new agent, asked about its job" "$(qreceived "$(qna
 check "watch threads: Q5's new session is live" "active " "$(qledger "SELECT state FROM agents WHERE name = '$(qname "$Q5")' AND state != 'ended'")"
 
 qwatch 40
+check "watch threads: Q6's agent is told once" 1 "$(count "$(qreceived "$(qname "$Q6")")" "rule \`questions of an ended job\`")"
 check "watch threads: the same quiet spell is asked about once" 1 "$(count "$(qreceived "$(qname "$Q2")")" "$quiet2")"
 last_msg "$Q2" $((T0 + 50 * 60))
 qwatch 79
@@ -145,12 +165,17 @@ qwatch 2880
 check "watch threads: three reminders each at 30m, 3h and 24h, no more" "3 3" \
   "$(grep -c "thread $Q1 -- Reminder" "$QD/fednet.log") $(grep -c "thread $Q3 -- Reminder" "$QD/fednet.log")"
 has "watch threads: the third reminder says so" "$(cat "$QD/fednet.log")" "thread $Q1 -- Reminder 3 of 3"
+check "watch threads: the moved question is reminded of three times too" 3 "$(grep -c "thread $Q6 -- Reminder" "$QD/fednet.log")"
 
 qwatch 4320
 check "watch threads: at 72h the thread agent's question is closed" "closed " "$(qledger "SELECT state FROM questions WHERE thread = '$Q1'")"
 has "watch threads: and its session asked to end" "$(qreceived "$(qname "$Q1")")" "[FROM: watch]" "rule \`thread question timeout\`" "--asked-to-end"
 has "watch threads: the lead of the unanswered question is told its job ends" "$(qreceived q3-lead)" \
   "[FROM: watch]" "rule \`lead question timeout\`" "Job q3 is ended by force at"
+check "watch threads: at 72h the moved question is closed, Q6's session kept" "closed none " \
+  "$(qledger "SELECT state FROM questions WHERE thread = '$Q6'")$(qledger "SELECT coalesce(reclaim_at, 'none') FROM agents WHERE name = '$(qname "$Q6")' AND state = 'active'")"
+lacks "watch threads: Q6's agent is not asked to end for it" "$(qreceived "$(qname "$Q6")")" "rule \`thread question timeout\`"
+has "watch threads: watch says so" "$(cat "$QD/watch-4320.out")" "closed 1 question(s) of ended jobs in thread $Q6"
 has "watch threads: Q5, without a message for 72h, is reclaimed" "$(qreceived "$(qname "$Q5")")" "rule \`thread idle\`: thread $Q5 has had no message for 3d00h"
 qwatch 4329
 check "watch threads: Q1's session lives until the 10 minutes are up" "active " "$(qledger "SELECT state FROM agents WHERE name = '$(qname "$Q1")' ORDER BY id DESC LIMIT 1")"

@@ -14,6 +14,7 @@ import (
 
 	"github.com/Luolc/agent-fleet/internal/atb"
 	"github.com/Luolc/agent-fleet/internal/config"
+	"github.com/Luolc/agent-fleet/internal/db"
 	"github.com/Luolc/agent-fleet/internal/exit"
 	"github.com/Luolc/agent-fleet/internal/fednet"
 )
@@ -33,12 +34,17 @@ const (
 	brokenLine    = "会话意外中断了，再说话会重新开始"
 )
 
-// question is a pending question as watch reads it.
+// question is a pending question as watch reads it. moved is a question
+// of a job that is no longer open: it stays pending as the thread's,
+// unless dropped: closed as on watch's own forced end, because the job
+// ended after watch told its lead that a question expired, or because it
+// is a screen question, whose agent went with the job.
 type question struct {
 	id                 int64
 	job, askedBy, text string
 	askedAt            int64
 	reminders          int
+	moved, dropped     bool
 }
 
 // screen is whether the question is about an agent stopped at a screen,
@@ -126,19 +132,7 @@ func readThreads(conn *sql.DB, cfg *config.Scope, inHerdr map[string]InHerdr, li
 	if err != nil {
 		return nil, false, err
 	}
-	err = eachRow(conn, "SELECT id, job, thread, asked_by, text, asked_at, reminders FROM questions WHERE state = 'pending' "+
-		"AND (job = '' OR job IN (SELECT job FROM jobs WHERE state = 'open')) ORDER BY asked_at, id",
-		func(rows *sql.Rows) error {
-			var q question
-			var key string
-			if err := rows.Scan(&q.id, &q.job, &key, &q.askedBy, &q.text, &q.askedAt, &q.reminders); err != nil {
-				return err
-			}
-			t := get(key)
-			t.questions = append(t.questions, q)
-			return nil
-		})
-	if err != nil {
+	if err := readQuestions(conn, get); err != nil {
 		return nil, false, err
 	}
 	for _, t := range byKey {
@@ -156,6 +150,28 @@ func readThreads(conn *sql.DB, cfg *config.Scope, inHerdr map[string]InHerdr, li
 		}
 	}
 	return threads, true, nil
+}
+
+// readQuestions adds each pending question to its thread, oldest first.
+// A job's name is unique only among open jobs, so a question belongs to
+// the open job of its name only when asked after that job started.
+func readQuestions(conn *sql.DB, get func(string) *watchedThread) error {
+	return eachRow(conn, "SELECT id, job, thread, asked_by, text, asked_at, reminders, job != '' AND NOT EXISTS "+
+		"(SELECT 1 FROM jobs j WHERE j.job = q.job AND j.state = 'open' AND j.started_at <= q.asked_at), "+
+		"EXISTS (SELECT 1 FROM jobs j WHERE j.job = q.job AND j.state = 'ended' AND j.reclaim_at IS NOT NULL "+
+		"AND j.started_at <= q.asked_at AND j.ended_at >= q.asked_at) "+
+		"FROM questions q WHERE state = 'pending' ORDER BY asked_at, id",
+		func(rows *sql.Rows) error {
+			var q question
+			var key string
+			if err := rows.Scan(&q.id, &q.job, &key, &q.askedBy, &q.text, &q.askedAt, &q.reminders, &q.moved, &q.dropped); err != nil {
+				return err
+			}
+			q.dropped = q.dropped || q.moved && q.screen()
+			t := get(key)
+			t.questions = append(t.questions, q)
+			return nil
+		})
 }
 
 // eachRow runs `query` and hands each row to `scan`.
@@ -176,16 +192,24 @@ func eachRow(conn *sql.DB, query string, scan func(*sql.Rows) error) error {
 	return nil
 }
 
-// threads runs the thread rules: first the pending questions of jobs that
-// are no longer open are closed, then each thread in key order.
+// threads runs the thread rules: first the dropped questions are closed,
+// then each thread in key order.
 func (r *watchRun) threads(threads []*watchedThread, all []watched) error {
-	res, err := r.conn.Exec("UPDATE questions SET state = 'closed' WHERE state = 'pending' AND job != '' " +
-		"AND job NOT IN (SELECT job FROM jobs WHERE state = 'open')")
-	if err != nil {
-		return exit.Database(err)
+	var dropped []question
+	for _, t := range threads {
+		t.questions = slices.DeleteFunc(t.questions, func(q question) bool {
+			if q.dropped {
+				dropped = append(dropped, q)
+			}
+			return q.dropped
+		})
 	}
-	if n, _ := res.RowsAffected(); n > 0 {
-		fmt.Fprintf(os.Stdout, "closed %d pending question(s) of jobs that are not open\n", n)
+	if len(dropped) > 0 {
+		if err := r.closeQuestions(dropped); err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stdout, "closed %d pending question(s) of ended jobs: a screen's, or the job ended after its lead "+
+			"was told a question expired\n", len(dropped))
 	}
 	for _, t := range threads {
 		if r.outOfTime() {
@@ -242,16 +266,39 @@ func (r *watchRun) thread(t *watchedThread, all []watched) error {
 	return nil
 }
 
-// questions runs the question rules: a thread agent's question past its
-// limit is closed and its session reclaimed; a lead's past its limit gets
-// the lead told, then its job ended; what is left is reminded of.
+// questions runs the question rules: a thread agent's question or a
+// question moved from an ended job is closed past its limit; until then a
+// moved one is told to the live thread agent once; a lead's past its
+// limit gets the lead told, then its job ended; what is left is reminded
+// of.
 func (r *watchRun) questions(t *watchedThread, all []watched) error {
-	var expired, left []question
+	if err := r.expire(t); err != nil {
+		return err
+	}
+	if err := r.tellMoved(t); err != nil {
+		return err
+	}
+	for _, j := range slices.Clone(t.jobs) {
+		if err := r.leadQuestion(t, j, all); err != nil {
+			return err
+		}
+	}
+	return r.remind(t)
+}
+
+// expire closes the thread's questions pending for `thread_question`: the
+// thread agent's own, with its session reclaimed, and those moved from an
+// ended job, with the session kept, since it may be doing other work.
+func (r *watchRun) expire(t *watchedThread) error {
+	var expired, givenUp []question
 	for _, q := range t.questions {
-		if q.job == "" && !q.screen() && r.now-q.askedAt >= secs(r.cfg.Watch.ThreadQuestion) {
+		if q.screen() || r.now-q.askedAt < secs(r.cfg.Watch.ThreadQuestion) {
+			continue
+		}
+		if q.job == "" {
 			expired = append(expired, q)
-		} else {
-			left = append(left, q)
+		} else if q.moved {
+			givenUp = append(givenUp, q)
 		}
 	}
 	if len(expired) > 0 {
@@ -265,22 +312,25 @@ func (r *watchRun) questions(t *watchedThread, all []watched) error {
 				return err
 			}
 		}
-		if err := r.closeQuestions(expired); err != nil {
-			return err
-		}
-		t.questions = left
 	}
-	for _, j := range slices.Clone(t.jobs) {
-		if err := r.leadQuestion(t, j, all); err != nil {
-			return err
-		}
+	gone := slices.Concat(expired, givenUp)
+	if len(gone) == 0 {
+		return nil
 	}
-	return r.remind(t)
+	if err := r.closeQuestions(gone); err != nil {
+		return err
+	}
+	t.questions = slices.DeleteFunc(t.questions, func(q question) bool { return slices.Contains(gone, q) })
+	if len(givenUp) > 0 {
+		fmt.Fprintf(os.Stdout, "closed %d question(s) of ended jobs in thread %s: no answer for %s\n", len(givenUp), t.key,
+			Duration(secs(r.cfg.Watch.ThreadQuestion)))
+	}
+	return nil
 }
 
 // leadQuestion runs the lead-question rule on one job.
 func (r *watchRun) leadQuestion(t *watchedThread, j *watchedJob, all []watched) error {
-	i := slices.IndexFunc(t.questions, func(q question) bool { return q.job == j.job && !q.screen() })
+	i := slices.IndexFunc(t.questions, func(q question) bool { return q.job == j.job && !q.moved && !q.screen() })
 	expired := i >= 0 && r.now-t.questions[i].askedAt >= secs(j.limits.LeadQuestion)
 	switch {
 	case !expired && j.reclaimAt.Valid:
@@ -318,10 +368,10 @@ func (r *watchRun) leadQuestion(t *watchedThread, j *watchedJob, all []watched) 
 	fmt.Fprintf(os.Stdout, "reclaimed job %s: its lead's question had no answer; %d rows ended\n", j.job, ended)
 	var gone []question
 	t.questions = slices.DeleteFunc(t.questions, func(q question) bool {
-		if q.job == j.job {
+		if q.job == j.job && !q.moved {
 			gone = append(gone, q)
 		}
-		return q.job == j.job
+		return q.job == j.job && !q.moved
 	})
 	t.jobs = slices.DeleteFunc(t.jobs, func(o *watchedJob) bool { return o == j })
 	if err := r.closeQuestions(gone); err != nil {
@@ -333,6 +383,75 @@ func (r *watchRun) leadQuestion(t *watchedThread, j *watchedJob, all []watched) 
 		text += " Linear steps not done:\n- " + strings.Join(pending, "\n- ")
 	}
 	return fednet.Post(r.cfg.FednetSocket, t.key, text)
+}
+
+// tellMoved tells the live thread agent, unless it is being reclaimed,
+// about the questions moved to its thread that no agent was told of yet.
+// Without one nobody is started: the reminders still reach the people,
+// and the agent their answer starts reads the thread. A delivery that
+// surely did not arrive (blocked, not found) is tried again next run.
+func (r *watchRun) tellMoved(t *watchedThread) error {
+	if t.agent == nil || t.agent.reclaimAt.Valid {
+		return nil
+	}
+	var moved []question
+	for _, q := range t.questions {
+		if q.moved && !stepDone(r.conn, movedKey(q), "tell") {
+			moved = append(moved, q)
+		}
+	}
+	if len(moved) == 0 {
+		return nil
+	}
+	var text strings.Builder
+	fmt.Fprintf(&text, "fleet watch, rule `questions of an ended job`: %d question(s) a lead asked in thread %s are still "+
+		"pending, but the job is no longer open. They are this thread's questions now, and yours to follow: the "+
+		"people are reminded of them as before, and a person's next message in the thread answers them; with the "+
+		"job gone, acting on the answer is yours (a follow-up job, say). `fleet thread end` waits for them as for "+
+		"your own; one still pending %s after it was asked is closed, and your session is not reclaimed for it.\n",
+		len(moved), t.key, Duration(secs(r.cfg.Watch.ThreadQuestion)))
+	for _, q := range moved {
+		fmt.Fprintf(&text, "\n- job %s, from %s, asked at %s:\n", q.job, q.askedBy, at(q.askedAt))
+		for _, line := range firstLines(q.text, 3) {
+			fmt.Fprintf(&text, "    %s\n", line)
+		}
+	}
+	body, err := WithHeader(watchSender, text.String())
+	if err != nil {
+		return err
+	}
+	code, err := Deliver(r.h, t.agent.name, body)
+	if err != nil {
+		return err
+	}
+	r.got(code)
+	if code != exit.Ok && code != exit.Unknown {
+		return nil
+	}
+	for _, q := range moved {
+		if _, err := r.conn.Exec("INSERT OR IGNORE INTO steps (key, step, done_at) VALUES (?1, 'tell', ?2)",
+			movedKey(q), db.Now()); err != nil {
+			return exit.Database(err)
+		}
+	}
+	fmt.Fprintf(os.Stdout, "told %s of %d question(s) of ended jobs in thread %s\n", t.agent.name, len(moved), t.key)
+	return nil
+}
+
+// movedKey is the steps key of a question moved to its thread.
+func movedKey(q question) string {
+	return fmt.Sprintf("watch-moved:%d", q.id)
+}
+
+// firstLines are the first `n` non-blank lines of `text`.
+func firstLines(text string, n int) []string {
+	var kept []string
+	for _, line := range lines(text) {
+		if strings.TrimSpace(line) != "" && len(kept) < n {
+			kept = append(kept, line)
+		}
+	}
+	return kept
 }
 
 // remind posts one reminder of the thread's pending questions when the
