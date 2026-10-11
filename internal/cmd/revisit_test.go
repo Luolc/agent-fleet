@@ -84,8 +84,8 @@ func TestTheRevisitAgentGetsTheIssueTheJobsTheInstructionsAndWhereToAsk(t *testi
 			t.Errorf("%q not in the prompt", want)
 		}
 	}
-	if strings.Contains(got, "{{") || strings.Contains(got, "needs-user") {
-		t.Errorf("a placeholder, or the issue as the place to ask: %s", got)
+	if strings.Contains(got, "{{") || strings.Contains(got, "--add-label needs-user") || strings.Contains(got, "\n## Earlier\n") {
+		t.Errorf("a placeholder, the issue as the place to ask, or an earlier section without a question: %s", got)
 	}
 	// No home thread: the question goes on the issue.
 	if _, err := conn.Exec("UPDATE jobs SET home_thread = ''"); err != nil {
@@ -95,7 +95,53 @@ func TestTheRevisitAgentGetsTheIssueTheJobsTheInstructionsAndWhereToAsk(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(got, "`atb linear edit EX-1 --add-label needs-user`") || strings.Contains(got, "question.md") {
+	if !strings.Contains(got, "`atb linear edit EX-1 --add-label needs-user`") || strings.Contains(got, "question.md") ||
+		!strings.Contains(got, "its first line `Question from revisit-ex-1:`") {
 		t.Errorf("no thread: %s", got)
+	}
+}
+
+func TestARevisitAgentStartedAgainGetsTheEarlierQuestionsAndTheLatestMessage(t *testing.T) {
+	conn, err := db.OpenAt(filepath.Join(t.TempDir(), "main.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, err := conn.Exec(`INSERT INTO jobs (job, parent_issue, lead_cwd, home_thread, state, outcome, started_at, ended_at)
+		VALUES ('a', 'EX-1', '/c', 'C1/1.0', 'ended', 'done', 1699000000, 1699100000);
+		INSERT INTO questions (job, thread, asked_by, text, state, asked_at, answered_at)
+		VALUES ('', 'C1/1.0', 'revisit-ex-1', 'Close EX-1?
+Its last try is done.', 'answered', 1699500000, 1699500100),
+		       ('', 'C1/1.0', 'revisit-ex-2', 'Close EX-2?', 'pending', 1699500000, NULL);
+		INSERT INTO threads (thread, slug, created_at, last_text, last_user, last_ts)
+		VALUES ('C1/1.0', 'c1-1-0', 1699000000, 'yes, close it', 'U0ABC', '1699500100.000')`); err != nil {
+		t.Fatal(err)
+	}
+	sc, err := config.ParseScope([]byte(`{"fednet": {"socket": "/run/example/fednet.sock"}}`), "/home/u")
+	if err != nil {
+		t.Fatal(err)
+	}
+	u := &unblocking{watchRun: &watchRun{conn: conn, scope: "main", cfg: sc, now: 1700000000},
+		dir: "/home/u/.local/state/fleet/main-unblock"}
+	p := parent("EX-1", "started", 80*time.Hour, 1)
+	p.Project = &struct{ Name, Description, Content string }{"Example project", "Close a parent after a week.", ""}
+	got, err := u.revisitBody(p, revisitName("EX-1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"never ask the people the same thing twice",
+		"They answered: unless it is done already (a sub-issue or a comment on EX-1 after the answer shows it",
+		"take it as the answer only when it plainly answers the question",
+		"with `needs-user` still on and no reply after it: they have not answered yet. Do nothing",
+		"do not ask it again. Leave a comment on EX-1 saying that the earlier question got no clear answer",
+		"\n## Earlier\n\nAsked at 2023-11-09T03:20:00Z (answered):\n\n> Close EX-1?\n> Its last try is done.\n",
+		`{"user":"U0ABC","ts":"1699500100.000","text":"yes, close it"}`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("%q not in the prompt", want)
+		}
+	}
+	// Another issue's question is not this one's; the project stays last.
+	if strings.Contains(got, "Close EX-2?") || !strings.HasSuffix(got, "Close a parent after a week.\n") {
+		t.Errorf("%s", got)
 	}
 }

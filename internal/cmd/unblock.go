@@ -583,31 +583,35 @@ func (u *unblocking) helperPrompt(row stopRow, helper, screen, issue string) (st
 		"{{blocked}}", row.Name, "{{who}}", row.who(), "{{cwd}}", row.Cwd,
 		"{{question_file}}", u.questionFile(helper), "{{ticket}}", ticket).Replace(unblockPrompt)
 	text += "\n" + screenGuidance + "\n## The screen\n\nAs watch read it:\n\n" + fenced(strings.TrimRight(screen, "\n")) + "\n"
-	rows, err := u.conn.Query("SELECT text, state, asked_at, thread FROM questions WHERE asked_by = ?1 ORDER BY id",
-		helper)
+	earlier, err := earlierSection(u.conn, helper, "Earlier on this screen")
 	if err != nil {
-		return "", exit.Database(err)
+		return "", err
 	}
-	defer rows.Close()
+	return text + earlier, nil
+}
+
+// earlierSection is the section `heading` of an agent's first message
+// with the questions `asker` asked, oldest first, and the latest message
+// a person posted in the thread of the last of them; "" when `asker`
+// asked none.
+func earlierSection(conn *sql.DB, asker, heading string) (string, error) {
 	var earlier []string
 	thread := ""
-	for rows.Next() {
-		var question, state string
-		var at int64
-		if err := rows.Scan(&question, &state, &at, &thread); err != nil {
-			return "", exit.Database(err)
-		}
-		earlier = append(earlier, fmt.Sprintf("Asked at %s (%s):\n\n> %s", time.Unix(at, 0).UTC().Format(time.RFC3339),
-			state, strings.ReplaceAll(question, "\n", "\n> ")))
+	err := eachRow(conn, "SELECT text, state, asked_at, thread FROM questions WHERE asked_by = ?1 ORDER BY id",
+		func(rows *sql.Rows) error {
+			var question, state string
+			var at int64
+			if err := rows.Scan(&question, &state, &at, &thread); err != nil {
+				return err
+			}
+			earlier = append(earlier, fmt.Sprintf("Asked at %s (%s):\n\n> %s", time.Unix(at, 0).UTC().Format(time.RFC3339),
+				state, strings.ReplaceAll(question, "\n", "\n> ")))
+			return nil
+		}, asker)
+	if err != nil || len(earlier) == 0 {
+		return "", err
 	}
-	if err := rows.Err(); err != nil {
-		return "", exit.Database(err)
-	}
-	if len(earlier) == 0 {
-		return text, nil
-	}
-	text += "\n## Earlier on this screen\n\n" + strings.Join(earlier, "\n\n") + "\n"
-	m, err := latestMessage(u.conn, thread)
+	m, err := latestMessage(conn, thread)
 	if err != nil {
 		return "", err
 	}
@@ -615,5 +619,5 @@ func (u *unblocking) helperPrompt(row stopRow, helper, screen, issue string) (st
 	if err != nil {
 		return "", err
 	}
-	return text + section, nil
+	return "\n## " + heading + "\n\n" + strings.Join(earlier, "\n\n") + "\n" + section, nil
 }
