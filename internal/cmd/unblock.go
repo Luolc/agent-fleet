@@ -240,11 +240,8 @@ func (u *unblocking) failedFor(name string, err error) {
 	}
 }
 
-// helper looks at a live helper; busy is whether it is still working. A
-// helper done with its turn (herdr idle or done), stopped at a screen
-// itself, working for helperSecs, gone from herdr, or left `starting` by
-// a start that failed is closed and its row ended, after its question,
-// when it wrote one, is asked.
+// helper looks at a live screen helper as closeDone does; its question is
+// asked about the stopped agent, while that agent is live.
 func (u *unblocking) helper(row stopRow, live map[string]stopRow) (busy bool, err error) {
 	return u.closeDone(row, func(question string) error {
 		stopped, ok := live[row.Parent]
