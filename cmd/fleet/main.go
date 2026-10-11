@@ -55,6 +55,7 @@ Commands:
   report    ` + cmd.ReportAbout + `
   watch     ` + cmd.WatchAbout + `
   worktree  ` + cmd.WorktreeAbout + `
+  prompt    ` + cmd.PromptAbout + `
   help      Print this message or the help of the given subcommand(s)
 
 Options:
@@ -311,6 +312,30 @@ Options:
   -h, --help            Print help
 `
 
+const promptUsage = "Usage: fleet prompt <COMMAND>"
+
+var promptHelp = cmd.PromptAbout + ".\n\n" + promptUsage + `
+
+Commands:
+  show  ` + cmd.PromptShowAbout + `
+
+Options:
+  -h, --help  Print help
+`
+
+const promptShowUsage = "Usage: fleet prompt show [OPTIONS] [NAME]"
+
+var promptShowHelp = cmd.PromptShowLongAbout + "\n\n" + promptShowUsage + `
+
+Arguments:
+  [NAME]  One of thread, lead, worker, revisit, unblock, screen_guidance; without it, all of them
+
+Options:
+      --builtin         Only fleet's built-in text of NAME, byte for byte
+      --scope <NAME>    ` + scopeHelp + `
+  -h, --help            Print help
+`
+
 func main() {
 	os.Exit(run(os.Args[1:]))
 }
@@ -420,6 +445,8 @@ func dispatch(args []string) (exit.Code, error) {
 		return runWatch(rest[1:], &scope)
 	case "worktree":
 		return runWorktree(rest[1:], &scope)
+	case "prompt":
+		return runPrompt(rest[1:], &scope)
 	default:
 		return 0, &usageError{fmt.Sprintf("unrecognized subcommand '%s'", rest[0]), topUsage}
 	}
@@ -428,7 +455,7 @@ func dispatch(args []string) (exit.Code, error) {
 // help is clap's implicit `help [COMMAND]` subcommand.
 func help(args []string) (exit.Code, error) {
 	helps := map[string]string{"inbox": inboxHelp, "thread": threadHelp, "job": jobHelp, "ask-human": askHumanHelp, "send": sendHelp, "spawn": spawnHelp, "done": doneHelp,
-		"status": statusHelp, "report": reportHelp, "watch": watchHelp, "worktree": worktreeHelp, "help": topHelp}
+		"status": statusHelp, "report": reportHelp, "watch": watchHelp, "worktree": worktreeHelp, "prompt": promptHelp, "help": topHelp}
 	if len(args) == 0 {
 		fmt.Fprint(os.Stdout, topHelp)
 		return exit.Ok, nil
@@ -445,6 +472,10 @@ func help(args []string) (exit.Code, error) {
 			fmt.Fprint(os.Stdout, jobEndHelp)
 			return exit.Ok, nil
 		}
+	}
+	if args[0] == "prompt" && len(args) > 1 && args[1] == "show" {
+		fmt.Fprint(os.Stdout, promptShowHelp)
+		return exit.Ok, nil
 	}
 	if args[0] == "thread" && len(args) > 1 {
 		if text, ok := threadHelps[args[1]]; ok {
@@ -825,4 +856,34 @@ func runWorktree(args []string, scope *cliargs.OptString) (exit.Code, error) {
 		return 0, err
 	}
 	return cmd.Worktree(cmd.WorktreeArgs{Repo: got[0], Name: name.Ptr(), Branch: branch.Ptr(), Detach: detach.Ptr()})
+}
+
+// runPrompt dispatches `fleet prompt <COMMAND>`.
+func runPrompt(args []string, scope *cliargs.OptString) (exit.Code, error) {
+	if len(args) == 0 {
+		return 0, &usageError{"'fleet prompt' requires a subcommand but one was not provided", promptUsage}
+	}
+	switch args[0] {
+	case "-h", "--help", "help":
+		fmt.Fprint(os.Stdout, promptHelp)
+		return exit.Ok, nil
+	case "show":
+		fs := flagSet("prompt show", scope)
+		builtin := cliargs.Bool{Name: "builtin"}
+		fs.Var(&builtin, "builtin", "Only fleet's built-in text of NAME")
+		got, helped, err := parse(fs, args[1:], promptShowHelp, promptShowUsage, []string{"[NAME]"})
+		if err != nil || helped {
+			return exit.Ok, err
+		}
+		var name *string
+		if len(got) == 1 {
+			name = &got[0]
+		}
+		if _, err := scoped(scope); err != nil {
+			return 0, err
+		}
+		return cmd.PromptShow(os.Stdout, os.Stderr, cmd.PromptShowArgs{Name: name, Builtin: builtin.Value})
+	default:
+		return 0, &usageError{fmt.Sprintf("unrecognized subcommand '%s'", args[0]), promptUsage}
+	}
 }

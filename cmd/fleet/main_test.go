@@ -145,7 +145,7 @@ func TestEverySubcommandHasHelp(t *testing.T) {
 	w := newWorld(t)
 	for _, name := range [][]string{{"send"}, {"spawn"}, {"done"}, {"status"}, {"watch"}, {"worktree"},
 		{"job", "start"}, {"job", "list"}, {"job", "end"}, {"inbox"}, {"thread", "end"}, {"thread", "set-project"},
-		{"thread", "relate"}, {"ask-human"}} {
+		{"thread", "relate"}, {"ask-human"}, {"prompt", "show"}} {
 		out := w.run("", append(name, "--help"))
 		if out.code != 0 {
 			t.Errorf("%s --help failed: %+v", name, out)

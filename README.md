@@ -38,6 +38,35 @@ the scope's settings file, `$XDG_CONFIG_HOME/fleet/<scope>.json`
 (`~/.config` when unset). The keys are listed
 in [docs/design.md](docs/design.md).
 
+## Changing the prompts
+
+fleet starts each agent with a built-in prompt. To add to one without a new
+release of fleet, name a Markdown file for it in the scope's settings file:
+
+```json
+{"prompts": {"worker": {"append": "prompts/worker.append.md"}}}
+```
+
+The path is relative to the settings file, so this one is
+`~/.config/fleet/prompts/worker.append.md`; its text follows the built-in
+worker prompt for every worker started from then on. After each change, run
+`fleet prompt show`: it lists each prompt's parts and every file that would
+stop an agent from starting (`fleet prompt show worker` prints the whole
+text). Run it again after upgrading fleet, to see whether a prompt you
+replaced is behind the new built-in one.
+
+To replace a prompt, start from a copy of the built-in one:
+
+```sh
+mkdir -p ~/.config/fleet/prompts && cd ~/.config/fleet
+fleet prompt show lead --builtin > prompts/lead.base.md
+cp prompts/lead.base.md prompts/lead.md   # then edit prompts/lead.md
+```
+
+and add it under `"prompts"`: `"lead": {"replace": "prompts/lead.md", "base":
+"prompts/lead.base.md"}`. The model settings and the rest are in
+[docs/design.md](docs/design.md).
+
 The design is in [docs/design.md](docs/design.md).
 
 ## License

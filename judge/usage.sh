@@ -6,7 +6,7 @@ check "fake claude starts idle" idle "$(start_fake fake)"
 check "version: exit 0" 0 "$rc"
 "$T" --help >/dev/null 2>&1; rc=$?
 check "help: exit 0" 0 "$rc"
-for c in inbox "thread post" "thread progress" "thread end" "thread set-project" "thread relate" ask-human "job start" "job list" "job end" spawn send done status watch worktree; do
+for c in inbox "thread post" "thread progress" "thread end" "thread set-project" "thread relate" ask-human "job start" "job list" "job end" spawn send done status watch worktree "prompt show"; do
   # shellcheck disable=SC2086
   out=$("$T" $c --help 2>&1); rc=$?
   case "$out" in *Exit*) states=yes ;; *) states=no ;; esac
