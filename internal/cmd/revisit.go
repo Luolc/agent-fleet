@@ -60,8 +60,10 @@ func readParents(conn *sql.DB) (parents []atb.Parent, linearErr, err error) {
 // read, each parent issue in a started state with sub-issues, unchanged
 // for `parent_stale`, gets a revisit agent, the longest unchanged first and
 // at most `parent_agents` in a run; none while one is live for it or a
-// question from it waits, nor once one was started since the issue last
-// changed (step `<updatedAt>` of `revisit:<issue>`).
+// question from it waits, nor within `parent_stale` of the last start for
+// it (step `started` of `revisit:<issue>`, its time the run's clock). An
+// issue that changed after that start has been unchanged for less than
+// that, so the one limit covers both: changed, or left as it was.
 func (r *watchRun) revisit(inHerdr map[string]InHerdr, parents []atb.Parent, linearErr error) error {
 	u, err := r.helpers(inHerdr)
 	if err != nil {
@@ -94,38 +96,53 @@ func (r *watchRun) revisit(inHerdr map[string]InHerdr, parents []atb.Parent, lin
 			return nil
 		}
 		name := revisitName(p.Identifier)
-		if live[name] {
-			fmt.Fprintf(os.Stdout, "revisit: %s has not changed; %s is on it\n", p.Identifier, name)
+		why, err := u.notYet(p, name, live)
+		if err != nil {
+			return err
+		}
+		if why == "" && started >= r.cfg.Watch.ParentAgents {
+			why = fmt.Sprintf("it waits, since at most %d revisit agent(s) start in a run", r.cfg.Watch.ParentAgents)
+		}
+		if why != "" {
+			fmt.Fprintf(os.Stdout, "revisit: %s has not changed; %s\n", p.Identifier, why)
 			continue
 		}
-		var pending int
-		if err := r.conn.QueryRow("SELECT count(*) FROM questions WHERE asked_by = ?1 AND state = 'pending'",
-			name).Scan(&pending); err != nil {
-			return exit.Database(err)
-		}
-		if pending > 0 {
-			fmt.Fprintf(os.Stdout, "revisit: %s has not changed; the people were asked about it and have not answered\n",
-				p.Identifier)
-			continue
-		}
-		if started >= r.cfg.Watch.ParentAgents {
-			fmt.Fprintf(os.Stdout, "revisit: %s has not changed; it waits, since at most %d revisit agent(s) start in a run\n",
-				p.Identifier, r.cfg.Watch.ParentAgents)
-			continue
-		}
-		tried := false
-		err := runStep(r.conn, "revisit:"+p.Identifier, p.UpdatedAt.UTC().Format(time.RFC3339Nano), func() error {
-			tried = true
-			return u.startRevisit(p, name)
-		})
-		u.failedRevisit(name, err)
-		if tried {
-			started++
-		} else if err == nil {
-			fmt.Fprintf(os.Stdout, "revisit: %s has not changed since a revisit agent looked at it\n", p.Identifier)
-		}
+		started++
+		u.failedRevisit(name, u.startRevisit(p, name))
 	}
 	return nil
+}
+
+// notYet is why the stale parent `p` gets no revisit agent `name` now, ""
+// when it may: one is live, a question from one waits, or one started
+// within parent_stale.
+func (u *unblocking) notYet(p atb.Parent, name string, live map[string]bool) (string, error) {
+	if live[name] {
+		return name + " is on it", nil
+	}
+	var pending int
+	if err := u.conn.QueryRow("SELECT count(*) FROM questions WHERE asked_by = ?1 AND state = 'pending'",
+		name).Scan(&pending); err != nil {
+		return "", exit.Database(err)
+	}
+	if pending > 0 {
+		return "the people were asked about it and have not answered", nil
+	}
+	var last sql.NullInt64
+	err := u.conn.QueryRow("SELECT done_at FROM steps WHERE key = ?1 AND step = 'started'", revisitKey(p.Identifier)).
+		Scan(&last)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return "", exit.Database(err)
+	}
+	if last.Valid && u.now-last.Int64 < secs(u.cfg.Watch.ParentStale) {
+		return fmt.Sprintf("a revisit agent looked at it %s ago", Duration(u.now-last.Int64)), nil
+	}
+	return "", nil
+}
+
+// revisitKey is the steps key of the revisit agents of `issue`.
+func revisitKey(issue string) string {
+	return "revisit:" + issue
 }
 
 // failedRevisit records a failure for the revisit agent `name`.
@@ -164,7 +181,8 @@ func parentThread(conn *sql.DB, issue string) (string, error) {
 	return thread, nil
 }
 
-// startRevisit starts the revisit agent `name` for the parent issue `p`.
+// startRevisit starts the revisit agent `name` for the parent issue `p`
+// and records the start.
 func (u *unblocking) startRevisit(p atb.Parent, name string) error {
 	body, err := u.revisitBody(p, name)
 	if err != nil {
@@ -176,6 +194,10 @@ func (u *unblocking) startRevisit(p atb.Parent, name string) error {
 	id := &identity.Identity{Agent: name, Role: identity.Revisit, Scope: u.scope}
 	if err := u.startInThreads(id, p.Identifier, body); err != nil {
 		return err
+	}
+	if _, err := u.conn.Exec("INSERT INTO steps (key, step, done_at) VALUES (?1, 'started', ?2) "+
+		"ON CONFLICT (key, step) DO UPDATE SET done_at = excluded.done_at", revisitKey(p.Identifier), u.now); err != nil {
+		return exit.Database(err)
 	}
 	fmt.Fprintf(os.Stdout, "revisit: %s has not changed for %s: started %s\n", p.Identifier,
 		Duration(u.now-p.UpdatedAt.Unix()), name)

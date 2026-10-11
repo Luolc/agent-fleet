@@ -6,7 +6,8 @@
 # id), whatever their state; the clock moves through <prefix>WATCH_NOW.
 # The jobs rows are inserted directly. Arms that must differ:
 #   EX-1, EX-2  started, with a sub-issue, unchanged for 80h and 75h: a
-#               revisit agent each, EX-1 first, one a run
+#               revisit agent each, EX-1 first, one a run; another each
+#               once the limit has passed since, for EX-1 after it changed
 #   EX-3        canceled; EX-4 without sub-issues; EX-5 changed 10h ago;
 #               EX-6 with a job open on it: none
 #   EX-8        unchanged for days, but no job of the scope's had it: not
@@ -95,12 +96,13 @@ settled revisit-ex-1
 pwatch 60 >"$PD/run2.out" 2>&1; rc=$?
 check "revisit: second run exit 0" 0 "$rc"
 check "revisit: the finished agent is closed, the next parent gets one" revisit-ex-2 "$(revisits)"
-has "revisit: no second agent for a parent that has not changed since" "$(cat "$PD/run2.out")" \
-  "EX-1 has not changed since a revisit agent looked at it"
+has "revisit: no second agent for a parent within the limit of the first" "$(cat "$PD/run2.out")" \
+  "EX-1 has not changed; a revisit agent looked at it"
 check "revisit: no agent ever for the canceled, the childless, the young or the unrelated" "0 " \
   "$(ledger "SELECT count(*) FROM agents WHERE name IN ('revisit-ex-3', 'revisit-ex-4', 'revisit-ex-5', 'revisit-ex-6', 'revisit-ex-8')")"
 
-# EX-1 changes now, EX-5 is closed: three days on, EX-1 is looked at again.
+# EX-1 changes now, EX-5 is closed. Three days on, EX-2, left as it was,
+# is looked at again first, then EX-1, changed and then left.
 settled revisit-ex-2
 issue EX-1 started $((now + 120)) 1
 issue EX-5 completed $((now - 10 * 3600)) 1
@@ -108,15 +110,21 @@ pwatch 180 >"$PD/run3.out" 2>&1; rc=$?
 check "revisit: third run exit 0, nothing started for a parent changed just now" "0 " "$rc $(revisits)"
 pwatch $((73 * 3600)) >"$PD/run4.out" 2>&1; rc=$?
 check "revisit: fourth run exit 0" 0 "$rc"
+check "revisit: a parent looked at and left as it was gets a new agent after the limit" "revisit-ex-2 2" \
+  "$(revisits) $(ledger "SELECT count(*) FROM agents WHERE name = 'revisit-ex-2'" | tr -d ' ')"
+has "revisit: the parent that changed waits its turn" "$(cat "$PD/run4.out")" "EX-1 has not changed; it waits"
+settled revisit-ex-2
+pwatch $((73 * 3600 + 60)) >"$PD/run5.out" 2>&1; rc=$?
+check "revisit: fifth run exit 0" 0 "$rc"
 check "revisit: a parent that changed and then stayed unchanged gets a new agent" "revisit-ex-1 2" \
   "$(revisits) $(ledger "SELECT count(*) FROM agents WHERE name = 'revisit-ex-1'" | tr -d ' ')"
 
 # Linear down: the rule is skipped, saying so; the finished agent is still closed.
 settled revisit-ex-1
 touch "$PD/linear-down"
-pwatch $((73 * 3600 + 60)) >"$PD/run5.out" 2>&1; rc=$?
+pwatch $((73 * 3600 + 120)) >"$PD/run6.out" 2>&1; rc=$?
 check "revisit: Linear down, exit 5" 5 "$rc"
-has "revisit: says the parents are skipped" "$(cat "$PD/run5.out")" "the parent issues are skipped this run, Linear could not be read"
+has "revisit: says the parents are skipped" "$(cat "$PD/run6.out")" "the parent issues are skipped this run, Linear could not be read"
 check "revisit: the finished agent is still closed" "" "$(revisits)"
 for out in "$PD"/run*.out; do
   [ "$fail" = 0 ] || { echo "--- $out"; cat "$out"; }

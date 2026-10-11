@@ -209,7 +209,7 @@ func (r *watchRun) unblock(inHerdr map[string]InHerdr) error {
 		helped[row.Parent] = busy || err != nil
 	}
 	for _, row := range rows {
-		if row.Role == identity.Unblock.String() || row.Role == identity.Revisit.String() {
+		if watchStarted(row.Role) {
 			continue
 		}
 		if u.outOfTime() {
@@ -226,6 +226,11 @@ func (r *watchRun) unblock(inHerdr map[string]InHerdr) error {
 		u.failedFor(row.Name, err)
 	}
 	return nil
+}
+
+// watchStarted is whether `role` is that of an agent watch starts.
+func watchStarted(role string) bool {
+	return role == identity.Unblock.String() || role == identity.Revisit.String()
 }
 
 // failedFor records a failure for the stopped agent or helper `name`.
