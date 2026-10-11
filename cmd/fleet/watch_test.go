@@ -636,6 +636,92 @@ func TestWatchEndsAJobWhoseLeadsQuestionGoesUnanswered(t *testing.T) {
 	}
 }
 
+func TestWatchMovesTheQuestionsOfAJobThatEndedToItsThread(t *testing.T) {
+	w := watchThreadWorld(t)
+	// d ended with its lead's question pending, after one reminder; e's
+	// thread has no live agent; f ended after its lead was told its
+	// question expired.
+	w.exec("INSERT INTO threads (thread, slug, created_at) VALUES ('C4/4.0', 'c4-4-0', 0), ('C5/5.0', 'c5-5-0', 0)",
+		"INSERT INTO agents (name, role, thread, pane_id, state, started_at) VALUES ('thread-c4', 'thread', 'C4/4.0', 'p4', 'active', 0)",
+		"INSERT INTO jobs (job, lead_cwd, home_thread, state, outcome, started_at, ended_at) VALUES "+
+			"('d', '/c', 'C4/4.0', 'ended', 'done', 0, 1), ('e', '/c', 'C5/5.0', 'ended', 'abandoned', 0, 1)",
+		fmt.Sprintf("INSERT INTO jobs (job, lead_cwd, home_thread, state, outcome, started_at, ended_at, reclaim_at) VALUES "+
+			"('f', '/c', 'C4/4.0', 'ended', 'abandoned', 0, %d, %d)", t0+600, t0+1800),
+		fmt.Sprintf("INSERT INTO questions (job, thread, asked_by, text, state, asked_at, reminders) VALUES "+
+			"('d', 'C4/4.0', 'd-lead', 'Which schema?\nTwo options.\n\nThird line.\nFourth line.', 'pending', %d, 1), "+
+			"('e', 'C5/5.0', 'e-lead', 'Which host?', 'pending', %d, 0), "+
+			"('f', 'C4/4.0', 'f-lead', 'Which region?', 'pending', %d, 0)", t0, t0, t0))
+	w.herdrList("thread-c4 idle 1")
+	w.lastMessage("C4/4.0", t0+3600)
+	w.lastMessage("C5/5.0", t0)
+
+	out := w.watchAt(time.Hour, 0)
+	if got := w.query("SELECT group_concat(job || ' ' || asked_by || ' ' || state, ', ') FROM questions"); got != "d d-lead pending, e e-lead pending, f f-lead closed" {
+		t.Errorf("questions: %s", got)
+	}
+	prompts := w.prompts()
+	if len(prompts) != 1 || prompts[0][0] != "thread-c4" {
+		t.Fatalf("%q", prompts)
+	}
+	for _, want := range []string{"[FROM: watch]\n", "rule `questions of an ended job`: 1 question(s) a lead asked in thread C4/4.0",
+		"your session is not reclaimed for it", "- job d, from d-lead, asked at ", "    Which schema?\n    Two options.\n    Third line."} {
+		if !strings.Contains(prompts[0][1], want) {
+			t.Errorf("%q missing:\n%s", want, prompts[0][1])
+		}
+	}
+	if strings.Contains(prompts[0][1], "Fourth line.") {
+		t.Errorf("more than three lines:\n%s", prompts[0][1])
+	}
+	if strings.Contains(prompts[0][1], "Which region?") {
+		t.Errorf("told of f's question:\n%s", prompts[0][1])
+	}
+	if !strings.Contains(out.stdout, "told thread-c4 of 1 question(s) of ended jobs in thread C4/4.0") ||
+		!strings.Contains(out.stdout, "closed 1 pending question(s) of ended jobs: a screen's, or the job ended after its lead was told") {
+		t.Errorf("%s", out.stdout)
+	}
+	// e's thread gets its reminder, and no agent is started for it.
+	if got := w.log("fednet.log"); !strings.Contains(got, "-thread C5/5.0 -- Reminder 1 of 3: 1 question(s) here still wait for an answer, "+
+		"the first asked 1h00m ago: | - from e-lead: Which host? |") || strings.Contains(got, "-thread C4/4.0 -- Reminder") {
+		t.Errorf("%s", got)
+	}
+	if got := w.query("SELECT count(*) FROM agents WHERE thread = 'C5/5.0'"); got != "0" {
+		t.Errorf("%s agents on C5", got)
+	}
+
+	// Told once; a new job of the same name does not take the question,
+	// and the reminders go on from when it was asked.
+	w.exec("INSERT INTO jobs (job, lead_cwd, home_thread, state, started_at) VALUES ('d', '/c', 'C4/4.0', 'open', " +
+		fmt.Sprint(t0+2*3600) + ")")
+	w.watchAt(3*time.Hour, 0)
+	if got := len(w.prompts()); got != 1 {
+		t.Errorf("%q", w.prompts())
+	}
+	if got := w.log("fednet.log"); !strings.Contains(got, "-thread C4/4.0 -- Reminder 2 of 3: 1 question(s) here still wait for an answer, "+
+		"the first asked 3h00m ago: | - from d-lead: Which schema? |") {
+		t.Errorf("%s", got)
+	}
+
+	// After thread_question it is closed, the session kept and d left alone.
+	out = w.watchAt(72*time.Hour, 0)
+	if got := w.query("SELECT group_concat(state, ', ') FROM questions"); got != "closed, closed, closed" {
+		t.Errorf("questions: %s", got)
+	}
+	if !strings.Contains(out.stdout, "closed 1 question(s) of ended jobs in thread C4/4.0: no answer for 3d00h") {
+		t.Errorf("%s", out.stdout)
+	}
+	if got := w.query("SELECT coalesce(reclaim_at, 'none') FROM agents WHERE name = 'thread-c4'"); got != "none" {
+		t.Errorf("thread-c4 reclaim_at %s", got)
+	}
+	if got := w.query("SELECT coalesce(reclaim_at, 'none') FROM jobs WHERE job = 'd' AND state = 'open'"); got != "none" {
+		t.Errorf("job d reclaim_at %s", got)
+	}
+	for _, p := range w.prompts() {
+		if strings.Contains(p[1], "--asked-to-end") {
+			t.Errorf("asked to end: %q", p)
+		}
+	}
+}
+
 func TestWatchRemindsOfScreenQuestionsButNeverTimesThemOut(t *testing.T) {
 	w := watchThreadWorld(t)
 	w.exec("INSERT INTO threads (thread, slug, created_at) VALUES ('C5/5.0', 'c5-5-0', 0)",
@@ -669,6 +755,19 @@ func TestWatchRemindsOfScreenQuestionsButNeverTimesThemOut(t *testing.T) {
 	}
 	if got := strings.Count(w.log("fednet.log"), "-- Reminder"); got != 2 {
 		t.Errorf("%d reminders: %s", got, w.log("fednet.log"))
+	}
+	// The job ended: its screen question is closed, not moved to the
+	// thread; the thread agent's own still waits, and nobody is told.
+	w.exec("UPDATE jobs SET state = 'ended', outcome = 'done', ended_at = 1", "UPDATE agents SET state = 'ended' WHERE job = 'q'")
+	out := w.watchAt(73*time.Hour, 0)
+	if got := w.query("SELECT group_concat(asked_by || ' ' || state, ', ') FROM questions"); got != "unblock-41 closed, unblock-42 pending" {
+		t.Errorf("questions: %s", got)
+	}
+	if !strings.Contains(out.stdout, "closed 1 pending question(s) of ended jobs: a screen's") {
+		t.Errorf("%s", out.stdout)
+	}
+	if got := w.prompts(); len(got) != 0 {
+		t.Errorf("%q", got)
 	}
 }
 

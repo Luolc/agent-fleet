@@ -23,8 +23,8 @@ const (
 		"is pending records nothing new. One line per job, open and ended, in start order, with its " +
 		"state (open, its outcome, or unknown when the ledger has no row for the job), including the " +
 		"jobs that asked nothing; then the questions thread agents asked themselves, one line per thread; then " +
-		"the total. For each: questions asked, answered, pending and closed (given up on: its job " +
-		"ended, or `fleet watch` reclaimed the session that asked it), and the median and longest " +
+		"the total. For each: questions asked, answered, pending and closed (given up on by `fleet " +
+		"watch`: its job ended by force, or no answer within its limit), and the median and longest " +
 		"wait of the answered ones.\n\n" +
 		"A question is answered when the next message a person posts in its thread arrives, and that " +
 		"message marks every question pending there answered: the wait runs to that message, which " +
