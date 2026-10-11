@@ -17,7 +17,7 @@ import (
 	"github.com/Luolc/agent-fleet/internal/exit"
 )
 
-const schemaVersion = 11
+const schemaVersion = 12
 
 // Version 1: the `agents` table. Ended rows are kept as history, so `name`
 // is unique only among rows that have not ended.
@@ -219,8 +219,25 @@ ALTER TABLE jobs ADD COLUMN reclaim_at INTEGER;
 ALTER TABLE threads ADD COLUMN quiet_asked TEXT NOT NULL DEFAULT '';
 `
 
+// Version 12: every reminder `fleet watch` posted, by fednet msg_id, so
+// a newer one in the thread replaces it: `posted` while it is the
+// thread's latest, `stale` once a newer one is posted and until it is
+// deleted, then `deleted` (or gone already), or `kept` when fednet
+// refused to delete it. The reminders the questions name are taken over
+// as posted.
+const schemaV12 = `
+CREATE TABLE reminders (
+    id     INTEGER PRIMARY KEY,
+    msg_id TEXT    NOT NULL UNIQUE,
+    thread TEXT    NOT NULL,
+    state  TEXT    NOT NULL CHECK (state IN ('posted', 'stale', 'deleted', 'kept'))
+);
+INSERT INTO reminders (msg_id, thread, state)
+    SELECT reminder_msg, min(thread), 'posted' FROM questions WHERE reminder_msg != '' GROUP BY reminder_msg ORDER BY min(id);
+`
+
 // migrations[v] upgrades a ledger at version v to v+1.
-var migrations = [schemaVersion]string{schema, schemaV2, schemaV3, schemaV4, schemaV5, schemaV6, schemaV7, schemaV8, schemaV9, schemaV10, schemaV11}
+var migrations = [schemaVersion]string{schema, schemaV2, schemaV3, schemaV4, schemaV5, schemaV6, schemaV7, schemaV8, schemaV9, schemaV10, schemaV11, schemaV12}
 
 // Path is where the ledger of `scope` lives:
 // `$XDG_STATE_HOME/fleet/<scope>.db`, with `~/.local/state` when

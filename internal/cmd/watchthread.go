@@ -73,9 +73,11 @@ type watchedJob struct {
 type watchedThread struct {
 	key string
 	// lastTS is the newest message's Slack timestamp, lastAt the same in
-	// seconds; quietAsked the lastTS watch last asked about.
-	lastTS, quietAsked string
-	lastAt             int64
+	// seconds; quietAsked the lastTS watch last asked about; lastUser the
+	// Slack user of the latest message a person posted, as `inbox`
+	// delivered it.
+	lastTS, quietAsked, lastUser string
+	lastAt                       int64
 	// agent is the live session, nil when none.
 	agent *session
 	// questions are pending, of the thread agent or an open job, oldest
@@ -141,7 +143,7 @@ func readThreads(conn *sql.DB, cfg *config.Scope, inHerdr map[string]InHerdr, li
 	}
 	slices.SortFunc(threads, func(a, b *watchedThread) int { return strings.Compare(a.key, b.key) })
 	for _, t := range threads {
-		if err := conn.QueryRow("SELECT quiet_asked FROM threads WHERE thread = ?1", t.key).Scan(&t.quietAsked); err != nil &&
+		if err := conn.QueryRow("SELECT quiet_asked, last_user FROM threads WHERE thread = ?1", t.key).Scan(&t.quietAsked, &t.lastUser); err != nil &&
 			!errors.Is(err, sql.ErrNoRows) {
 			return nil, false, exit.Database(err)
 		}
@@ -456,8 +458,17 @@ func firstLines(text string, n int) []string {
 }
 
 // remind posts one reminder of the thread's pending questions when the
-// oldest has passed more of `reminders` than it was reminded of.
+// oldest has passed more of `reminders` than it was reminded of,
+// mentioning the person who last wrote in the thread, then deletes the
+// reminders it replaces.
 func (r *watchRun) remind(t *watchedThread) error {
+	if err := r.postReminder(t); err != nil {
+		return err
+	}
+	return r.deleteStale(t)
+}
+
+func (r *watchRun) postReminder(t *watchedThread) error {
 	if len(t.questions) == 0 {
 		return nil
 	}
@@ -479,15 +490,105 @@ func (r *watchRun) remind(t *watchedThread) error {
 		fmt.Fprintf(&text, "- from %s: %s\n", q.askedBy, WorkOrderTitle(q.text))
 		ids = append(ids, q.id)
 	}
-	msg, err := fednet.PostID(r.cfg.FednetSocket, t.key, strings.TrimRight(text.String(), "\n"))
+	body := strings.TrimRight(text.String(), "\n")
+	var mentions []string
+	if t.lastUser != "" {
+		mentions = []string{t.lastUser}
+	}
+	msg, err := fednet.PostID(r.cfg.FednetSocket, t.key, body, mentions...)
+	if errors.Is(err, fednet.ErrMention) {
+		// The reminder matters more than the mention.
+		fmt.Fprintf(os.Stderr, "fleet watch: the reminder in thread %s is posted without mentioning anyone: %v\n", t.key, err)
+		msg, err = fednet.PostID(r.cfg.FednetSocket, t.key, body)
+	}
 	if err != nil {
 		return err
 	}
 	fmt.Fprintf(os.Stdout, "reminded thread %s of %d question(s) (%d of %d)\n", t.key, len(t.questions), due,
 		len(r.cfg.Watch.Reminders))
-	_, err = r.conn.Exec("UPDATE questions SET reminders = ?1, reminder_msg = ?2 WHERE id IN (?"+
-		strings.Repeat(", ?", len(ids)-1)+")", append([]any{due, msg}, ids...)...)
-	return dbErr(err)
+	tx, err := r.conn.Begin()
+	if err != nil {
+		return exit.Database(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, stmt := range []struct {
+		query string
+		args  []any
+	}{
+		{"UPDATE reminders SET state = 'stale' WHERE thread = ?1 AND state = 'posted'", []any{t.key}},
+		{"INSERT INTO reminders (msg_id, thread, state) VALUES (?1, ?2, 'posted')", []any{msg, t.key}},
+		{"UPDATE questions SET reminders = ?1, reminder_msg = ?2 WHERE id IN (?" + strings.Repeat(", ?", len(ids)-1) + ")",
+			append([]any{due, msg}, ids...)},
+	} {
+		if _, err := tx.Exec(stmt.query, stmt.args...); err != nil {
+			return exit.Database(err)
+		}
+	}
+	return dbErr(tx.Commit())
+}
+
+// deleteStale deletes from the thread the reminders a newer one replaced.
+// A failure is said on stderr and stops no other rule: a reminder fednet
+// no longer has (exit 1) counts as deleted; one not in Slack yet (5), or
+// with the hub unreachable (4) or fednet not run, is tried again on the
+// next run; any other refusal (a hub older than its client, say) leaves
+// it in the thread for good.
+func (r *watchRun) deleteStale(t *watchedThread) error {
+	stale, err := staleReminders(r.conn, t.key)
+	if err != nil {
+		return err
+	}
+	for _, msg := range stale {
+		code, reason, err := fednet.Delete(r.cfg.FednetSocket, msg)
+		state := ""
+		switch {
+		case err != nil:
+			fmt.Fprintf(os.Stderr, "fleet watch: the reminder %s in thread %s is not deleted, the next run tries again: %v\n",
+				msg, t.key, err)
+		case code == 0:
+			state = "deleted"
+			fmt.Fprintf(os.Stdout, "deleted the reminder %s in thread %s: a newer one replaces it\n", msg, t.key)
+		case code == 1:
+			state = "deleted"
+			fmt.Fprintf(os.Stdout, "the reminder %s in thread %s was gone already\n", msg, t.key)
+		case code == 4 || code == 5:
+			fmt.Fprintf(os.Stderr, "fleet watch: the reminder %s in thread %s is not deleted, the next run tries again: "+
+				"fednet client delete exit status %d: %s\n", msg, t.key, code, reason)
+		default:
+			state = "kept"
+			fmt.Fprintf(os.Stderr, "fleet watch: the reminder %s in thread %s stays in the thread: fednet client delete "+
+				"exit status %d: %s\n", msg, t.key, code, reason)
+		}
+		if state == "" {
+			continue
+		}
+		if _, err := r.conn.Exec("UPDATE reminders SET state = ?1 WHERE msg_id = ?2", state, msg); err != nil {
+			return exit.Database(err)
+		}
+	}
+	return nil
+}
+
+// staleReminders are the msg_ids of the thread's reminders to delete,
+// oldest first.
+func staleReminders(conn *sql.DB, thread string) ([]string, error) {
+	rows, err := conn.Query("SELECT msg_id FROM reminders WHERE thread = ?1 AND state = 'stale' ORDER BY id", thread)
+	if err != nil {
+		return nil, exit.Database(err)
+	}
+	defer rows.Close()
+	var msgs []string
+	for rows.Next() {
+		var msg string
+		if err := rows.Scan(&msg); err != nil {
+			return nil, exit.Database(err)
+		}
+		msgs = append(msgs, msg)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, exit.Database(err)
+	}
+	return msgs, nil
 }
 
 // closeQuestions marks the questions closed: given up on, not answered.
@@ -646,6 +747,8 @@ func jobState(j *watchedJob, all []watched, now int64) string {
 	switch lead := leadOf(all, j.job); {
 	case lead == nil:
 		line += ": no live lead"
+	case lead.reading == nil && !lead.suspect:
+		line += fmt.Sprintf(": lead %s starting", lead.live.Name)
 	case lead.reading == nil:
 		line += fmt.Sprintf(": lead %s gone from herdr", lead.live.Name)
 	default:

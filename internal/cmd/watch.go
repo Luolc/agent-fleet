@@ -57,7 +57,7 @@ const (
 		"Jobs: a lead's or worker's status, `state_change_seq` and screen hash (the screen with the " +
 		"spinner line, the input box and the footer stripped) are recorded; an agent is a suspect " +
 		"when all three have been unchanged for `worker_stale` (10m), or when it is gone from " +
-		"herdr; an agent blocked at a prompt is not. Each lead is told when the set of suspects " +
+		"herdr (a `starting` row 10 minutes after its start); an agent blocked at a prompt is not. Each lead is told when the set of suspects " +
 		"among its workers changes; a lead blocked or gone is told again next run. A lead's own " +
 		"state goes into the quiet-thread notice below.\n\n" +
 		"Screens: then every live agent stopped at a screen (herdr status blocked, or a start " +
@@ -92,7 +92,9 @@ const (
 		"(started for it when none is live) gets each job's state and is asked for progress; " +
 		"with none, a live thread agent is asked why it has not ended.\n\n" +
 		"Questions: the people are reminded of a thread's pending questions in one post listing " +
-		"them, at each of `reminders` (30m, 3h, 24h) after the oldest. A thread agent's question " +
+		"them, at each of `reminders` (30m, 3h, 24h) after the oldest, mentioning the person who " +
+		"last wrote in the thread (without the mention when fednet refuses it); once it is posted, " +
+		"the reminders before it are deleted from the thread. A thread agent's question " +
 		"pending for `thread_question` (72h) is closed and its session reclaimed. A lead's question " +
 		"pending for `lead_question` (72h): the lead is told its job ends in 30 minutes; if the job " +
 		"is still open then, watch reclaims it as `job end --force` does and posts the Linear steps " +
@@ -448,7 +450,9 @@ func nameSet(names []string) []string {
 // observe compares this run's reading with the last one in the ledger. Any
 // difference in status, seq or screen hash restarts the clock. An agent
 // blocked at a prompt is never a suspect: getting it past the prompt is
-// another matter than finding it stuck.
+// another matter than finding it stuck. A `starting` row is written
+// before herdr has the agent, so it is gone from herdr only once past
+// every bounded step of a start.
 func observe(live Live, r *reading, now, stale int64) watched {
 	if r == nil {
 		var lastChangeAt *int64
@@ -456,7 +460,8 @@ func observe(live Live, r *reading, now, stale int64) watched {
 			at := live.LastChangeAt.Int64
 			lastChangeAt = &at
 		}
-		return watched{live: live, lastChangeAt: lastChangeAt, suspect: true}
+		gone := live.State != "starting" || now-live.StartedAt >= startGraceSecs
+		return watched{live: live, lastChangeAt: lastChangeAt, suspect: gone}
 	}
 	unchanged := live.LastStatus.Valid && live.LastStatus.String == r.status &&
 		live.LastSeq.Valid && live.LastSeq.Int64 == r.seq &&
