@@ -239,6 +239,26 @@ check "inbox: Linear unavailable leaves no live row and no session" "0 0 " \
   "$(tledger "SELECT count(*) FROM agents WHERE name = 'thread-c0999-1-1' AND state != 'ended'")$(tledger "SELECT sessions FROM threads WHERE thread = 'C0999/1.1'")"
 check "inbox: Linear unavailable drops the message" "dropped " "$(tledger "SELECT state FROM inbox WHERE msg_id = 'm4'")"
 
+# A thread prompt the scope's config replaces with a missing file: no
+# agent, nothing reserved and Linear not asked; the thread is told which
+# file, the message dropped, exit 0.
+: > /home/agent/atb.log
+: > /home/agent/fednet.log
+cp "/home/agent/.config/$T/main.json" /home/agent/main.json.keep
+echo '{"linear": {"team": "TH"}, "fednet": {"socket": "/home/agent/fednet.sock"},
+  "prompts": {"thread": {"replace": "prompts/thread.md"}}}' > "/home/agent/.config/$T/main.json"
+out=$(inbox "$(event m4p C0998/1.1 'hello 0xMSG4P')" 2>&1); rc=$?
+mv /home/agent/main.json.keep "/home/agent/.config/$T/main.json"
+check "inbox: a broken thread prompt, exit 0 once the thread is told" 0 "$rc"
+[ "$rc" = 0 ] || printf '%s\n' "$out"
+has "inbox: a broken thread prompt is told to the thread with its file" "$(cat /home/agent/fednet.log)" \
+  "-thread C0998/1.1 -- fleet's prompt config is broken (prompts.thread.replace (~/.config/$T/prompts/thread.md): cannot read the file" \
+  "so no agent was started for this thread; once it is fixed, please post again."
+check "inbox: a broken thread prompt starts no agent and asks no Linear" "agent_not_found " \
+  "$(agent_field thread-c0998-1-1 agent_status) $(cat /home/agent/atb.log)"
+check "inbox: a broken thread prompt reserves nothing and drops the message" "0 0 dropped " \
+  "$(tledger "SELECT count(*) FROM agents WHERE name = 'thread-c0998-1-1'")$(tledger "SELECT count(*) FROM threads WHERE thread = 'C0998/1.1'")$(tledger "SELECT state FROM inbox WHERE msg_id = 'm4p'")"
+
 # thread end after a partial release: the comment is recorded, the retry
 # skips it and still fails on the release (exit 4 is not success), --force
 # ends the row, lists the release and closes the tab.
