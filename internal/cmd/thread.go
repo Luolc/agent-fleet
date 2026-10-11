@@ -436,6 +436,23 @@ func (s *threadStart) unreserve() error {
 	return nil
 }
 
+// ticketDescription is a new thread ticket's description: where the
+// thread is, its first message with who wrote it and when (or, for a
+// thread fleet opened for a job, which agent asked), and the channel's
+// context when it came with the message.
+func (s *threadStart) ticketDescription() string {
+	first := fmt.Sprintf("from %s at %s", s.msg.User, s.msg.TS)
+	if s.msg.fromFleet() {
+		first = s.msg.trigger()
+	}
+	description := fmt.Sprintf("channel: %s\nthread: %s\nfirst message, %s:\n\n%s\n",
+		s.msg.channel(), s.msg.Thread, first, s.msg.Text)
+	if s.msg.Context != "" {
+		description += "\nchannel context:\n\n" + s.msg.Context + "\n"
+	}
+	return description
+}
+
 // linearSteps are the thread ticket's steps when the scope has a Linear
 // team: a new thread gets its ticket created (label `thread`, no project)
 // and claimed; a known thread gets its ticket claimed again, a `Session
@@ -450,17 +467,7 @@ func (s *threadStart) linearSteps() error {
 		if title == "" {
 			title = "Thread " + s.msg.Thread
 		}
-		// A thread fleet opened for a job starts with fleet's question.
-		first := fmt.Sprintf("from %s at %s", s.msg.User, s.msg.TS)
-		if s.msg.fromFleet() {
-			first = s.msg.trigger()
-		}
-		description := fmt.Sprintf("channel: %s\nthread: %s\nfirst message, %s:\n\n%s\n",
-			s.msg.channel(), s.msg.Thread, first, s.msg.Text)
-		if s.msg.Context != "" {
-			description += "\nchannel context:\n\n" + s.msg.Context + "\n"
-		}
-		file, remove, err := tempFile(description)
+		file, remove, err := tempFile(s.ticketDescription())
 		if err != nil {
 			return err
 		}
