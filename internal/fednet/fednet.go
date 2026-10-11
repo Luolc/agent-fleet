@@ -2,7 +2,8 @@
 // in a thread and what a thread agent posts through `fleet thread post`,
 // `delete` for the reminder a newer one replaces, `progress` for a thread
 // agent's progress card, `read-thread` for when a thread last had a
-// message, and `open-thread` for the home thread of a job that has none.
+// message, and `open-thread` and `routes` for the home thread of a job
+// that has none.
 package fednet
 
 import (
@@ -124,6 +125,42 @@ func OpenThread(socket, channel, text string) (string, error) {
 		return "", exit.Environmentf("%s: %q is not a thread key of channel %s", op, key, channel)
 	}
 	return key, nil
+}
+
+// Channels is the channel id of each channel the hub's routes name
+// (`fednet client routes -json`), by name without the `#`; the direct
+// messages' route and ids starting with D are left out, since no thread
+// opens there. A fednet whose routes carry no names gives none. A fednet
+// that fails, or answers with what is not its JSON, is an environment
+// failure.
+func Channels(socket string) (map[string]string, error) {
+	const op = "fednet client routes"
+	stdout, _, code, err := relay(op, []string{"client", "routes", "-socket", socket, "-json"})
+	if err == nil && code != 0 {
+		err = exit.Environmentf("%s failed (exit status: %d)", op, code)
+	}
+	if err != nil {
+		return nil, err
+	}
+	var reply struct {
+		Routes []struct {
+			Channel string `json:"channel"`
+			Name    string `json:"name"`
+		} `json:"routes"`
+	}
+	if err := json.Unmarshal(stdout, &reply); err != nil {
+		return nil, exit.Environmentf("%s: not a JSON reply: %v", op, err)
+	}
+	ids := map[string]string{}
+	for _, r := range reply.Routes {
+		if r.Name == "" || r.Channel == "" || r.Channel == "dm" || strings.HasPrefix(r.Channel, "D") {
+			continue
+		}
+		if _, seen := ids[r.Name]; !seen {
+			ids[r.Name] = r.Channel
+		}
+	}
+	return ids, nil
 }
 
 // ErrThread marks a failure of one thread's read: fednet answered, but
