@@ -129,46 +129,17 @@ func brokenPrompt(key, path, content, format string, args ...any) *promptError {
 func loadPrompt(sc *config.Scope, name string) (*promptText, error) {
 	spec, conf := specOf(name), sc.Prompts[name]
 	p := builtinText(name)
-	key := "prompts." + name
-	read := func(field, path string, slots bool) (*promptPart, error) {
-		if path == "" {
-			return nil, nil
-		}
-		part := &promptPart{Source: key + "." + field, Path: path}
-		shown := sc.Tilde(path)
-		data, err := os.ReadFile(path)
-		if err != nil {
-			var pathErr *fs.PathError
-			if errors.As(err, &pathErr) {
-				err = pathErr.Err
-			}
-			return nil, brokenPrompt(part.Source, shown, "", "cannot read the file: %v", err)
-		}
-		part.Text = string(data)
-		if strings.TrimSpace(part.Text) == "" {
-			return nil, brokenPrompt(part.Source, shown, part.Text, "the file is empty")
-		}
-		if !strings.HasSuffix(part.Text, "\n") {
-			part.Text += "\n"
-		}
-		if slots {
-			if err := checkSlots(part, shown, name, spec.slots); err != nil {
-				return nil, err
-			}
-		}
-		return part, nil
-	}
-	replace, err := read("replace", conf.Replace, true)
+	replace, err := readPromptFile(sc, name, "replace", conf.Replace, true)
 	if err != nil {
 		return nil, err
 	}
 	if replace != nil {
 		p.Parts[0] = *replace
 	}
-	if _, err := read("base", conf.Base, false); err != nil {
+	if _, err := readPromptFile(sc, name, "base", conf.Base, false); err != nil {
 		return nil, err
 	}
-	addition, err := read("append", conf.Append, true)
+	addition, err := readPromptFile(sc, name, "append", conf.Append, true)
 	if err != nil {
 		return nil, err
 	}
@@ -179,6 +150,36 @@ func loadPrompt(sc *config.Scope, name string) (*promptText, error) {
 		p.Parts = append(p.Parts, promptPart{Source: "safety", Text: safetyPrompt})
 	}
 	return p, nil
+}
+
+// readPromptFile is the part the file `path` makes of the text `name` as
+// its `field` (nil when no path is given), its slots checked when
+// `checked`: a base goes into no message.
+func readPromptFile(sc *config.Scope, name, field, path string, checked bool) (*promptPart, error) {
+	if path == "" {
+		return nil, nil
+	}
+	part := &promptPart{Source: "prompts." + name + "." + field, Path: path}
+	shown := sc.Tilde(path)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		var pathErr *fs.PathError
+		if errors.As(err, &pathErr) {
+			err = pathErr.Err
+		}
+		return nil, brokenPrompt(part.Source, shown, "", "cannot read the file: %v", err)
+	}
+	part.Text = string(data)
+	if strings.TrimSpace(part.Text) == "" {
+		return nil, brokenPrompt(part.Source, shown, part.Text, "the file is empty")
+	}
+	if !strings.HasSuffix(part.Text, "\n") {
+		part.Text += "\n"
+	}
+	if !checked {
+		return part, nil
+	}
+	return part, checkSlots(part, shown, name, specOf(name).slots)
 }
 
 // checkSlots refuses the first slot in `part` that the text `name` does
