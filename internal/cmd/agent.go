@@ -235,6 +235,12 @@ func SettleAgent(h *herdr.Herdr, name, paneID, cwd string) error {
 	if _, err := h.CallOK("pane", "rename", paneID, name); err != nil {
 		return err
 	}
+	return settle(h, name, cwd)
+}
+
+// settle gets the agent `name` to its input box through reachInputBox;
+// exit 3 names the agent.
+func settle(h *herdr.Herdr, name, cwd string) error {
 	err := reachInputBox(
 		func() (string, error) { return h.Screen(name) },
 		func() (string, error) {

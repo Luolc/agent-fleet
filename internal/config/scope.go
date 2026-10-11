@@ -22,6 +22,10 @@ type Scope struct {
 	// FednetSocket is the fednet client's socket, for `fednet client
 	// post`; empty means fleet cannot post to a thread.
 	FednetSocket string
+	// UnblockProject is the Linear project of the tickets `watch` opens
+	// for the screens its helpers handle, in LinearTeam; empty (or no
+	// team) means no tickets.
+	UnblockProject string
 	// Paths are the machine's directories, absolute.
 	Paths Paths
 	// Channels are the channel names fleet serves.
@@ -77,6 +81,9 @@ type scopeFile struct {
 	Fednet *struct {
 		Socket string `json:"socket"`
 	} `json:"fednet"`
+	Unblock *struct {
+		Project string `json:"project"`
+	} `json:"unblock"`
 	Paths *struct {
 		Checkouts   *string `json:"checkouts"`
 		Initiatives *string `json:"initiatives"`
@@ -168,17 +175,8 @@ func ParseScope(data []byte, home string) (*Scope, error) {
 		return nil, err
 	}
 	t := &Scope{Paths: DefaultPaths, Channels: DefaultChannels, Watch: DefaultWatch, home: filepath.Clean(home)}
-	if f.Linear != nil {
-		if f.Linear.Team == "" {
-			return nil, errors.New("linear.team: must be set when linear is")
-		}
-		t.LinearTeam = f.Linear.Team
-	}
-	if f.Fednet != nil {
-		if f.Fednet.Socket == "" {
-			return nil, errors.New("fednet.socket: must be set when fednet is")
-		}
-		t.FednetSocket = f.Fednet.Socket
+	if err := f.sections(t); err != nil {
+		return nil, err
 	}
 	if p := f.Paths; p != nil {
 		if err := apply([]setting{{"paths.checkouts", p.Checkouts, &t.Paths.Checkouts},
@@ -209,6 +207,30 @@ func ParseScope(data []byte, home string) (*Scope, error) {
 		return nil, err
 	}
 	return t, nil
+}
+
+// sections sets the values of the one-key sections that are given, each
+// of which must name its value.
+func (f *scopeFile) sections(t *Scope) error {
+	if f.Linear != nil {
+		if f.Linear.Team == "" {
+			return errors.New("linear.team: must be set when linear is")
+		}
+		t.LinearTeam = f.Linear.Team
+	}
+	if f.Fednet != nil {
+		if f.Fednet.Socket == "" {
+			return errors.New("fednet.socket: must be set when fednet is")
+		}
+		t.FednetSocket = f.Fednet.Socket
+	}
+	if f.Unblock != nil {
+		if f.Unblock.Project == "" {
+			return errors.New("unblock.project: must be set when unblock is")
+		}
+		t.UnblockProject = f.Unblock.Project
+	}
+	return nil
 }
 
 // refuseNulls refuses a null anywhere in the object `data`, naming its

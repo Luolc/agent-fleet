@@ -40,7 +40,7 @@ const (
 		"A thread agent asking records the question on its own thread and fleet posts it " +
 		"there; nothing is delivered.\n\n" +
 		"Exit: 0 when the question is posted and the thread agent has it (a thread agent's " +
-		"own: once it is posted); 1 with --approval, when the caller is a worker, the file " +
+		"own: once it is posted); 1 with --approval, when the caller is a worker or a screen helper, the file " +
 		"is unreadable or empty, the job is not open, the job has no home thread (it was " +
 		"started by a caller without FLEET_THREAD), or the scope has no fednet socket; " +
 		"2/3/4 as `send` for the delivery; 3 when a new thread agent stops at an unknown " +
@@ -68,6 +68,9 @@ func AskHuman(h *herdr.Herdr, args AskHumanArgs) (exit.Code, error) {
 	}
 	if me.Role == identity.Worker {
 		return 0, exit.Refusedf("a worker does not ask people; tell your lead with `fleet send %s`", me.Parent)
+	}
+	if me.Role == identity.Unblock {
+		return 0, exit.Refusedf("a screen helper does not ask people itself; write the question to the file your task names")
 	}
 	data, err := os.ReadFile(args.File)
 	if err != nil {

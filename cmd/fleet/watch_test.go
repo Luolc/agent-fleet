@@ -277,10 +277,12 @@ func TestWatchTellsALeadOnlyWhenTheSuspectsAmongItsWorkersChange(t *testing.T) {
 		t.Errorf("%d prompts", got)
 	}
 
-	// b-w1 is back. b-lead's set changes, but b-lead is blocked: exit 3,
-	// and b-w1's flag is kept so the next run tells b-lead. a-lead's set is
-	// unchanged, so it is not told (and not blocked by the fake).
-	w.herdrList("thread-1 idle 1", "a-lead working 7", "a-w1 working 9", "a-w2 working 8", "b-lead blocked 3", "b-w1 working 4")
+	// b-w1 is back. b-lead's set changes, but herdr refuses the notice as
+	// blocked: exit 3, and b-w1's flag is kept so the next run tells
+	// b-lead. a-lead's set is unchanged, so it is not told (and not blocked
+	// by the fake). The list does not show b-lead blocked, which would
+	// start the unblocking (judge/unblock.sh).
+	w.herdrList("thread-1 idle 1", "a-lead working 7", "a-w1 working 9", "a-w2 working 8", "b-lead working 3", "b-w1 working 4")
 	w.screen("b-w1", claude("⏺ Back", "1s", "2hr 40m"))
 	w.reply(`{"error":{"code":"agent_blocked","message":"b"}}`)
 	out = w.run("", []string{"watch", "--scope", scope})
@@ -669,7 +671,7 @@ func TestWatchMovesTheQuestionsOfAJobThatEndedToItsThread(t *testing.T) {
 		t.Errorf("told of f's question:\n%s", prompts[0][1])
 	}
 	if !strings.Contains(out.stdout, "told thread-c4 of 1 question(s) of ended jobs in thread C4/4.0") ||
-		!strings.Contains(out.stdout, "closed 1 pending question(s) of jobs that ended after their lead was told") {
+		!strings.Contains(out.stdout, "closed 1 pending question(s) of ended jobs: a screen's, or the job ended after its lead was told") {
 		t.Errorf("%s", out.stdout)
 	}
 	// e's thread gets its reminder, and no agent is started for it.
@@ -712,6 +714,55 @@ func TestWatchMovesTheQuestionsOfAJobThatEndedToItsThread(t *testing.T) {
 		if strings.Contains(p[1], "--asked-to-end") {
 			t.Errorf("asked to end: %q", p)
 		}
+	}
+}
+
+func TestWatchRemindsOfScreenQuestionsButNeverTimesThemOut(t *testing.T) {
+	w := watchThreadWorld(t)
+	w.exec("INSERT INTO threads (thread, slug, created_at) VALUES ('C5/5.0', 'c5-5-0', 0)",
+		"INSERT INTO agents (name, role, thread, pane_id, state, started_at) VALUES ('thread-c5', 'thread', 'C5/5.0', 'p5', 'active', 0)",
+		"INSERT INTO jobs (job, lead_cwd, home_thread, state, started_at) VALUES ('q', '/c', 'C5/5.0', 'open', 0)",
+		fmt.Sprintf("INSERT INTO questions (job, thread, asked_by, text, state, asked_at) VALUES "+
+			"('q', 'C5/5.0', 'unblock-41', 'Press 1 to run it?', 'pending', %d), ('', 'C5/5.0', 'unblock-42', 'Trust it?', 'pending', %d)", t0, t0))
+	w.insert(watchRow{name: "q-lead", role: "lead", job: "q", parent: "thread-c5"})
+	w.herdrList("thread-c5 idle 1", "q-lead idle 2")
+	w.screen("q-lead", claude("⏺ Waiting", "1s", "2hr 59m"))
+	w.lastMessage("C5/5.0", t0)
+	w.watchAt(30*time.Minute, 0)
+	if got := w.log("fednet.log"); !strings.Contains(got, "Reminder 1 of 3: 2 question(s) here still wait for an answer") {
+		t.Errorf("%s", got)
+	}
+	// Past both limits (the thread itself is not idle): the screen
+	// questions still wait, the job stays open, the session is not ended.
+	w.lastMessage("C5/5.0", t0+72*3600)
+	w.watchAt(72*time.Hour+31*time.Minute, 0)
+	if got := w.query("SELECT group_concat(asked_by || ' ' || state, ', ') FROM questions"); got != "unblock-41 pending, unblock-42 pending" {
+		t.Errorf("questions: %s", got)
+	}
+	if got := w.query("SELECT state || ' ' || coalesce(reclaim_at, 'none') FROM jobs WHERE job = 'q'"); got != "open none" {
+		t.Errorf("job q %s", got)
+	}
+	if got := w.query("SELECT coalesce(reclaim_at, 'none') FROM agents WHERE name = 'thread-c5'"); got != "none" {
+		t.Errorf("thread-c5 reclaim_at %s", got)
+	}
+	if got := w.prompts(); len(got) != 0 {
+		t.Errorf("%q", got)
+	}
+	if got := strings.Count(w.log("fednet.log"), "-- Reminder"); got != 2 {
+		t.Errorf("%d reminders: %s", got, w.log("fednet.log"))
+	}
+	// The job ended: its screen question is closed, not moved to the
+	// thread; the thread agent's own still waits, and nobody is told.
+	w.exec("UPDATE jobs SET state = 'ended', outcome = 'done', ended_at = 1", "UPDATE agents SET state = 'ended' WHERE job = 'q'")
+	out := w.watchAt(73*time.Hour, 0)
+	if got := w.query("SELECT group_concat(asked_by || ' ' || state, ', ') FROM questions"); got != "unblock-41 closed, unblock-42 pending" {
+		t.Errorf("questions: %s", got)
+	}
+	if !strings.Contains(out.stdout, "closed 1 pending question(s) of ended jobs: a screen's") {
+		t.Errorf("%s", out.stdout)
+	}
+	if got := w.prompts(); len(got) != 0 {
+		t.Errorf("%q", got)
 	}
 }
 
@@ -806,6 +857,12 @@ func TestWatchDoesNotSuspectABlockedAgent(t *testing.T) {
 	w.insert(watchRow{name: "b-lead", role: "lead", job: "b", parent: "thread-1", startedAt: anHourAgo})
 	w.insert(watchRow{name: "b-w1", role: "worker", job: "b", parent: "b-lead", startedAt: anHourAgo,
 		lastStatus: "blocked", lastSeq: 3, lastScreenHash: cmd.Hash(cmd.FilterClaudeScreen(blocked)), lastChangeAt: anHourAgo})
+	// The people were already asked about its screen, so the unblocking
+	// (judge/unblock.sh) waits for them and does nothing here.
+	if _, err := w.ledger.Exec("INSERT INTO questions (job, thread, asked_by, text, state, asked_at) " +
+		"SELECT 'b', 'C1/1.0', 'unblock-' || id, 'what to press?', 'pending', 0 FROM agents WHERE name = 'b-w1'"); err != nil {
+		t.Fatal(err)
+	}
 	w.herdrList("b-lead working 2", "b-w1 blocked 3")
 	w.screen("b-lead", claude("⏺ Planning", "1s", "2hr 59m"))
 	w.screen("b-w1", blocked)

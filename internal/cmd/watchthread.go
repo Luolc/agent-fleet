@@ -34,16 +34,24 @@ const (
 	brokenLine    = "会话意外中断了，再说话会重新开始"
 )
 
-// question is a pending question as watch reads it. moved is a lead's
-// question whose job is no longer open: it stays pending as the thread's,
-// unless forced: its job ended after watch told the lead that a question
-// expired, which closes it as watch's own forced end does.
+// question is a pending question as watch reads it. moved is a question
+// of a job that is no longer open: it stays pending as the thread's,
+// unless dropped: closed as on watch's own forced end, because the job
+// ended after watch told its lead that a question expired, or because it
+// is a screen question, whose agent went with the job.
 type question struct {
 	id                 int64
 	job, askedBy, text string
 	askedAt            int64
 	reminders          int
-	moved, forced      bool
+	moved, dropped     bool
+}
+
+// screen is whether the question is about an agent stopped at a screen,
+// asked under its helper's name: it is reminded of, but never times out,
+// since a screen waiting for a person is not a job or session gone stale.
+func (q question) screen() bool {
+	return strings.HasPrefix(q.askedBy, helperPrefix)
 }
 
 // session is a thread's live thread agent.
@@ -134,9 +142,10 @@ func readThreads(conn *sql.DB, cfg *config.Scope, inHerdr map[string]InHerdr, li
 		func(rows *sql.Rows) error {
 			var q question
 			var key string
-			if err := rows.Scan(&q.id, &q.job, &key, &q.askedBy, &q.text, &q.askedAt, &q.reminders, &q.moved, &q.forced); err != nil {
+			if err := rows.Scan(&q.id, &q.job, &key, &q.askedBy, &q.text, &q.askedAt, &q.reminders, &q.moved, &q.dropped); err != nil {
 				return err
 			}
+			q.dropped = q.dropped || q.moved && q.screen()
 			t := get(key)
 			t.questions = append(t.questions, q)
 			return nil
@@ -179,25 +188,24 @@ func eachRow(conn *sql.DB, query string, scan func(*sql.Rows) error) error {
 	return nil
 }
 
-// threads runs the thread rules: first the pending questions of jobs
-// that ended after their lead was told a question expired are closed,
+// threads runs the thread rules: first the dropped questions are closed,
 // then each thread in key order.
 func (r *watchRun) threads(threads []*watchedThread, all []watched) error {
-	var forced []question
+	var dropped []question
 	for _, t := range threads {
 		t.questions = slices.DeleteFunc(t.questions, func(q question) bool {
-			if q.forced {
-				forced = append(forced, q)
+			if q.dropped {
+				dropped = append(dropped, q)
 			}
-			return q.forced
+			return q.dropped
 		})
 	}
-	if len(forced) > 0 {
-		if err := r.closeQuestions(forced); err != nil {
+	if len(dropped) > 0 {
+		if err := r.closeQuestions(dropped); err != nil {
 			return err
 		}
-		fmt.Fprintf(os.Stdout, "closed %d pending question(s) of jobs that ended after their lead was told a question "+
-			"expired\n", len(forced))
+		fmt.Fprintf(os.Stdout, "closed %d pending question(s) of ended jobs: a screen's, or the job ended after its lead "+
+			"was told a question expired\n", len(dropped))
 	}
 	for _, t := range threads {
 		if r.outOfTime() {
@@ -280,7 +288,7 @@ func (r *watchRun) questions(t *watchedThread, all []watched) error {
 func (r *watchRun) expire(t *watchedThread) error {
 	var expired, givenUp []question
 	for _, q := range t.questions {
-		if r.now-q.askedAt < secs(r.cfg.Watch.ThreadQuestion) {
+		if q.screen() || r.now-q.askedAt < secs(r.cfg.Watch.ThreadQuestion) {
 			continue
 		}
 		if q.job == "" {
@@ -318,7 +326,7 @@ func (r *watchRun) expire(t *watchedThread) error {
 
 // leadQuestion runs the lead-question rule on one job.
 func (r *watchRun) leadQuestion(t *watchedThread, j *watchedJob, all []watched) error {
-	i := slices.IndexFunc(t.questions, func(q question) bool { return q.job == j.job && !q.moved })
+	i := slices.IndexFunc(t.questions, func(q question) bool { return q.job == j.job && !q.moved && !q.screen() })
 	expired := i >= 0 && r.now-t.questions[i].askedAt >= secs(j.limits.LeadQuestion)
 	switch {
 	case !expired && j.reclaimAt.Valid:
@@ -348,6 +356,7 @@ func (r *watchRun) leadQuestion(t *watchedThread, j *watchedJob, all []watched) 
 	case r.now < j.reclaimAt.Int64:
 		return nil
 	}
+	askedAt := t.questions[i].askedAt
 	ended, pending, err := reclaimJob(r.h, r.conn, r.cfg, j.job)
 	if err != nil {
 		return err
@@ -365,7 +374,7 @@ func (r *watchRun) leadQuestion(t *watchedThread, j *watchedJob, all []watched) 
 		return err
 	}
 	text := fmt.Sprintf("Job %s was ended by force: its lead's question had no answer for %s, and the job was not "+
-		"ended within %s of the lead being told.", j.job, Duration(r.now-gone[0].askedAt), Duration(leadGrace))
+		"ended within %s of the lead being told.", j.job, Duration(r.now-askedAt), Duration(leadGrace))
 	if len(pending) > 0 {
 		text += " Linear steps not done:\n- " + strings.Join(pending, "\n- ")
 	}

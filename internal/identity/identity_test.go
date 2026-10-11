@@ -41,8 +41,8 @@ func TestTheScopeDefaultsToMainAndNamesTheSession(t *testing.T) {
 	}
 }
 
-func TestTheRolesAreThreadLeadAndWorker(t *testing.T) {
-	for value, want := range map[string]Role{"thread": Thread, "lead": Lead, "worker": Worker} {
+func TestTheRolesAreThreadLeadWorkerAndUnblock(t *testing.T) {
+	for value, want := range map[string]Role{"thread": Thread, "lead": Lead, "worker": Worker, "unblock": Unblock} {
 		role, ok := ParseRole(value)
 		if !ok || role != want || role.String() != value {
 			t.Errorf("%s: %v %v", value, role, ok)
