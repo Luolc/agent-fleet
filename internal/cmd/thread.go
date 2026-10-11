@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -352,7 +353,8 @@ type threadStart struct {
 	known   *threadRow // nil for a thread this scope has not seen
 	session int64
 	ticket  atb.Issue
-	notes   []string // for the prompt: earlier summaries
+	notes   []string    // for the prompt: earlier summaries
+	text    *promptText // the thread prompt, put together before the reservation
 	created []string
 }
 
@@ -577,9 +579,8 @@ func (s *threadStart) jobKind() string {
 		"no `--repo`); when unsure, ask in the thread.", strings.TrimPrefix(s.mapping, s.cfg.Channels.InitiativePrefix), filepath.Join(s.cwd, "AGENTS.md"))
 }
 
-// prompt is the thread agent's first message: the built-in prompt, the
-// channel's context, the earlier summaries, and the message.
-func (s *threadStart) prompt() string {
+// slots are the values of the thread prompt's slots.
+func (s *threadStart) slots() map[string]string {
 	post := "posting to the thread is off: the fednet socket is not configured for this scope (`fednet.socket` in its config file)"
 	progress := "the progress card is off for the same reason: `fleet thread progress` is refused"
 	if s.cfg.FednetSocket != "" {
@@ -593,10 +594,17 @@ func (s *threadStart) prompt() string {
 	if ticket == "" {
 		note = " (empty: thread tickets are off for this scope)"
 	}
-	text := strings.NewReplacer("{{scope}}", s.id.Scope, "{{agent}}", s.id.Agent,
-		"{{mapping}}", s.mapping, "{{cwd}}", s.cwd, "{{rules}}", s.rules(), "{{xrepo}}", crossRepoRoot(s.cfg, s.mapping),
-		"{{checkouts}}", s.cfg.Tilde(s.cfg.Paths.Checkouts),
-		"{{ticket}}", ticket, "{{ticket_note}}", note, "{{post}}", post, "{{progress}}", progress).Replace(threadPrompt)
+	slots := map[string]string{"scope": s.id.Scope, "agent": s.id.Agent, "mapping": s.mapping, "cwd": s.cwd,
+		"rules": s.rules(), "xrepo": crossRepoRoot(s.cfg, s.mapping), "checkouts": s.cfg.Tilde(s.cfg.Paths.Checkouts),
+		"ticket": ticket, "ticket_note": note, "post": post, "progress": progress}
+	maps.Copy(slots, modelValues(s.cfg))
+	return slots
+}
+
+// firstMessage is the thread agent's first message: the thread prompt,
+// the channel's context, the earlier summaries, and the message.
+func (s *threadStart) firstMessage() string {
+	text := s.text.fill(s.slots())
 	context := s.msg.Context
 	if context == "" && s.known != nil {
 		context = s.known.Context
@@ -635,7 +643,7 @@ func (s *threadStart) start() (exit.Code, error) {
 	if err != nil {
 		return startFailed(s.id.Agent, err, 0, s.created, "")
 	}
-	code, err := startAndDeliver(s.h, s.conn, s.id, place, s.cwd, nil, nil, s.msg.sender(), s.prompt(), &s.created)
+	code, err := startAndDeliver(s.h, s.conn, s.id, place, s.cwd, nil, nil, s.msg.sender(), s.firstMessage(), &s.created)
 	if err != nil || code != exit.Ok {
 		return startFailed(s.id.Agent, err, code, s.created, "")
 	}
@@ -675,6 +683,20 @@ func (s *threadStart) notHere() error {
 		capitalize(what), s.cwd), "the checkout is missing")
 }
 
+// promptBroken is what a start does when the thread prompt cannot be put
+// together: nothing more is reserved or started, the thread is told and
+// the message dropped (`dropped`). What an agent or watch sent gets the
+// error instead, as does any other error.
+func (s *threadStart) promptBroken(err error) (code exit.Code, dropped bool, _ error) {
+	var broken *promptError
+	if !errors.As(err, &broken) || s.msg.fromFleet() {
+		return 0, false, err
+	}
+	fmt.Fprintf(os.Stderr, "fleet: %v; no thread agent started\n", err)
+	return exit.Ok, true, s.tell(fmt.Sprintf("fleet's prompt config is broken (%v), so no agent was started for this "+
+		"thread; once it is fixed, please post again.", err), "the prompt config is broken")
+}
+
 // tell posts one line to the thread; only when the post succeeded is the
 // message dropped. A post that fails, or no socket to post with, is exit
 // 5: the message stays reserved and fednet runs the hook again.
@@ -698,50 +720,53 @@ func capitalize(text string) string {
 // row still `starting` with its agent in herdr: the agent is got to its
 // input box, the earlier summaries are read again, and the full first
 // message is delivered, after which the row is active. Nothing new is
-// created.
-func resumeThreadStart(h *herdr.Herdr, conn *sql.DB, scope string, cfg *config.Scope, msg inboundMessage, name string) (exit.Code, error) {
+// created. A thread prompt that cannot be put together is told to the
+// thread, the message dropped, as at a start.
+func resumeThreadStart(h *herdr.Herdr, conn *sql.DB, scope string, cfg *config.Scope, msg inboundMessage, name string) (code exit.Code, dropped bool, err error) {
 	fmt.Fprintf(os.Stderr, "note: %s is still starting from an earlier run; finishing that start\n", name)
 	home, err := Home()
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
 	known, err := threadByKey(conn, msg.Thread)
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
 	if known == nil {
-		return 0, exit.Environmentf("the ledger has %s but no row for thread %s", name, msg.Thread)
+		return 0, false, exit.Environmentf("the ledger has %s but no row for thread %s", name, msg.Thread)
 	}
 	var pane string
 	if err := conn.QueryRow("SELECT pane_id FROM agents WHERE name = ?1 AND state != 'ended'", name).Scan(&pane); err != nil {
-		return 0, exit.Database(err)
+		return 0, false, exit.Database(err)
 	}
 	s := &threadStart{h: h, conn: conn, cfg: cfg, msg: msg, known: known, session: known.Sessions, home: home,
 		ticket: atb.Issue{Identifier: known.Ticket, URL: known.TicketURL},
 		id:     &identity.Identity{Agent: name, Role: identity.Thread, Scope: scope, Thread: msg.Thread, Issue: known.Ticket}}
 	if err := s.belong(); err != nil {
-		return 0, err
+		return 0, false, err
+	}
+	if s.text, err = loadPrompt(cfg, "thread"); err != nil {
+		return s.promptBroken(err)
 	}
 	if known.Ticket != "" && known.Sessions > 1 {
 		if s.notes, err = summaries(known.Ticket); err != nil {
-			return 0, err
+			return 0, false, err
 		}
 	}
 	if err := ResumeAgent(h, name, pane, s.cwd); err != nil {
-		return 0, err
+		return 0, false, err
 	}
-	text, err := WithHeader(s.msg.sender(), s.prompt())
+	text, err := WithHeader(s.msg.sender(), s.firstMessage())
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
-	code, err := Deliver(h, name, text)
-	if err != nil || code != exit.Ok {
-		return code, err
+	if code, err = Deliver(h, name, text); err != nil || code != exit.Ok {
+		return code, false, err
 	}
 	if _, err := conn.Exec("UPDATE agents SET state = 'active' WHERE name = ?1 AND state = 'starting'", name); err != nil {
-		return 0, exit.Database(err)
+		return 0, false, exit.Database(err)
 	}
-	return exit.Ok, nil
+	return exit.Ok, false, nil
 }
 
 // maxPostBytes is the largest body `thread post` takes.

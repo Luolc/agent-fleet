@@ -182,9 +182,17 @@ func parentThread(conn *sql.DB, issue string) (string, error) {
 }
 
 // startRevisit starts the revisit agent `name` for the parent issue `p`
-// and records the start.
+// and records the start; a broken revisit prompt starts nothing.
 func (u *unblocking) startRevisit(p atb.Parent, name string) error {
-	body, err := u.revisitBody(p, name)
+	text, err := loadPrompt(u.cfg, "revisit")
+	if err != nil {
+		thread, threadErr := parentThread(u.conn, p.Identifier)
+		if threadErr != nil {
+			return errors.Join(err, threadErr)
+		}
+		return u.promptBroken(err, thread, "the revisit agent "+name+" for "+p.Identifier)
+	}
+	body, err := u.revisitMessage(text, p, name)
 	if err != nil {
 		return err
 	}
@@ -204,11 +212,12 @@ func (u *unblocking) startRevisit(p atb.Parent, name string) error {
 	return nil
 }
 
-// revisitBody is the revisit agent's first message: the prompt, the issue,
-// its sub-issues, fleet's jobs on it, the questions earlier revisit agents
-// of the issue asked in a thread with the latest message a person posted
-// there, and last its project's instructions as Linear has them.
-func (u *unblocking) revisitBody(p atb.Parent, name string) (string, error) {
+// revisitMessage is the revisit agent's first message: the revisit
+// prompt `prompt`, the issue, its sub-issues, fleet's jobs on it, the
+// questions earlier revisit agents of the issue asked in a thread with the
+// latest message a person posted there, and last its project's
+// instructions as Linear has them.
+func (u *unblocking) revisitMessage(prompt *promptText, p atb.Parent, name string) (string, error) {
 	thread, err := parentThread(u.conn, p.Identifier)
 	if err != nil {
 		return "", err
@@ -229,9 +238,9 @@ func (u *unblocking) revisitBody(p atb.Parent, name string) (string, error) {
 	if p.Project != nil {
 		create = strings.Replace(create, " --parent", " --project '"+p.Project.Name+"' --parent", 1)
 	}
-	text := strings.NewReplacer("{{agent}}", name, "{{scope}}", u.scope, "{{dir}}", u.cfg.Tilde(u.dir),
-		"{{issue}}", p.Identifier, "{{unchanged}}", Duration(u.now-p.UpdatedAt.Unix()), "{{create}}", create,
-		"{{ask}}", ask, "{{again}}", Duration(secs(u.cfg.Watch.ParentStale))).Replace(revisitPrompt)
+	text := prompt.fill(map[string]string{"agent": name, "scope": u.scope, "dir": u.cfg.Tilde(u.dir),
+		"issue": p.Identifier, "unchanged": Duration(u.now - p.UpdatedAt.Unix()), "create": create, "ask": ask,
+		"again": Duration(secs(u.cfg.Watch.ParentStale))})
 	at := func(t time.Time) string { return t.UTC().Format(time.RFC3339) }
 	text += fmt.Sprintf("\n## The issue\n\n%s: %s (%s), state %s, last changed %s.\n", p.Identifier, p.Title, p.URL,
 		p.State.Name, at(p.UpdatedAt))

@@ -475,6 +475,36 @@ func (u *unblocking) tell(row stopRow, what string) {
 	}
 }
 
+// homeThread is the thread the people are asked in about `row`: its own
+// for a thread agent, else its open job's home thread; "" for none.
+func (u *unblocking) homeThread(row stopRow) (string, error) {
+	if row.Role == "thread" {
+		return row.Thread, nil
+	}
+	job, err := openJob(u.conn, row.Job)
+	if err != nil || job == nil {
+		return "", err
+	}
+	return job.HomeThread, nil
+}
+
+// promptBroken is what watch does instead of starting `what` when its
+// prompt cannot be put together: the error is posted to `thread`, the one
+// the agent would have asked in, once per error (the steps record
+// `prompt-error:<digest>`), and returned for the run's output, which is
+// all there is without a thread or a socket.
+func (u *unblocking) promptBroken(err error, thread, what string) error {
+	var broken *promptError
+	if !errors.As(err, &broken) || thread == "" || u.cfg.FednetSocket == "" {
+		return err
+	}
+	posted := runStep(u.conn, "prompt-error:"+broken.digest, "posted", func() error {
+		return fednet.Post(u.cfg.FednetSocket, thread, fmt.Sprintf("fleet watch did not start %s: fleet's prompt "+
+			"config is broken (%v). This is said once for this error; once it is fixed, a later run starts it.", what, err))
+	})
+	return errors.Join(err, posted)
+}
+
 // questionFile is where the helper `name` writes its question.
 func (u *unblocking) questionFile(name string) string {
 	return filepath.Join(u.dir, name+"-question.md")
@@ -522,16 +552,29 @@ func (u *unblocking) ticket(row stopRow, helper, screen string) (string, error) 
 
 // startHelper starts the helper of a stopped agent in the scope's
 // `threads` workspace, in the helpers' directory, with the screen, the
-// guidance and what the people said about the screen so far.
+// guidance and what the people said about the screen so far; a broken
+// unblock prompt or guidance starts nothing and opens no ticket.
 func (u *unblocking) startHelper(row stopRow, helper, screen string) error {
 	if err := os.MkdirAll(u.dir, 0o755); err != nil {
 		return exit.IO(err)
+	}
+	prompt, err := loadPrompt(u.cfg, "unblock")
+	var guidance *promptText
+	if err == nil {
+		guidance, err = loadPrompt(u.cfg, "screen_guidance")
+	}
+	if err != nil {
+		thread, threadErr := u.homeThread(row)
+		if threadErr != nil {
+			return errors.Join(err, threadErr)
+		}
+		return u.promptBroken(err, thread, fmt.Sprintf("a screen helper for %s (%s)", row.Name, row.who()))
 	}
 	issue, err := u.ticket(row, helper, screen)
 	if err != nil {
 		return err
 	}
-	body, err := u.helperPrompt(row, helper, screen, issue)
+	body, err := u.helperMessage(prompt, guidance, row, helper, screen, issue)
 	if err != nil {
 		return err
 	}
@@ -580,19 +623,19 @@ func (u *unblocking) startInThreads(id *identity.Identity, parentIssue, body str
 	return nil
 }
 
-// helperPrompt is the helper's first message: the prompt, the guidance,
-// the screen, and the questions earlier helpers asked about it with the
-// latest message a person posted in the home thread.
-func (u *unblocking) helperPrompt(row stopRow, helper, screen, issue string) (string, error) {
+// helperMessage is the helper's first message: the unblock prompt
+// `prompt`, the guidance, the screen, and the questions earlier helpers
+// asked about it with the latest message a person posted in the home
+// thread.
+func (u *unblocking) helperMessage(prompt, guidance *promptText, row stopRow, helper, screen, issue string) (string, error) {
 	ticket := "none: tickets are off for this scope, so put what you did or asked in your last message instead."
 	if issue != "" {
 		ticket = fmt.Sprintf("%s, labelled %s; record on it with `atb linear comment %s --body-file <file>`, a file "+
 			"you write first in your directory.", issue, screenLabel, issue)
 	}
-	text := strings.NewReplacer("{{agent}}", helper, "{{scope}}", u.scope, "{{dir}}", u.cfg.Tilde(u.dir),
-		"{{blocked}}", row.Name, "{{who}}", row.who(), "{{cwd}}", row.Cwd,
-		"{{question_file}}", u.questionFile(helper), "{{ticket}}", ticket).Replace(unblockPrompt)
-	text += "\n" + screenGuidance + "\n## The screen\n\nAs watch read it:\n\n" + fenced(strings.TrimRight(screen, "\n")) + "\n"
+	text := prompt.fill(map[string]string{"agent": helper, "scope": u.scope, "dir": u.cfg.Tilde(u.dir),
+		"blocked": row.Name, "who": row.who(), "cwd": row.Cwd, "question_file": u.questionFile(helper), "ticket": ticket})
+	text += "\n" + guidance.fill(nil) + "\n## The screen\n\nAs watch read it:\n\n" + fenced(strings.TrimRight(screen, "\n")) + "\n"
 	earlier, err := earlierSection(u.conn, helper, "Earlier on this screen")
 	if err != nil {
 		return "", err

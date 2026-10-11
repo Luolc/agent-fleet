@@ -205,6 +205,7 @@ type jobChecked struct {
 	cwd    string
 	key    string
 	cfg    *config.Config
+	prompt *promptText
 	linear *linear
 	body   string
 	task   string
@@ -322,11 +323,15 @@ func (c *jobChecked) flags(args JobStartArgs) error {
 	return nil
 }
 
-// repoAndLinear finds where the lead runs, loads the config and decides
-// the job's Linear settings against the parent flags.
+// repoAndLinear loads the scope's config and the lead prompt, finds where
+// the lead runs, loads the job's config and decides the job's Linear
+// settings against the parent flags.
 func (c *jobChecked) repoAndLinear(args JobStartArgs) error {
 	var err error
 	if c.sc, err = config.LoadScope(c.me.Scope); err != nil {
+		return err
+	}
+	if c.prompt, err = loadPrompt(c.sc, "lead"); err != nil {
 		return err
 	}
 	if c.repo != "" {
@@ -549,7 +554,7 @@ func JobStart(h *herdr.Herdr, args JobStartArgs) (exit.Code, error) {
 			return startFailed(c.id.Agent, err, 0, created, hint)
 		}
 	}
-	body := rolePrompt(c.sc, c.id, c.cwd, c.repo, c.cwd, c.cfg.MaxAgentsPerJob, issue, c.parent) +
+	body := c.prompt.fill(roleSlots(c.sc, c.id, c.cwd, c.repo, c.cwd, c.cfg.MaxAgentsPerJob, issue, c.parent)) +
 		section + taskSection(issue.URL, c.body)
 	code, err := startAndDeliver(h, conn, c.id, place, c.cwd, args.Model, args.Effort, c.me.Agent, body, &created)
 	if err != nil || code != exit.Ok {
