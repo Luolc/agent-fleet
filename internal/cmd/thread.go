@@ -450,8 +450,13 @@ func (s *threadStart) linearSteps() error {
 		if title == "" {
 			title = "Thread " + s.msg.Thread
 		}
-		description := fmt.Sprintf("channel: %s\nthread: %s\nfirst message, from %s at %s:\n\n%s\n",
-			s.msg.channel(), s.msg.Thread, s.msg.User, s.msg.TS, s.msg.Text)
+		// A thread fleet opened for a job starts with fleet's question.
+		first := fmt.Sprintf("from %s at %s", s.msg.User, s.msg.TS)
+		if s.msg.fromFleet() {
+			first = s.msg.trigger()
+		}
+		description := fmt.Sprintf("channel: %s\nthread: %s\nfirst message, %s:\n\n%s\n",
+			s.msg.channel(), s.msg.Thread, first, s.msg.Text)
 		if s.msg.Context != "" {
 			description += "\nchannel context:\n\n" + s.msg.Context + "\n"
 		}

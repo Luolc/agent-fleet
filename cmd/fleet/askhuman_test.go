@@ -442,6 +442,10 @@ func TestAskHumanOpensAHomeThreadInTheReposChannel(t *testing.T) {
 		!strings.Contains(argv, "Question from item-1-lead for the people in thread C0123/1700000099.000") {
 		t.Errorf("argv = %q", argv)
 	}
+	if got := w.file("description"); !strings.HasPrefix(got, "channel: C0123\nthread: C0123/1700000099.000\n"+
+		"first message, a question from item-1-lead:\n\nRevert the red commit or fix it?") {
+		t.Errorf("ticket description = %q", got)
+	}
 	// Asked again: the home thread is there, nothing is opened or posted.
 	_ = os.Remove(filepath.Join(w.dir, "calls"))
 	if out := w.askHuman("--file", question); out.code != 0 || w.calls() != "" {
