@@ -302,16 +302,20 @@ func (m inboundMessage) sender() string {
 	return inboxSender
 }
 
+// seePrompt points a thread agent at what its prompt says to do with a
+// message from fleet. The message itself gives the facts and the least
+// to do, so an agent started on an older prompt, which has no such
+// paragraph, still knows its next step.
+const seePrompt = `Your prompt says what to do under "Messages from fleet"`
+
 // body is the message as the thread agent reads it.
 func (m inboundMessage) body() string {
 	if m.Watch {
 		return m.Text
 	}
 	if m.Conclusion {
-		return fmt.Sprintf("Conclusion of a job from %s for the people in thread %s. Post it to the thread with "+
-			"`fleet thread post`, then read the report it names and start the next job for each follow-up that "+
-			"serves what the people asked here, saying so in the thread; ask only about what needs a person's yes "+
-			"or lies outside their request.\n\n%s", m.Question, m.Thread, m.Text)
+		return fmt.Sprintf("Conclusion of a job from %s for the people in thread %s. %s; at the least, post it to "+
+			"the thread with `fleet thread post`.\n\n%s", m.Question, m.Thread, seePrompt, m.Text)
 	}
 	if m.Screen {
 		return fmt.Sprintf("Question from %s for the people in thread %s about an agent stopped at a screen, already "+
@@ -319,9 +323,9 @@ func (m inboundMessage) body() string {
 			"helper on its next run, or they deal with the screen themselves.\n\n%s\n", m.Question, m.Thread, m.Text)
 	}
 	if m.Question != "" {
-		return fmt.Sprintf("Question from %s for the people in thread %s, already posted there by fleet; first check whether "+
-			"the rules leave it to the lead (your prompt says how); when the people answer, pass the answer on with "+
-			"`fleet send %s --file <file>`.\n\n%s\n", m.Question, m.Thread, m.Question, m.Text)
+		return fmt.Sprintf("Question from %s for the people in thread %s, already posted there by fleet. %s; at the "+
+			"least, when the people answer, pass the answer on with `fleet send %s --file <file>`.\n\n%s\n",
+			m.Question, m.Thread, seePrompt, m.Question, m.Text)
 	}
 	return fmt.Sprintf("Message in thread %s from %s at %s:\n\n%s\n", m.Thread, m.User, m.TS, m.Text)
 }
@@ -558,16 +562,8 @@ func summaries(ticket string) ([]string, error) {
 	return notes, nil
 }
 
-// rules is how the thread agent decides between a single-repo and a
-// cross-repo job, by the thread's mapping, and which work it starts
-// without asking.
-func (s *threadStart) rules() string {
-	return s.jobKind() + " Work you find while answering here (a fix you diagnosed, a follow-up a job's report " +
-		"names) is asked for when it serves what the people asked in this thread: start the job and say so in the thread; do not " +
-		"ask whether to start it. Money, machines, risk controls and a release still need a person's yes."
-}
-
-// jobKind is the single-repo or cross-repo rule of the thread's mapping.
+// jobKind is the single-repo or cross-repo rule of the thread's mapping,
+// the thread prompt's `rules` slot.
 func (s *threadStart) jobKind() string {
 	if repo, ok := strings.CutPrefix(s.mapping, s.cfg.Channels.RepoPrefix); ok {
 		return fmt.Sprintf("This thread belongs to the repo %[1]s. Work asked for here is a single-repo job in %[1]s "+
@@ -595,7 +591,7 @@ func (s *threadStart) slots() map[string]string {
 		note = " (empty: thread tickets are off for this scope)"
 	}
 	slots := map[string]string{"scope": s.id.Scope, "agent": s.id.Agent, "mapping": s.mapping, "cwd": s.cwd,
-		"rules": s.rules(), "xrepo": crossRepoRoot(s.cfg, s.mapping), "checkouts": s.cfg.Tilde(s.cfg.Paths.Checkouts),
+		"rules": s.jobKind(), "xrepo": crossRepoRoot(s.cfg, s.mapping), "checkouts": s.cfg.Tilde(s.cfg.Paths.Checkouts),
 		"ticket": ticket, "ticket_note": note, "post": post, "progress": progress}
 	maps.Copy(slots, modelValues(s.cfg))
 	return slots

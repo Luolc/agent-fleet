@@ -408,11 +408,11 @@ func (r *watchRun) tellMoved(t *watchedThread) error {
 	}
 	var text strings.Builder
 	fmt.Fprintf(&text, "fleet watch, rule `questions of an ended job`: %d question(s) a lead asked in thread %s are still "+
-		"pending, but the job is no longer open. They are this thread's questions now, and yours to follow: the "+
-		"people are reminded of them as before, and a person's next message in the thread answers them; with the "+
-		"job gone, acting on the answer is yours (a follow-up job, say). `fleet thread end` waits for them as for "+
-		"your own; one still pending %s after it was asked is closed, and your session is not reclaimed for it.\n",
-		len(moved), t.key, Duration(secs(r.cfg.Watch.ThreadQuestion)))
+		"pending, but the job is no longer open. They are this thread's questions now: the people are reminded of "+
+		"them as before, and a person's next message in the thread answers them. `fleet thread end` waits for them "+
+		"as for your own; one still pending %s after it was asked is closed, and your session is not reclaimed for "+
+		"it. %s; at the least, with the job gone, acting on the answer is yours.\n",
+		len(moved), t.key, Duration(secs(r.cfg.Watch.ThreadQuestion)), seePrompt)
 	for _, q := range moved {
 		fmt.Fprintf(&text, "\n- job %s, from %s, asked at %s:\n", q.job, q.askedBy, at(q.askedAt))
 		for _, line := range firstLines(q.text, 3) {
@@ -605,10 +605,10 @@ func (r *watchRun) closeQuestions(qs []question) error {
 // when watch ends it otherwise.
 func (r *watchRun) askToEnd(t *watchedThread, rule, why string) error {
 	a := t.agent
-	text := fmt.Sprintf("fleet watch, rule `%s`: %s. This session is reclaimed: write your summary and end it with "+
-		"`fleet thread end --summary-file <file> --asked-to-end` (being reclaimed counts as being asked to end) within "+
-		"%s. After that fleet ends it without a summary, closes this tab and posts the closing line; the next "+
-		"message in the thread starts a new session.\n", rule, why, Duration(reclaimGrace))
+	text := fmt.Sprintf("fleet watch, rule `%s`: %s. This session is reclaimed: unless it ends within %s, fleet "+
+		"ends it without a summary, closes this tab and posts the closing line; the next message in the thread "+
+		"starts a new session. %s; at the least, end it with `fleet thread end --summary-file <file> --asked-to-end`.\n",
+		rule, why, Duration(reclaimGrace), seePrompt)
 	if err := r.send(a.name, text); err != nil {
 		return err
 	}
@@ -622,11 +622,9 @@ func (r *watchRun) askToEnd(t *watchedThread, rule, why string) error {
 func (r *watchRun) askProgress(t *watchedThread, all []watched) error {
 	var text strings.Builder
 	fmt.Fprintf(&text, "fleet watch, rule `thread quiet, jobs open`: thread %s has had no new message for %s (the last "+
-		"at %s). Look at the jobs below and decide whether there is progress to report: post it to the thread; ask "+
-		"the people when a person is in the way; tell another agent when it is; when a lead is stuck or gone, send "+
-		"it a message, ask in the thread, or reclaim the job with `fleet job end <job> --force`. watch asks once "+
-		"per quiet spell; a new message in the thread starts the count again.\n\nJobs reporting to this thread:\n",
-		t.key, Duration(r.now-t.lastAt), at(t.lastAt))
+		"at %s). watch asks once per quiet spell; a new message in the thread starts the count again. %s; at the "+
+		"least, post the progress of the jobs below to the thread when there is some.\n\nJobs reporting to this "+
+		"thread:\n", t.key, Duration(r.now-t.lastAt), at(t.lastAt), seePrompt)
 	for _, j := range t.jobs {
 		text.WriteString(jobState(j, all, r.now))
 	}
@@ -642,10 +640,10 @@ func (r *watchRun) askProgress(t *watchedThread, all []watched) error {
 func (r *watchRun) askWhyLive(t *watchedThread) error {
 	text := fmt.Sprintf("fleet watch, rule `thread quiet, nothing open`: thread %s has had no new message for %s "+
 		"(the last at %s), no question in it waits for a person and no job reports to it, yet this session is "+
-		"live. Why has it not ended, and what is left to do? When nothing is, end it with `fleet thread end "+
-		"--summary-file <file>`. watch does not ask again in this quiet spell, and reclaims a session whose "+
-		"thread has had no message for %s.\n", t.key, Duration(r.now-t.lastAt), at(t.lastAt),
-		Duration(secs(r.cfg.Watch.ThreadIdle)))
+		"live. watch does not ask again in this quiet spell, and reclaims a session whose thread has had no "+
+		"message for %s. %s; at the least, when nothing is left to do, end it with `fleet thread end "+
+		"--summary-file <file>`.\n", t.key, Duration(r.now-t.lastAt), at(t.lastAt),
+		Duration(secs(r.cfg.Watch.ThreadIdle)), seePrompt)
 	text, err := WithHeader(watchSender, text)
 	if err != nil {
 		return err
