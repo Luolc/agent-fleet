@@ -20,8 +20,8 @@ env:
   PRE_COMMIT_VERSION: 4.6.2
 
 # changes decides which of race and the judge a change needs; lint always
-# runs. check is the required status check: all-green passes it only when
-# every job succeeded or was skipped because changes said it need not run.
+# runs. check sums up the run: all-green passes it only when every job
+# succeeded or was skipped because changes said it need not run.
 jobs:
   changes:
     runs-on: ubuntu-24.04
