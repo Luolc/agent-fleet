@@ -632,20 +632,24 @@ func TestWatchEndsAJobWhoseLeadsQuestionGoesUnanswered(t *testing.T) {
 func TestWatchMovesTheQuestionsOfAJobThatEndedToItsThread(t *testing.T) {
 	w := watchThreadWorld(t)
 	// d ended with its lead's question pending, after one reminder; e's
-	// thread has no live agent.
+	// thread has no live agent; f ended after its lead was told its
+	// question expired.
 	w.exec("INSERT INTO threads (thread, slug, created_at) VALUES ('C4/4.0', 'c4-4-0', 0), ('C5/5.0', 'c5-5-0', 0)",
 		"INSERT INTO agents (name, role, thread, pane_id, state, started_at) VALUES ('thread-c4', 'thread', 'C4/4.0', 'p4', 'active', 0)",
 		"INSERT INTO jobs (job, lead_cwd, home_thread, state, outcome, started_at, ended_at) VALUES "+
 			"('d', '/c', 'C4/4.0', 'ended', 'done', 0, 1), ('e', '/c', 'C5/5.0', 'ended', 'abandoned', 0, 1)",
+		fmt.Sprintf("INSERT INTO jobs (job, lead_cwd, home_thread, state, outcome, started_at, ended_at, reclaim_at) VALUES "+
+			"('f', '/c', 'C4/4.0', 'ended', 'abandoned', 0, %d, %d)", t0+600, t0+1800),
 		fmt.Sprintf("INSERT INTO questions (job, thread, asked_by, text, state, asked_at, reminders) VALUES "+
 			"('d', 'C4/4.0', 'd-lead', 'Which schema?\nTwo options.\n\nThird line.\nFourth line.', 'pending', %d, 1), "+
-			"('e', 'C5/5.0', 'e-lead', 'Which host?', 'pending', %d, 0)", t0, t0))
+			"('e', 'C5/5.0', 'e-lead', 'Which host?', 'pending', %d, 0), "+
+			"('f', 'C4/4.0', 'f-lead', 'Which region?', 'pending', %d, 0)", t0, t0, t0))
 	w.herdrList("thread-c4 idle 1")
 	w.lastMessage("C4/4.0", t0+3600)
 	w.lastMessage("C5/5.0", t0)
 
 	out := w.watchAt(time.Hour, 0)
-	if got := w.query("SELECT group_concat(job || ' ' || asked_by || ' ' || state, ', ') FROM questions"); got != "d d-lead pending, e e-lead pending" {
+	if got := w.query("SELECT group_concat(job || ' ' || asked_by || ' ' || state, ', ') FROM questions"); got != "d d-lead pending, e e-lead pending, f f-lead closed" {
 		t.Errorf("questions: %s", got)
 	}
 	prompts := w.prompts()
@@ -661,7 +665,11 @@ func TestWatchMovesTheQuestionsOfAJobThatEndedToItsThread(t *testing.T) {
 	if strings.Contains(prompts[0][1], "Fourth line.") {
 		t.Errorf("more than three lines:\n%s", prompts[0][1])
 	}
-	if !strings.Contains(out.stdout, "told thread-c4 of 1 question(s) of ended jobs in thread C4/4.0") {
+	if strings.Contains(prompts[0][1], "Which region?") {
+		t.Errorf("told of f's question:\n%s", prompts[0][1])
+	}
+	if !strings.Contains(out.stdout, "told thread-c4 of 1 question(s) of ended jobs in thread C4/4.0") ||
+		!strings.Contains(out.stdout, "closed 1 pending question(s) of jobs that ended after their lead was told") {
 		t.Errorf("%s", out.stdout)
 	}
 	// e's thread gets its reminder, and no agent is started for it.
@@ -688,7 +696,7 @@ func TestWatchMovesTheQuestionsOfAJobThatEndedToItsThread(t *testing.T) {
 
 	// After thread_question it is closed, the session kept and d left alone.
 	out = w.watchAt(72*time.Hour, 0)
-	if got := w.query("SELECT group_concat(state, ', ') FROM questions"); got != "closed, closed" {
+	if got := w.query("SELECT group_concat(state, ', ') FROM questions"); got != "closed, closed, closed" {
 		t.Errorf("questions: %s", got)
 	}
 	if !strings.Contains(out.stdout, "closed 1 question(s) of ended jobs in thread C4/4.0: no answer for 3d00h") {

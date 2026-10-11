@@ -35,13 +35,15 @@ const (
 )
 
 // question is a pending question as watch reads it. moved is a lead's
-// question whose job is no longer open: it stays pending as the thread's.
+// question whose job is no longer open: it stays pending as the thread's,
+// unless forced: its job ended after watch told the lead that a question
+// expired, which closes it as watch's own forced end does.
 type question struct {
 	id                 int64
 	job, askedBy, text string
 	askedAt            int64
 	reminders          int
-	moved              bool
+	moved, forced      bool
 }
 
 // session is a thread's live thread agent.
@@ -125,12 +127,14 @@ func readThreads(conn *sql.DB, cfg *config.Scope, inHerdr map[string]InHerdr, li
 	// A job's name is unique only among open jobs, so a question belongs to
 	// the open job of its name only when asked after that job started.
 	err = eachRow(conn, "SELECT id, job, thread, asked_by, text, asked_at, reminders, job != '' AND NOT EXISTS "+
-		"(SELECT 1 FROM jobs j WHERE j.job = q.job AND j.state = 'open' AND j.started_at <= q.asked_at) "+
+		"(SELECT 1 FROM jobs j WHERE j.job = q.job AND j.state = 'open' AND j.started_at <= q.asked_at), "+
+		"EXISTS (SELECT 1 FROM jobs j WHERE j.job = q.job AND j.state = 'ended' AND j.reclaim_at IS NOT NULL "+
+		"AND j.started_at <= q.asked_at AND j.ended_at >= q.asked_at) "+
 		"FROM questions q WHERE state = 'pending' ORDER BY asked_at, id",
 		func(rows *sql.Rows) error {
 			var q question
 			var key string
-			if err := rows.Scan(&q.id, &q.job, &key, &q.askedBy, &q.text, &q.askedAt, &q.reminders, &q.moved); err != nil {
+			if err := rows.Scan(&q.id, &q.job, &key, &q.askedBy, &q.text, &q.askedAt, &q.reminders, &q.moved, &q.forced); err != nil {
 				return err
 			}
 			t := get(key)
@@ -175,8 +179,26 @@ func eachRow(conn *sql.DB, query string, scan func(*sql.Rows) error) error {
 	return nil
 }
 
-// threads runs the thread rules on each thread in key order.
+// threads runs the thread rules: first the pending questions of jobs
+// that ended after their lead was told a question expired are closed,
+// then each thread in key order.
 func (r *watchRun) threads(threads []*watchedThread, all []watched) error {
+	var forced []question
+	for _, t := range threads {
+		t.questions = slices.DeleteFunc(t.questions, func(q question) bool {
+			if q.forced {
+				forced = append(forced, q)
+			}
+			return q.forced
+		})
+	}
+	if len(forced) > 0 {
+		if err := r.closeQuestions(forced); err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stdout, "closed %d pending question(s) of jobs that ended after their lead was told a question "+
+			"expired\n", len(forced))
+	}
 	for _, t := range threads {
 		if r.outOfTime() {
 			break

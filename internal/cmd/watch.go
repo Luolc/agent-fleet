@@ -70,7 +70,8 @@ const (
 		"pending for `thread_question` (72h) is closed and its session reclaimed. A lead's question " +
 		"pending for `lead_question` (72h): the lead is told its job ends in 30 minutes; if the job " +
 		"is still open then, watch reclaims it as `job end --force` does and posts the Linear steps " +
-		"not done to the thread, closing the job's pending questions. A lead's question still " +
+		"not done to the thread, closing the job's pending questions, as it does for a job that " +
+		"ended any other way after its lead was told. A lead's question still " +
 		"pending when its job ended otherwise (`job end`, or `job end --force`) is the thread's from " +
 		"then on: reminded of as before, counted from when it was asked; the live thread agent, if " +
 		"any, is told once; it is closed after `thread_question` without the session being reclaimed.\n\n" +
