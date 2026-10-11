@@ -99,8 +99,14 @@ func dialogPart(screen string) string {
 	return screen
 }
 
-// helperPrefix starts the name of every helper.
+// helperPrefix starts the name of every screen helper.
 const helperPrefix = "unblock-"
+
+// helperNamed is whether `name` is that of an agent watch starts, a
+// screen helper or a revisit agent: no job name may start the same way.
+func helperNamed(name string) bool {
+	return strings.HasPrefix(name, helperPrefix) || strings.HasPrefix(name, revisitPrefix)
+}
 
 // helperName is the helper of the stopped agent whose row has `id`: the
 // same name for every helper of that row, so the ledger counts them.
@@ -110,13 +116,13 @@ func helperName(id int64) string {
 
 // stopRow is a live row as the unblocking reads it.
 type stopRow struct {
-	ID                                                int64
-	Name, Role, Job, Parent, Cwd, Pane, State, Thread string
-	StartedAt                                         int64
+	ID                                                             int64
+	Name, Role, Job, Parent, Cwd, Pane, State, Thread, ParentIssue string
+	StartedAt                                                      int64
 }
 
 func stopRows(conn *sql.DB) ([]stopRow, error) {
-	rows, err := conn.Query("SELECT id, name, role, job, parent, cwd, pane_id, state, thread, started_at " +
+	rows, err := conn.Query("SELECT id, name, role, job, parent, cwd, pane_id, state, thread, parent_issue, started_at " +
 		"FROM agents WHERE state != 'ended' ORDER BY id")
 	if err != nil {
 		return nil, exit.Database(err)
@@ -126,7 +132,7 @@ func stopRows(conn *sql.DB) ([]stopRow, error) {
 	for rows.Next() {
 		var r stopRow
 		if err := rows.Scan(&r.ID, &r.Name, &r.Role, &r.Job, &r.Parent, &r.Cwd, &r.Pane, &r.State, &r.Thread,
-			&r.StartedAt); err != nil {
+			&r.ParentIssue, &r.StartedAt); err != nil {
 			return nil, exit.Database(err)
 		}
 		all = append(all, r)
@@ -162,17 +168,26 @@ type unblocking struct {
 	dir string
 }
 
+// helpers is the run's look at the agents watch starts: in the scope's
+// own directory next to the ledger, `<scope>-unblock`.
+func (r *watchRun) helpers(inHerdr map[string]InHerdr) (*unblocking, error) {
+	ledger, err := db.Path(r.scope)
+	if err != nil {
+		return nil, err
+	}
+	return &unblocking{watchRun: r, inHerdr: inHerdr, dir: strings.TrimSuffix(ledger, ".db") + "-unblock"}, nil
+}
+
 // unblock looks at every live agent stopped at a screen: an active one
 // herdr reports blocked, or one whose start was left at a screen for
 // startGraceSecs. It first closes the helpers that are done. A failure
 // for one agent is recorded on the run and the others are still looked
-// at, while the run has time.
+// at, while the run has time. Revisit agents are the parent rule's.
 func (r *watchRun) unblock(inHerdr map[string]InHerdr) error {
-	ledger, err := db.Path(r.scope)
+	u, err := r.helpers(inHerdr)
 	if err != nil {
 		return err
 	}
-	u := &unblocking{watchRun: r, inHerdr: inHerdr, dir: strings.TrimSuffix(ledger, ".db") + "-unblock"}
 	rows, err := stopRows(r.conn)
 	if err != nil {
 		return err
@@ -194,7 +209,7 @@ func (r *watchRun) unblock(inHerdr map[string]InHerdr) error {
 		helped[row.Parent] = busy || err != nil
 	}
 	for _, row := range rows {
-		if row.Role == identity.Unblock.String() {
+		if row.Role == identity.Unblock.String() || row.Role == identity.Revisit.String() {
 			continue
 		}
 		if u.outOfTime() {
@@ -226,24 +241,41 @@ func (u *unblocking) failedFor(name string, err error) {
 // a start that failed is closed and its row ended, after its question,
 // when it wrote one, is asked.
 func (u *unblocking) helper(row stopRow, live map[string]stopRow) (busy bool, err error) {
+	return u.closeDone(row, func(question string) error {
+		stopped, ok := live[row.Parent]
+		if !ok {
+			return nil
+		}
+		text := fmt.Sprintf("%s (%s) is stopped at a screen that fleet's guidance does not cover, so its helper "+
+			"%s asks:\n\n%s", stopped.Name, stopped.who(), row.Name, question)
+		if issue, _ := u.helperIssue(row.Name); issue != "" {
+			text += "\n\nTicket: " + issue
+		}
+		if err := u.ask(stopped, text); err != nil {
+			return err
+		}
+		u.tell(stopped, "its helper asked the people in the home thread what to press")
+		return nil
+	})
+}
+
+// closeDone looks at a live agent watch started (a screen helper or a
+// revisit agent); busy is whether it is still working. One done with its
+// turn (herdr idle or done), stopped at a screen itself, working for
+// helperSecs, gone from herdr, or left `starting` by a start that failed
+// is closed and its row ended, after `ask` is given the question it
+// wrote, if any.
+func (u *unblocking) closeDone(row stopRow, ask func(question string) error) (busy bool, err error) {
 	agent, present := u.inHerdr[row.Name]
 	if present && row.State == "active" && agent.Status != "idle" && agent.Status != "done" &&
 		agent.Status != "blocked" && u.now-row.StartedAt < helperSecs {
 		return true, nil
 	}
 	file := u.questionFile(row.Name)
-	question, readErr := os.ReadFile(file)
-	stopped, ok := live[row.Parent]
-	if readErr == nil && strings.TrimSpace(string(question)) != "" && ok {
-		text := fmt.Sprintf("%s (%s) is stopped at a screen that fleet's guidance does not cover, so its helper "+
-			"%s asks:\n\n%s", stopped.Name, stopped.who(), row.Name, strings.TrimSpace(string(question)))
-		if issue, _ := u.helperIssue(row.Name); issue != "" {
-			text += "\n\nTicket: " + issue
-		}
-		if err := u.ask(stopped, text); err != nil {
+	if question, err := os.ReadFile(file); err == nil && strings.TrimSpace(string(question)) != "" {
+		if err := ask(strings.TrimSpace(string(question))); err != nil {
 			return false, err
 		}
-		u.tell(stopped, "its helper asked the people in the home thread what to press")
 	}
 	if err := os.Remove(file); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return false, exit.IO(err)
@@ -256,7 +288,7 @@ func (u *unblocking) helper(row stopRow, live map[string]stopRow) (busy bool, er
 	if err := endRow(u.conn, row.Name); err != nil {
 		return false, err
 	}
-	fmt.Fprintf(os.Stdout, "unblock: closed %s (herdr status %q)\n", row.Name, agent.Status)
+	fmt.Fprintf(os.Stdout, "%s: closed %s (herdr status %q)\n", row.Role, row.Name, agent.Status)
 	return false, nil
 }
 
@@ -301,7 +333,7 @@ func (u *unblocking) handle(row stopRow, screen string) error {
 	case ownTrustScreen:
 		// A failure is the next run's to look at again, on the screen the
 		// keys left.
-		if err := settle(u.h, row.Name, row.Cwd); err != nil {
+		if err := settleStopped(u.h, row.Name, row.Cwd); err != nil {
 			return fmt.Errorf("the folder-trust rule did not get it to its input box: %w", err)
 		}
 		fmt.Fprintf(os.Stdout, "unblock: %s: answered the folder-trust dialog for its own directory\n", row.Name)
@@ -325,6 +357,10 @@ func (u *unblocking) handle(row stopRow, screen string) error {
 	}
 	return u.startHelper(row, helper, screen)
 }
+
+// settleStopped is how the folder-trust rule answers the dialog; a
+// variable so the tests can make it fail.
+var settleStopped = settle
 
 // fenced is `text` in a Markdown code block.
 func fenced(text string) string {
@@ -362,21 +398,9 @@ func (u *unblocking) ask(row stopRow, text string) error {
 	if thread == "" {
 		return exit.Refusedf("no home thread to ask the people in about %s's screen", row.Name)
 	}
-	if u.cfg.FednetSocket == "" {
-		return exit.Refusedf("fednet.socket is not configured for scope %s, so the people cannot be asked about %s's screen",
-			u.scope, row.Name)
-	}
-	_, _, code, err := fednet.Relay(u.cfg.FednetSocket, thread, text, nil)
-	if err != nil {
-		return err
-	}
-	if code != 0 {
-		return exit.Environmentf("fednet client post failed (exit status: %d)", code)
-	}
 	helper := helperName(row.ID)
-	if _, err := u.conn.Exec("INSERT INTO questions (job, thread, asked_by, text, approval, state, asked_at) "+
-		"VALUES (?1, ?2, ?3, ?4, 0, 'pending', ?5)", row.Job, thread, helper, text, db.Now()); err != nil {
-		return exit.Database(err)
+	if err := u.post(thread, row.Job, helper, text); err != nil {
+		return err
 	}
 	fmt.Fprintf(os.Stdout, "unblock: %s: asked the people in thread %s\n", row.Name, thread)
 	if row.Role == "thread" {
@@ -386,6 +410,26 @@ func (u *unblocking) ask(row stopRow, text string) error {
 	if code, err := toThread(u.h, u.conn, u.scope, u.cfg, msg); err != nil || code != exit.Ok {
 		fmt.Fprintf(os.Stderr, "fleet: unblock %s: the question is posted, but did not reach the agent of thread %s "+
 			"(exit %d): %v\n", row.Name, thread, code, err)
+	}
+	return nil
+}
+
+// post posts `text` to `thread` and records it as a question pending from
+// `asker` for `job` (empty for none).
+func (u *unblocking) post(thread, job, asker, text string) error {
+	if u.cfg.FednetSocket == "" {
+		return exit.Refusedf("fednet.socket is not configured for scope %s, so %s cannot ask the people", u.scope, asker)
+	}
+	_, _, code, err := fednet.Relay(u.cfg.FednetSocket, thread, text, nil)
+	if err != nil {
+		return err
+	}
+	if code != 0 {
+		return exit.Environmentf("fednet client post failed (exit status: %d)", code)
+	}
+	if _, err := u.conn.Exec("INSERT INTO questions (job, thread, asked_by, text, approval, state, asked_at) "+
+		"VALUES (?1, ?2, ?3, ?4, 0, 'pending', ?5)", job, thread, asker, text, db.Now()); err != nil {
+		return exit.Database(err)
 	}
 	return nil
 }
@@ -475,21 +519,34 @@ func (u *unblocking) startHelper(row stopRow, helper, screen string) error {
 	if err != nil {
 		return err
 	}
-	id := &identity.Identity{Agent: helper, Role: identity.Unblock, Parent: row.Name, Scope: u.scope, Issue: issue}
-	if err := reserve(u.conn, func(q querier) error { return liveNameTaken(q, helper) },
-		func(q querier) error { return insertStarting(q, id, u.dir, "", "") }); err != nil {
-		return err
-	}
-	created := []string{fmt.Sprintf("ledger row %s (state starting)", helper)}
-	// What a failed start leaves, the next run closes as a helper that
-	// did not get to work.
-	failed := func(err error, code exit.Code) error {
-		code, _ = startFailed(helper, err, code, created, "")
-		return exit.New(code, fmt.Sprintf("the start of %s did not complete; the next run closes what it left", helper))
-	}
 	body, err := u.helperPrompt(row, helper, screen, issue)
 	if err != nil {
-		return failed(err, 0)
+		return err
+	}
+	id := &identity.Identity{Agent: helper, Role: identity.Unblock, Parent: row.Name, Scope: u.scope, Issue: issue}
+	if err := u.startInThreads(id, "", body); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stdout, "unblock: %s: started %s\n", row.Name, helper)
+	u.tell(row, fmt.Sprintf("fleet started %s, a helper that answers it as fleet's guidance says or asks the people",
+		helper))
+	return nil
+}
+
+// startInThreads starts the agent `id` in a new tab of the scope's
+// `threads` workspace, in the helpers' directory, with `body` as its first
+// message headed `[FROM: watch]`; its row records `parentIssue`.
+func (u *unblocking) startInThreads(id *identity.Identity, parentIssue, body string) error {
+	if err := reserve(u.conn, func(q querier) error { return liveNameTaken(q, id.Agent) },
+		func(q querier) error { return insertStarting(q, id, u.dir, "", parentIssue) }); err != nil {
+		return err
+	}
+	created := []string{fmt.Sprintf("ledger row %s (state starting)", id.Agent)}
+	// What a failed start leaves, the next run closes as an agent that
+	// did not get to work.
+	failed := func(err error, code exit.Code) error {
+		code, _ = startFailed(id.Agent, err, code, created, "")
+		return exit.New(code, fmt.Sprintf("the start of %s did not complete; the next run closes what it left", id.Agent))
 	}
 	home, err := Home()
 	if err != nil {
@@ -499,18 +556,15 @@ func (u *unblocking) startHelper(row stopRow, helper, screen string) error {
 	if err != nil {
 		return failed(err, 0)
 	}
-	place, err := CreateTab(u.h, workspace, helper, u.dir, id)
+	place, err := CreateTab(u.h, workspace, id.Agent, u.dir, id)
 	if err != nil {
 		return failed(err, 0)
 	}
-	created = append(created, fmt.Sprintf("tab %s (%s)", helper, place.TabID))
+	created = append(created, fmt.Sprintf("tab %s (%s)", id.Agent, place.TabID))
 	code, err := startAndDeliver(u.h, u.conn, id, place, u.dir, nil, nil, watchSender, body, &created)
 	if err != nil || code != exit.Ok {
 		return failed(err, code)
 	}
-	fmt.Fprintf(os.Stdout, "unblock: %s: started %s\n", row.Name, helper)
-	u.tell(row, fmt.Sprintf("fleet started %s, a helper that answers it as fleet's guidance says or asks the people",
-		helper))
 	return nil
 }
 

@@ -41,11 +41,12 @@ type question struct {
 	reminders          int
 }
 
-// screen is whether the question is about an agent stopped at a screen,
-// asked under its helper's name: it is reminded of, but never times out,
-// since a screen waiting for a person is not a job or session gone stale.
-func (q question) screen() bool {
-	return strings.HasPrefix(q.askedBy, helperPrefix)
+// byHelper is whether an agent watch started asked the question: a
+// screen helper about an agent stopped at a screen, or a revisit agent
+// about a parent issue. It is reminded of, but never times out, since
+// what waits for a person there is not a job or session gone stale.
+func (q question) byHelper() bool {
+	return helperNamed(q.askedBy)
 }
 
 // session is a thread's live thread agent.
@@ -159,8 +160,8 @@ func readThreads(conn *sql.DB, cfg *config.Scope, inHerdr map[string]InHerdr, li
 }
 
 // eachRow runs `query` and hands each row to `scan`.
-func eachRow(conn *sql.DB, query string, scan func(*sql.Rows) error) error {
-	rows, err := conn.Query(query)
+func eachRow(conn *sql.DB, query string, scan func(*sql.Rows) error, args ...any) error {
+	rows, err := conn.Query(query, args...)
 	if err != nil {
 		return exit.Database(err)
 	}
@@ -248,7 +249,7 @@ func (r *watchRun) thread(t *watchedThread, all []watched) error {
 func (r *watchRun) questions(t *watchedThread, all []watched) error {
 	var expired, left []question
 	for _, q := range t.questions {
-		if q.job == "" && !q.screen() && r.now-q.askedAt >= secs(r.cfg.Watch.ThreadQuestion) {
+		if q.job == "" && !q.byHelper() && r.now-q.askedAt >= secs(r.cfg.Watch.ThreadQuestion) {
 			expired = append(expired, q)
 		} else {
 			left = append(left, q)
@@ -280,7 +281,7 @@ func (r *watchRun) questions(t *watchedThread, all []watched) error {
 
 // leadQuestion runs the lead-question rule on one job.
 func (r *watchRun) leadQuestion(t *watchedThread, j *watchedJob, all []watched) error {
-	i := slices.IndexFunc(t.questions, func(q question) bool { return q.job == j.job && !q.screen() })
+	i := slices.IndexFunc(t.questions, func(q question) bool { return q.job == j.job && !q.byHelper() })
 	expired := i >= 0 && r.now-t.questions[i].askedAt >= secs(j.limits.LeadQuestion)
 	switch {
 	case !expired && j.reclaimAt.Valid:

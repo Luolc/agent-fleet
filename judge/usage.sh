@@ -74,7 +74,7 @@ check "job end --force: exit 1 with a report file" 1 "$rc"
 has "job end --force: says it takes no report" "$out" "--force takes no report"
 out=$(env "${P}AGENT=x" "${P}ROLE=orchestra" "$T" --scope "$SCOPE" job end item-1 --force 2>&1); rc=$?
 check "job end: exit 1 from the removed orchestra role" 1 "$rc"
-has "job end: names the roles" "$out" "thread, lead, worker or unblock"
+has "job end: names the roles" "$out" "thread, lead, worker, unblock or revisit"
 
 mkdir -p /home/agent/tasks /home/agent/somedir
 printf 'a task\n' > /home/agent/tasks/usage.md

@@ -38,16 +38,19 @@ const runBudget = 45 * time.Second
 
 // WatchAbout and WatchLongAbout are the help texts of `watch`.
 const (
-	WatchAbout     = "Timer check of a scope: stuck workers, quiet threads, idle sessions, unanswered questions"
-	WatchLongAbout = "Timer check of a scope: stuck workers, quiet threads, idle sessions, unanswered questions.\n\n" +
+	WatchAbout     = "Timer check of a scope: stuck workers, stopped agents, unchanged parent issues, quiet threads, idle sessions, unanswered questions"
+	WatchLongAbout = "Timer check of a scope: stuck workers, stopped agents, unchanged parent issues, quiet threads, idle " +
+		"sessions, unanswered questions.\n\n" +
 		"Meant for a timer every 5 minutes, with --scope; one run at a time per scope (a lock " +
 		"file next to the ledger; a second run is refused). Each run first reads everything it " +
 		"needs: the ledger, `herdr agent list`, the visible screen of every live lead and worker, " +
-		"the config files, and, with a fednet socket configured, the newest message of every " +
+		"the config files, with a fednet socket configured the newest message of every " +
 		"thread that has a live thread agent, an open job reporting to it or a pending question " +
-		"(`fednet client read-thread`). A failed read is exit 5 with nothing done, except a " +
+		"(`fednet client read-thread`), and the parent issues of the scope's jobs from Linear " +
+		"(`atb linear query`). A failed read is exit 5 with nothing done, except a " +
 		"thread fednet answers it cannot give (its exit 1 or 2): that thread's rules are skipped, " +
-		"saying so, and the exit is 5. Then it acts; " +
+		"saying so, and the exit is 5; and Linear: the parent issues are skipped, saying so, and " +
+		"the exit is 5. Then it acts; " +
 		"whatever it sends an agent goes through the same path as `fleet send`, headed `[FROM: " +
 		"watch]`, naming the rule and its evidence. It never calls a model, and sends keys only " +
 		"as Screens says.\n\n" +
@@ -69,6 +72,15 @@ const (
 		"is told when a helper starts or the people are asked, and so is the starter of a lead or " +
 		"worker whose start stopped at the screen. Helpers that finished their turn, or worked for " +
 		"30 minutes, are closed.\n\n" +
+		"Parent issues: a parent issue of the scope's jobs, none of them open, that is in a " +
+		"started state, has sub-issues and has not changed in Linear for `parent_stale` (72h) " +
+		"gets a revisit agent (`revisit-<issue>`, in the `threads` workspace), at most " +
+		"`parent_agents` (1) a run, the longest unchanged first. Given the issue, its sub-issues, " +
+		"fleet's jobs on it and its project's instructions, it leaves the issue alone, closes it, " +
+		"opens a sub-issue to continue it, or asks the people: in the home thread of the latest " +
+		"job on it, whose thread agent then carries out their answer, else on the issue with the " +
+		"`needs-user` label. None is started while one is live for the issue or its question " +
+		"waits, nor again until the issue changes.\n\n" +
 		"Threads (only with a fednet socket): a live thread agent gone from herdr has its session " +
 		"ended as abnormal (its ticket released without --done, a closing line saying the session " +
 		"broke off). A thread with no message for `thread_idle` (72h) has its live session " +
@@ -84,7 +96,8 @@ const (
 		"pending for `lead_question` (72h): the lead is told its job ends in 30 minutes; if the job " +
 		"is still open then, watch reclaims it as `job end --force` does and posts the Linear steps " +
 		"not done to the thread. The pending questions of a job that is not open are closed.\n\n" +
-		"The limits are durations such as `10m` or `72h` under `watch` in the scope's settings; " +
+		"The limits are durations such as `10m` or `72h` under `watch` in the scope's settings " +
+		"(`parent_agents` a number); " +
 		"`worker_stale` and `lead_question` of a single-repo job come from its repo's " +
 		"`.fleet/config.json`. FLEET_WATCH_NOW (seconds since the epoch) sets the run's clock.\n\n" +
 		"Exit: 0 when every rule that fired was carried out; 1 when the scope is not a scope name, " +
@@ -196,11 +209,18 @@ func Watch(h *herdr.Herdr) (exit.Code, error) {
 	if err != nil {
 		return 0, err
 	}
+	parents, linearErr, err := readParents(conn)
+	if err != nil {
+		return 0, err
+	}
 	r := &watchRun{h: h, conn: conn, cfg: cfg, scope: scope, now: now, start: start}
 	if err := r.jobs(all); err != nil {
 		return 0, err
 	}
 	if err := r.unblock(inHerdr); err != nil {
+		return 0, err
+	}
+	if err := r.revisit(inHerdr, parents, linearErr); err != nil {
 		return 0, err
 	}
 	if !on {

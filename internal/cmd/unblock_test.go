@@ -7,6 +7,8 @@ import (
 
 	"github.com/Luolc/agent-fleet/internal/config"
 	"github.com/Luolc/agent-fleet/internal/db"
+	"github.com/Luolc/agent-fleet/internal/exit"
+	"github.com/Luolc/agent-fleet/internal/herdr"
 )
 
 const bashPrompt = "⏺ fake reply\n" + rule + "\n Bash command\n\n   rm -rf build\n\n Do you want to proceed?\n ❯ 1. Yes\n   2. No\n\n Esc to cancel\n"
@@ -79,5 +81,36 @@ func TestTheHelperGetsTheScreenTheGuidanceAndThePeoplesAnswer(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("%q not in the prompt with an answer", want)
 		}
+	}
+}
+
+func TestATrustDialogTheRuleDoesNotGetPastStartsNoHelper(t *testing.T) {
+	conn, err := db.OpenAt(filepath.Join(t.TempDir(), "screens.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	sc, err := config.ParseScope([]byte(`{}`), "/home/u")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pressed := 0
+	settleStopped = func(_ *herdr.Herdr, name, cwd string) error {
+		pressed++
+		return exit.New(exit.Blocked, name+" is not ready at its input box (herdr status \"blocked\")")
+	}
+	t.Cleanup(func() { settleStopped = settle })
+	u := &unblocking{watchRun: &watchRun{conn: conn, scope: "screens", cfg: sc}, dir: t.TempDir()}
+	row := stopRow{ID: 7, Name: "s-trust", Role: "worker", Job: "s", Parent: "s-lead", Cwd: "/w/x", State: "active"}
+	err = u.handle(row, trust)
+	if pressed != 1 || code(err) != exit.Blocked || !strings.Contains(err.Error(), "did not get it to its input box") {
+		t.Fatalf("pressed %d, %v", pressed, err)
+	}
+	// Nothing else: no helper row, no question, no step; the next run
+	// looks at the screen again.
+	var rows int
+	if err := conn.QueryRow("SELECT (SELECT count(*) FROM agents) + (SELECT count(*) FROM questions) + " +
+		"(SELECT count(*) FROM steps)").Scan(&rows); err != nil || rows != 0 {
+		t.Errorf("%d rows, %v", rows, err)
 	}
 }
