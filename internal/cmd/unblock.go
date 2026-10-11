@@ -491,8 +491,9 @@ func (u *unblocking) homeThread(row stopRow) (string, error) {
 // promptBroken is what watch does instead of starting `what` when its
 // prompt cannot be put together: the error is posted to `thread`, the one
 // the agent would have asked in, once per error (the steps record
-// `prompt-error:<digest>`), and returned for the run's output, which is
-// all there is without a thread or a socket.
+// `prompt-error:<digest>`), so a thread that meets the same error later
+// is not told; the error is returned for the run's output, which is all
+// there is without a thread or a socket.
 func (u *unblocking) promptBroken(err error, thread, what string) error {
 	var broken *promptError
 	if !errors.As(err, &broken) || thread == "" || u.cfg.FednetSocket == "" {

@@ -62,6 +62,7 @@ func TestPromptsAndModelsRefuseWhatCannotWork(t *testing.T) {
 		`{"prompts": {"lead": {"prepend": "a.md"}}}`:                `"prepend"`,
 		`{"prompts": {"lead": "a.md"}}`:                             "prompts.lead: expected config.promptFile",
 		`{"prompts": null}`:                                         "prompts: must not be null",
+		`{"models": {"lead": {}}}`:                                  "models.lead: must have model or effort",
 		`{"models": {"lead": {"model": ""}}}`:                       "models.lead.model: must not be empty",
 		`{"models": {"worker": {"effort": null}}}`:                  "models.worker.effort: must not be null",
 		`{"models": {"thread": {"model": "m"}}}`:                    `"thread"`,
