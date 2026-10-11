@@ -132,25 +132,7 @@ func readThreads(conn *sql.DB, cfg *config.Scope, inHerdr map[string]InHerdr, li
 	if err != nil {
 		return nil, false, err
 	}
-	// A job's name is unique only among open jobs, so a question belongs to
-	// the open job of its name only when asked after that job started.
-	err = eachRow(conn, "SELECT id, job, thread, asked_by, text, asked_at, reminders, job != '' AND NOT EXISTS "+
-		"(SELECT 1 FROM jobs j WHERE j.job = q.job AND j.state = 'open' AND j.started_at <= q.asked_at), "+
-		"EXISTS (SELECT 1 FROM jobs j WHERE j.job = q.job AND j.state = 'ended' AND j.reclaim_at IS NOT NULL "+
-		"AND j.started_at <= q.asked_at AND j.ended_at >= q.asked_at) "+
-		"FROM questions q WHERE state = 'pending' ORDER BY asked_at, id",
-		func(rows *sql.Rows) error {
-			var q question
-			var key string
-			if err := rows.Scan(&q.id, &q.job, &key, &q.askedBy, &q.text, &q.askedAt, &q.reminders, &q.moved, &q.dropped); err != nil {
-				return err
-			}
-			q.dropped = q.dropped || q.moved && q.screen()
-			t := get(key)
-			t.questions = append(t.questions, q)
-			return nil
-		})
-	if err != nil {
+	if err := readQuestions(conn, get); err != nil {
 		return nil, false, err
 	}
 	for _, t := range byKey {
@@ -168,6 +150,28 @@ func readThreads(conn *sql.DB, cfg *config.Scope, inHerdr map[string]InHerdr, li
 		}
 	}
 	return threads, true, nil
+}
+
+// readQuestions adds each pending question to its thread, oldest first.
+// A job's name is unique only among open jobs, so a question belongs to
+// the open job of its name only when asked after that job started.
+func readQuestions(conn *sql.DB, get func(string) *watchedThread) error {
+	return eachRow(conn, "SELECT id, job, thread, asked_by, text, asked_at, reminders, job != '' AND NOT EXISTS "+
+		"(SELECT 1 FROM jobs j WHERE j.job = q.job AND j.state = 'open' AND j.started_at <= q.asked_at), "+
+		"EXISTS (SELECT 1 FROM jobs j WHERE j.job = q.job AND j.state = 'ended' AND j.reclaim_at IS NOT NULL "+
+		"AND j.started_at <= q.asked_at AND j.ended_at >= q.asked_at) "+
+		"FROM questions q WHERE state = 'pending' ORDER BY asked_at, id",
+		func(rows *sql.Rows) error {
+			var q question
+			var key string
+			if err := rows.Scan(&q.id, &q.job, &key, &q.askedBy, &q.text, &q.askedAt, &q.reminders, &q.moved, &q.dropped); err != nil {
+				return err
+			}
+			q.dropped = q.dropped || q.moved && q.screen()
+			t := get(key)
+			t.questions = append(t.questions, q)
+			return nil
+		})
 }
 
 // eachRow runs `query` and hands each row to `scan`.
