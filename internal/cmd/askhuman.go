@@ -32,6 +32,15 @@ const (
 		"first message). When a person answers in the thread, the thread agent passes the " +
 		"answer on with `fleet send`. A person's message in the thread marks the thread's " +
 		"pending questions answered.\n\n" +
+		"A single-repo job without a home thread (started by a caller without FLEET_ROLE) gets " +
+		"one at its lead's first ask: fleet opens a thread with `fednet client open-thread` in " +
+		"the channel of the job's repo (`<repo prefix><repo>`, or the initiative's channel for " +
+		"an initiative's repo run in the initiative's checkout), or, when fleet knows no thread " +
+		"of that channel, in the general initiative's channel (`<initiative prefix><general " +
+		"initiative>`); the question should then name the repo in its first line. fleet knows " +
+		"a channel's id only from the threads of it this scope has seen (the newest; direct " +
+		"messages left out). The thread is recorded as the job's home thread, and the " +
+		"question goes on as above. Until it is recorded nothing of the question is.\n\n" +
 		"The post and the delivery are recorded in the ledger (table `steps`), so running it " +
 		"again with the same question while it is pending continues where it stopped and " +
 		"never posts it twice.\n\n" +
@@ -41,10 +50,11 @@ const (
 		"there; nothing is delivered.\n\n" +
 		"Exit: 0 when the question is posted and the thread agent has it (a thread agent's " +
 		"own: once it is posted); 1 with --approval, when the caller is a worker or a screen helper, the file " +
-		"is unreadable or empty, the job is not open, the job has no home thread (it was " +
-		"started by a caller without FLEET_THREAD), or the scope has no fednet socket; " +
+		"is unreadable or empty, the job is not open, a cross-repo job has no home thread (it " +
+		"was started by a caller without FLEET_THREAD), fleet knows neither channel to open " +
+		"a single-repo job's home thread in, or the scope has no fednet socket; " +
 		"2/3/4 as `send` for the delivery; 3 when a new thread agent stops at an unknown " +
-		"screen; 5 when the post fails, or herdr, atb or the database fails. Linear " +
+		"screen; 5 when opening the thread or the post fails, or herdr, atb or the database fails. Linear " +
 		"unavailable while a thread agent had to be started is exit 5 too. After a failure " +
 		"the question stays pending; ask again to finish."
 )
@@ -86,16 +96,9 @@ func AskHuman(h *herdr.Herdr, args AskHumanArgs) (exit.Code, error) {
 		return 0, err
 	}
 	defer conn.Close()
-	thread, job, err := askedIn(conn, me)
+	thread, job, cfg, err := askThread(conn, me)
 	if err != nil {
 		return 0, err
-	}
-	cfg, err := config.LoadScope(me.Scope)
-	if err != nil {
-		return 0, err
-	}
-	if cfg.FednetSocket == "" {
-		return 0, exit.Refusedf("fednet.socket is not configured for scope %s, so fleet cannot post the question", me.Scope)
 	}
 	id, err := pendingQuestion(conn, job, thread, me.Agent, text)
 	if err != nil {
@@ -167,30 +170,104 @@ func deliverQuestion(h *herdr.Herdr, conn *sql.DB, key, scope string, cfg *confi
 	return ran, err
 }
 
+// askThread is the thread the caller asks in, as askedIn names it, with
+// the scope's settings, which must name fednet's socket; a single-repo
+// job without a home thread gets one opened first.
+func askThread(conn *sql.DB, me *identity.Identity) (thread, job string, cfg *config.Scope, err error) {
+	thread, job, row, err := askedIn(conn, me)
+	if err != nil {
+		return "", "", nil, err
+	}
+	if cfg, err = config.LoadScope(me.Scope); err != nil {
+		return "", "", nil, err
+	}
+	if cfg.FednetSocket == "" {
+		return "", "", nil, exit.Refusedf("fednet.socket is not configured for scope %s, so fleet cannot post the question", me.Scope)
+	}
+	if thread == "" {
+		if thread, err = openHomeThread(conn, cfg, row); err != nil {
+			return "", "", nil, err
+		}
+		fmt.Fprintf(os.Stdout, "opened thread %s as the home thread of job %s\n", thread, job)
+	}
+	return thread, job, cfg, nil
+}
+
 // askedIn is the thread the caller asks in, with the job (empty for a
 // thread agent): a lead's open job's home thread, a thread agent's own.
-func askedIn(conn *sql.DB, me *identity.Identity) (thread, job string, err error) {
+// The thread is empty for a single-repo job without a home thread, which
+// gets one when its lead first asks; `row` is a lead's job.
+func askedIn(conn *sql.DB, me *identity.Identity) (thread, job string, row *jobRow, err error) {
 	if me.Role != identity.Lead {
 		if me.Thread == "" {
-			return "", "", exit.Refusedf("FLEET_THREAD is not set: a thread agent asks in its own thread")
+			return "", "", nil, exit.Refusedf("FLEET_THREAD is not set: a thread agent asks in its own thread")
 		}
-		return me.Thread, "", nil
+		return me.Thread, "", nil, nil
 	}
 	if me.Job == "" {
-		return "", "", exit.Refusedf("FLEET_JOB is not set")
+		return "", "", nil, exit.Refusedf("FLEET_JOB is not set")
 	}
-	row, err := openJob(conn, me.Job)
+	row, err = openJob(conn, me.Job)
 	if err != nil {
-		return "", "", err
+		return "", "", nil, err
 	}
 	if row == nil {
-		return "", "", exit.Refusedf("job %s is not open in scope %s", me.Job, me.Scope)
+		return "", "", nil, exit.Refusedf("job %s is not open in scope %s", me.Job, me.Scope)
 	}
-	if row.HomeThread == "" {
-		return "", "", exit.Refusedf("job %s has no home thread: it was started by a caller without FLEET_THREAD, "+
-			"so there is no thread to ask in", me.Job)
+	if row.HomeThread == "" && row.Repo == "" {
+		return "", "", nil, exit.Refusedf("job %s has no home thread: it is a cross-repo job started by a caller "+
+			"without FLEET_THREAD, so there is no thread to ask in", me.Job)
 	}
-	return row.HomeThread, me.Job, nil
+	return row.HomeThread, me.Job, row, nil
+}
+
+// openHomeThread opens a thread for the questions of a single-repo job
+// without a home thread, in its repo's channel, or the general
+// initiative's when fleet knows no thread of the repo's, and records it as
+// the job's home thread and as a thread of that channel, so its agent
+// starts in that channel's directory. A channel's id is the one of the
+// newest thread this scope has seen there, since fleet knows channels only
+// from their threads; direct messages, which have the general mapping too,
+// are left out: their Slack ids start with D, and no thread opens there.
+// Until the thread is recorded nothing of the question is.
+func openHomeThread(conn *sql.DB, cfg *config.Scope, row *jobRow) (string, error) {
+	tried := []string{jobMapping(cfg, row.Repo, row.LeadCwd), generalMapping(cfg.Channels)}
+	var mapping, channel string
+	for _, mapping = range tried {
+		err := conn.QueryRow("SELECT channel FROM threads WHERE mapping = ?1 AND channel != '' AND channel NOT LIKE 'D%' "+
+			"ORDER BY id DESC LIMIT 1",
+			mapping).Scan(&channel)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return "", exit.Database(err)
+		}
+	}
+	if channel == "" {
+		return "", exit.Refusedf("job %s has no home thread, and fleet cannot open one: no thread of #%s or #%s has "+
+			"reached this scope, so their ids are unknown (a message to the bot in either makes it known); "+
+			"nothing is recorded, run ask-human again then", row.Job, tried[0], tried[1])
+	}
+	text := fmt.Sprintf("Questions from job %s in %s, which started without a thread; fleet posts them below.", row.Job, row.Repo)
+	thread, err := fednet.OpenThread(cfg.FednetSocket, channel, text)
+	var failure *exit.Failure
+	if errors.As(err, &failure) {
+		return "", exit.New(failure.Code, failure.Message+"; nothing is recorded, run ask-human again")
+	}
+	if err != nil {
+		return "", err
+	}
+	return thread, reserve(conn, func(querier) error { return nil }, func(q querier) error {
+		if _, err := q.Exec("INSERT INTO threads (thread, slug, channel, mapping, cwd, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+			thread, ThreadSlug(thread), channel, mapping, MappingDir(cfg, mapping), db.Now()); err != nil {
+			return exit.Database(err)
+		}
+		if _, err := q.Exec("UPDATE jobs SET home_thread = ?1 WHERE job = ?2 AND state = 'open'", thread, row.Job); err != nil {
+			return exit.Database(err)
+		}
+		return nil
+	})
 }
 
 // pendingQuestion is the id of the pending question with this text from

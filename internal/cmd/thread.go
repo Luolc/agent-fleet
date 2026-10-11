@@ -218,6 +218,17 @@ func MappingDir(sc *config.Scope, mapping string) string {
 	return filepath.Join(sc.Paths.Checkouts, strings.TrimPrefix(mapping, sc.Channels.RepoPrefix))
 }
 
+// jobMapping is the channel of a single-repo job's repo, by the checkout
+// its lead runs in: the initiative's channel, whose name is the repo's,
+// for an initiative's repo run in the initiative's checkout (as `fleet
+// worktree` finds it); else the repo's channel `<repo prefix><R>`.
+func jobMapping(sc *config.Scope, repo, checkout string) string {
+	if strings.HasPrefix(repo, sc.Channels.InitiativePrefix) && MappingDir(sc, repo) == checkout {
+		return repo
+	}
+	return sc.Channels.RepoPrefix + repo
+}
+
 // crossRepoRoot is the directory the cross-repo jobs of a thread put their
 // leads' directories in: the thread's own for an initiative's channel, the
 // general initiative's for a repo's.

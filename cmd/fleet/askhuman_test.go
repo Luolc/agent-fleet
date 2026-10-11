@@ -362,3 +362,113 @@ func TestJobEndTakesTheConclusionToTheHomeThread(t *testing.T) {
 		t.Errorf("no home thread: %+v, calls %q", out, w2.calls())
 	}
 }
+
+// openSingleRepoJob puts job item-1 (repo example-dataset, run in its
+// checkout, Linear off) in the default ledger as open with no home thread
+// and its lead live, as a start by a caller without FLEET_ROLE leaves it.
+func openSingleRepoJob(w *world) {
+	w.t.Helper()
+	conn := w.defaultLedger()
+	defer conn.Close()
+	checkout := filepath.Join(w.dir, "home", "dev", "example-dataset")
+	for _, stmt := range []string{
+		"INSERT INTO jobs (job, repo, lead_cwd, state, started_at) VALUES ('item-1', 'example-dataset', ?1, 'open', 0)",
+		"INSERT INTO agents (name, role, job, parent, state, started_at) VALUES ('item-1-lead', 'lead', 'item-1', 'fleet', 'active', 0)",
+	} {
+		if _, err := conn.Exec(stmt, checkout); err != nil {
+			w.t.Fatal(err)
+		}
+	}
+}
+
+// homeThread is the home thread of job item-1 and the mapping and cwd of
+// that thread's row, space-separated.
+func homeThread(w *world) string {
+	w.t.Helper()
+	conn := w.defaultLedger()
+	defer conn.Close()
+	var thread, mapping, cwd string
+	if err := conn.QueryRow("SELECT j.home_thread, COALESCE(t.mapping, ''), COALESCE(t.cwd, '') FROM jobs j "+
+		"LEFT JOIN threads t ON t.thread = j.home_thread WHERE j.job = 'item-1'").Scan(&thread, &mapping, &cwd); err != nil {
+		w.t.Fatal(err)
+	}
+	return strings.TrimSpace(strings.Join([]string{thread, mapping, cwd}, " "))
+}
+
+func TestAskHumanOpensAHomeThreadInTheReposChannel(t *testing.T) {
+	w := threadWorld(t, "")
+	openSingleRepoJob(w)
+	question := task(w, "q.md", "Revert the red commit or fix it?\n")
+	// No thread of the repo's channel or the general one: fleet does not
+	// know their ids.
+	out := w.askHuman("--file", question)
+	if out.code != 1 || !strings.Contains(out.stderr, "no thread of #repo-example-dataset or #x-repo-general has reached this scope") ||
+		w.calls() != "" || questions(w) != "" || homeThread(w) != "" {
+		t.Fatalf("unknown channels: %+v, calls %q", out, w.calls())
+	}
+	// A message in the repo's channel makes its id known.
+	if out := w.inbox(w.event("m1", "hello", "")); out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	if err := os.WriteFile(filepath.Join(w.dir, "fednet-down"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.Remove(filepath.Join(w.dir, "calls"))
+	out = w.askHuman("--file", question)
+	if out.code != 5 || out.stderr != "fleet: fednet client open-thread failed (exit status: 4): post: hub unreachable; "+
+		"nothing is recorded, run ask-human again\n" || questions(w) != "" || homeThread(w) != "" {
+		t.Fatalf("failed open: %+v", out)
+	}
+	_ = os.Remove(filepath.Join(w.dir, "fednet-down"))
+	_ = os.Remove(filepath.Join(w.dir, "calls"))
+	out = w.askHuman("--file", question)
+	if out.code != 0 || !strings.Contains(out.stdout, "opened thread C0123/1700000099.000 as the home thread of job item-1") {
+		t.Fatalf("%+v", out)
+	}
+	calls := strings.Split(w.calls(), "\n")
+	if calls[0] != "fednet client open-thread -socket /run/fednet.sock -channel C0123 -- Questions from job item-1 in "+
+		"example-dataset, which started without a thread; fleet posts them below." ||
+		calls[1] != "fednet client post -socket /run/fednet.sock -thread C0123/1700000099.000 -- Revert the red commit or fix it?" {
+		t.Errorf("calls = %q", calls)
+	}
+	checkout := filepath.Join(w.dir, "home", "dev", "example-dataset")
+	if got := homeThread(w); got != "C0123/1700000099.000 repo-example-dataset "+checkout {
+		t.Errorf("home thread = %q", got)
+	}
+	if got := questions(w); got != "item-1 C0123/1700000099.000 item-1-lead plain pending" {
+		t.Errorf("questions = %q", got)
+	}
+	if argv := w.file("argv"); !strings.Contains(argv, "[FROM: item-1-lead]\nYou are a thread agent") ||
+		!strings.Contains(argv, "Question from item-1-lead for the people in thread C0123/1700000099.000") {
+		t.Errorf("argv = %q", argv)
+	}
+	// Asked again: the home thread is there, nothing is opened or posted.
+	_ = os.Remove(filepath.Join(w.dir, "calls"))
+	if out := w.askHuman("--file", question); out.code != 0 || w.calls() != "" {
+		t.Errorf("again: %+v, calls %q", out, w.calls())
+	}
+}
+
+func TestAskHumanFallsBackToTheGeneralChannel(t *testing.T) {
+	w := threadWorld(t, "")
+	openSingleRepoJob(w)
+	general := dir(w, filepath.Join("home", "x-repo", "general"))
+	if out := w.inbox(w.eventIn("m1", "hello", "", `"channel_name":"x-repo-general"`)); out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	// A direct message has the general mapping too, but no thread opens there.
+	conn := w.defaultLedger()
+	if _, err := conn.Exec("INSERT INTO threads (thread, slug, channel, mapping, cwd, created_at) " +
+		"VALUES ('D0456/1700000050.000', 'd0456', 'D0456', 'x-repo-general', '', 0)"); err != nil {
+		t.Fatal(err)
+	}
+	conn.Close()
+	_ = os.Remove(filepath.Join(w.dir, "calls"))
+	out := w.askHuman("--file", task(w, "q.md", "main of example-dataset is red: revert?\n"))
+	if out.code != 0 || !strings.HasPrefix(w.calls(), "fednet client open-thread -socket /run/fednet.sock -channel C0123 --") {
+		t.Fatalf("%+v, calls %q", out, w.calls())
+	}
+	if got := homeThread(w); got != "C0123/1700000099.000 x-repo-general "+general {
+		t.Errorf("home thread = %q", got)
+	}
+}

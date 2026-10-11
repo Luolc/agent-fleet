@@ -1,8 +1,8 @@
 // Package fednet runs `fednet client`: `post` for what fleet itself says
 // in a thread and what a thread agent posts through `fleet thread post`,
 // `delete` for the reminder a newer one replaces, `progress` for a thread
-// agent's progress card, and `read-thread` for when a thread last had a
-// message.
+// agent's progress card, `read-thread` for when a thread last had a
+// message, and `open-thread` for the home thread of a job that has none.
 package fednet
 
 import (
@@ -102,6 +102,28 @@ func Delete(socket, msgID string) (code int, reason string, err error) {
 func firstLine(out []byte) string {
 	line, _, _ := strings.Cut(strings.TrimSpace(string(out)), "\n")
 	return line
+}
+
+// OpenThread is `fednet client open-thread -socket <socket> -channel
+// <channel> -- <text>`: a new thread in the channel (its id) whose first
+// message is `text`, owned by this machine, so people's replies in it come
+// here. Returns its key. A non-zero exit is an environment failure with
+// fednet's status and its first line of stderr, which says why (a channel
+// the hub does not let this machine open threads in, say).
+func OpenThread(socket, channel, text string) (string, error) {
+	const op = "fednet client open-thread"
+	stdout, stderr, code, err := relay(op, []string{"client", "open-thread", "-socket", socket, "-channel", channel, "--", text})
+	if err == nil && code != 0 {
+		err = exit.Environmentf("%s failed (exit status: %d): %s", op, code, firstLine(stderr))
+	}
+	if err != nil {
+		return "", err
+	}
+	key := string(bytes.TrimSpace(stdout))
+	if !strings.HasPrefix(key, channel+"/") || strings.ContainsAny(key, " \t\n") {
+		return "", exit.Environmentf("%s: %q is not a thread key of channel %s", op, key, channel)
+	}
+	return key, nil
 }
 
 // ErrThread marks a failure of one thread's read: fednet answered, but

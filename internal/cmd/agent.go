@@ -850,10 +850,11 @@ var workerPrompt string
 // placeholders filled: the agent's identity, where it runs, what Linear
 // holds for it, and where its files go. `cap` is the job's agent cap;
 // `issue` the agent's work order (zero without Linear); `parentIssue` the
-// job's parent issue; `root` the initiative's checkout of a cross-repo
-// job (empty for a single-repo job, whose repo is `repo`); `sc` the
-// scope's paths and channels.
-func rolePrompt(sc *config.Scope, id *identity.Identity, cwd, repo, root string, cap int, issue atb.Issue, parentIssue string) string {
+// job's parent issue; `leadCwd` where the job's lead runs: the checkout
+// of a single-repo job, whose repo is `repo`, or `<job>/` in the
+// initiative's checkout of a cross-repo job; `sc` the scope's paths and
+// channels.
+func rolePrompt(sc *config.Scope, id *identity.Identity, cwd, repo, leadCwd string, cap int, issue atb.Issue, parentIssue string) string {
 	issueNote := " (your work order, " + issue.URL + ")"
 	if issue.Identifier == "" {
 		issueNote = " (empty: this job has no Linear work orders)"
@@ -866,11 +867,13 @@ func rolePrompt(sc *config.Scope, id *identity.Identity, cwd, repo, root string,
 	checkouts, scratch := sc.Tilde(sc.Paths.Checkouts), sc.Tilde(sc.Paths.Scratch)
 	var repoLine, agentsMD string
 	if repo != "" {
-		repoLine = fmt.Sprintf("The job is single-repo: its repo is %[1]s, main checkout %[2]s/%[1]s; `<repo>` below is %[1]s.",
-			repo, checkouts)
-		agentsMD = fmt.Sprintf("Before anything else, read the `## Fleet` section of %s/%s/AGENTS.md and follow it.", checkouts, repo)
+		checkout := sc.Tilde(leadCwd)
+		repoLine = fmt.Sprintf("The job is single-repo: its repo is %s, main checkout %s; `<repo>` below is %s.",
+			repo, checkout, repo)
+		agentsMD = fmt.Sprintf("Before anything else, read the `## Fleet` section of %s/AGENTS.md and follow it.", checkout)
 		scratch += "/" + repo
 	} else {
+		root := filepath.Dir(leadCwd)
 		initiative := sc.Channels.InitiativePrefix + filepath.Base(root)
 		repoLine = fmt.Sprintf("The job is cross-repo: it runs inside the checkout of the initiative %s (%s); "+
 			"`<repo>` below is the repo a task names, main checkout %s/<repo>.", initiative, root, checkouts)
