@@ -110,7 +110,8 @@ func resolve(prompts map[string]Prompt, dir string) {
 	}
 }
 
-// apply sets each key given in f onto m, refusing empty values.
+// apply sets each key given in f onto m, refusing empty values and a
+// role with neither a model nor an effort.
 func (f *modelsFile) apply(m *Models) error {
 	if f == nil {
 		return nil
@@ -122,6 +123,9 @@ func (f *modelsFile) apply(m *Models) error {
 	}{{"models.lead", f.Lead, &m.Lead}, {"models.worker", f.Worker, &m.Worker}} {
 		if s.file == nil {
 			continue
+		}
+		if s.file.Model == nil && s.file.Effort == nil {
+			return errors.New(s.key + ": must have model or effort")
 		}
 		if err := apply([]setting{{s.key + ".model", s.file.Model, &s.into.Model},
 			{s.key + ".effort", s.file.Effort, &s.into.Effort}}); err != nil {

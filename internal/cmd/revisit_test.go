@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -143,5 +145,54 @@ Its last try is done.', 'answered', 1699500000, 1699500100),
 	// Another issue's question is not this one's; the project stays last.
 	if strings.Contains(got, "Close EX-2?") || !strings.HasSuffix(got, "Close a parent after a week.\n") {
 		t.Errorf("%s", got)
+	}
+}
+
+// A revisit prompt file that cannot be used starts no revisit agent and
+// records no start; the thread of the issue's latest job is told once, and
+// each run fails with the error.
+func TestABrokenRevisitPromptStartsNothingAndIsToldOnce(t *testing.T) {
+	bin := t.TempDir()
+	calls := filepath.Join(bin, "calls")
+	if err := os.WriteFile(filepath.Join(bin, "fednet"), []byte("#!/bin/sh\necho \"$*\" >> "+calls+"\necho m-posted\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+":/usr/bin:/bin")
+	file := filepath.Join(t.TempDir(), "revisit.md")
+	if err := os.WriteFile(file, []byte("Look at {{issue}} and {{thread}}.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sc, err := config.ParseScope([]byte(`{"fednet": {"socket": "/run/fednet.sock"}, "prompts": {"revisit": {"replace": "`+
+		file+`"}}}`), "/home/u")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := db.OpenAt(filepath.Join(t.TempDir(), "main.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, err := conn.Exec(`INSERT INTO jobs (job, parent_issue, lead_cwd, home_thread, state, outcome, started_at, ended_at)
+		VALUES ('a', 'EX-1', '/c', 'C1/1.0', 'ended', 'done', 1699000000, 1699100000)`); err != nil {
+		t.Fatal(err)
+	}
+	u := &unblocking{watchRun: &watchRun{conn: conn, scope: "main", cfg: sc, now: 1700000000}, dir: t.TempDir()}
+	for run := range 2 {
+		err := u.startRevisit(parent("EX-1", "started", 80*time.Hour, 1), revisitName("EX-1"))
+		var broken *promptError
+		if !errors.As(err, &broken) || !strings.Contains(err.Error(), ":1:23): unknown slot {{thread}}; revisit has") {
+			t.Errorf("run %d: %v", run, err)
+		}
+	}
+	got, _ := os.ReadFile(calls)
+	if !strings.HasPrefix(string(got), "client post -socket /run/fednet.sock -thread C1/1.0 -- fleet watch did not start the "+
+		"revisit agent revisit-ex-1 for EX-1: fleet's prompt config is broken (prompts.revisit.replace (") ||
+		strings.Count(string(got), "client post") != 1 {
+		t.Errorf("fednet calls = %q", got)
+	}
+	var agents, started int
+	if err := conn.QueryRow("SELECT (SELECT count(*) FROM agents), (SELECT count(*) FROM steps WHERE key = 'revisit:EX-1')").
+		Scan(&agents, &started); err != nil || agents != 0 || started != 0 {
+		t.Errorf("%d agent rows, %d starts recorded, %v", agents, started, err)
 	}
 }
