@@ -232,13 +232,30 @@ func (r *watchRun) thread(t *watchedThread, all []watched) error {
 	return nil
 }
 
-// questions runs the question rules: a thread agent's question past its
-// limit is closed and its session reclaimed; a question moved from an
-// ended job is closed at the same limit, the session kept, and until then
-// the live thread agent is told once that it is the thread's now; a
-// lead's past its limit gets the lead told, then its job ended; what is
-// left is reminded of.
+// questions runs the question rules: a thread agent's question or a
+// question moved from an ended job is closed past its limit; until then a
+// moved one is told to the live thread agent once; a lead's past its
+// limit gets the lead told, then its job ended; what is left is reminded
+// of.
 func (r *watchRun) questions(t *watchedThread, all []watched) error {
+	if err := r.expire(t); err != nil {
+		return err
+	}
+	if err := r.tellMoved(t); err != nil {
+		return err
+	}
+	for _, j := range slices.Clone(t.jobs) {
+		if err := r.leadQuestion(t, j, all); err != nil {
+			return err
+		}
+	}
+	return r.remind(t)
+}
+
+// expire closes the thread's questions pending for `thread_question`: the
+// thread agent's own, with its session reclaimed, and those moved from an
+// ended job, with the session kept, since it may be doing other work.
+func (r *watchRun) expire(t *watchedThread) error {
 	var expired, givenUp []question
 	for _, q := range t.questions {
 		if r.now-q.askedAt < secs(r.cfg.Watch.ThreadQuestion) {
@@ -262,25 +279,19 @@ func (r *watchRun) questions(t *watchedThread, all []watched) error {
 			}
 		}
 	}
-	if gone := slices.Concat(expired, givenUp); len(gone) > 0 {
-		if err := r.closeQuestions(gone); err != nil {
-			return err
-		}
-		t.questions = slices.DeleteFunc(t.questions, func(q question) bool { return slices.Contains(gone, q) })
+	gone := slices.Concat(expired, givenUp)
+	if len(gone) == 0 {
+		return nil
 	}
+	if err := r.closeQuestions(gone); err != nil {
+		return err
+	}
+	t.questions = slices.DeleteFunc(t.questions, func(q question) bool { return slices.Contains(gone, q) })
 	if len(givenUp) > 0 {
 		fmt.Fprintf(os.Stdout, "closed %d question(s) of ended jobs in thread %s: no answer for %s\n", len(givenUp), t.key,
 			Duration(secs(r.cfg.Watch.ThreadQuestion)))
 	}
-	if err := r.tellMoved(t); err != nil {
-		return err
-	}
-	for _, j := range slices.Clone(t.jobs) {
-		if err := r.leadQuestion(t, j, all); err != nil {
-			return err
-		}
-	}
-	return r.remind(t)
+	return nil
 }
 
 // leadQuestion runs the lead-question rule on one job.
