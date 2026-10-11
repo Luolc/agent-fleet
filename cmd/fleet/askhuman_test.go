@@ -399,11 +399,11 @@ func TestAskHumanOpensAHomeThreadInTheReposChannel(t *testing.T) {
 	w := threadWorld(t, "")
 	openSingleRepoJob(w)
 	question := task(w, "q.md", "Revert the red commit or fix it?\n")
-	// No thread of the repo's channel or the general one: fleet does not
-	// know their ids.
+	// No thread of the repo's channel or the general one, and fednet's
+	// routes (read once) name neither: fleet does not know their ids.
 	out := w.askHuman("--file", question)
 	if out.code != 1 || !strings.Contains(out.stderr, "no thread of #repo-example-dataset or #x-repo-general has reached this scope") ||
-		w.calls() != "" || questions(w) != "" || homeThread(w) != "" {
+		w.calls() != "fednet client routes -socket /run/fednet.sock -json\n" || questions(w) != "" || homeThread(w) != "" {
 		t.Fatalf("unknown channels: %+v, calls %q", out, w.calls())
 	}
 	// A message in the repo's channel makes its id known.
@@ -467,12 +467,90 @@ func TestAskHumanFallsBackToTheGeneralChannel(t *testing.T) {
 		t.Fatal(err)
 	}
 	conn.Close()
+	// A fednet whose routes carry no names, as before it had them.
+	task(w, "routes.json", `{"routes":[{"channel":"C0999","machine":"workstation"},{"channel":"dm","machine":"workstation"}]}`)
 	_ = os.Remove(filepath.Join(w.dir, "calls"))
 	out := w.askHuman("--file", task(w, "q.md", "main of example-dataset is red: revert?\n"))
-	if out.code != 0 || !strings.HasPrefix(w.calls(), "fednet client open-thread -socket /run/fednet.sock -channel C0123 --") {
+	if calls := strings.Split(w.calls(), "\n"); out.code != 0 || calls[0] != "fednet client routes -socket /run/fednet.sock -json" ||
+		!strings.HasPrefix(calls[1], "fednet client open-thread -socket /run/fednet.sock -channel C0123 --") {
 		t.Fatalf("%+v, calls %q", out, w.calls())
 	}
 	if got := homeThread(w); got != "C0123/1700000099.000 x-repo-general "+general {
 		t.Errorf("home thread = %q", got)
+	}
+}
+
+func TestAskHumanTakesTheReposChannelFromFednetsRoutes(t *testing.T) {
+	w := threadWorld(t, "")
+	openSingleRepoJob(w)
+	// No thread of either channel has reached the scope; the routes name
+	// the repo's channel, after a direct message's id with that name.
+	task(w, "routes.json", `{"routes":[{"channel":"dm","machine":"workstation"},`+
+		`{"channel":"D0456","name":"repo-example-dataset"},`+
+		`{"channel":"C0789","machine":"workstation","scope":"main","name":"repo-example-dataset"},`+
+		`{"channel":"C0123","name":"x-repo-general"}]}`)
+	out := w.askHuman("--file", task(w, "q.md", "Revert the red commit or fix it?\n"))
+	if out.code != 0 || !strings.Contains(out.stdout, "opened thread C0789/1700000099.000 as the home thread of job item-1") {
+		t.Fatalf("%+v, calls %q", out, w.calls())
+	}
+	calls := strings.Split(w.calls(), "\n")
+	if calls[0] != "fednet client routes -socket /run/fednet.sock -json" ||
+		!strings.HasPrefix(calls[1], "fednet client open-thread -socket /run/fednet.sock -channel C0789 --") {
+		t.Errorf("calls = %q", calls)
+	}
+	checkout := filepath.Join(w.dir, "home", "dev", "example-dataset")
+	if got := homeThread(w); got != "C0789/1700000099.000 repo-example-dataset "+checkout {
+		t.Errorf("home thread = %q", got)
+	}
+	// The thread is in the ledger now: the next open takes the id from
+	// there and reads no routes. (The fake opens every thread with the
+	// same key, so the first one's is changed.)
+	conn := w.defaultLedger()
+	for _, stmt := range []string{"UPDATE jobs SET home_thread = '' WHERE job = 'item-1'",
+		"UPDATE threads SET thread = 'C0789/1700000001.000' WHERE thread = 'C0789/1700000099.000'"} {
+		if _, err := conn.Exec(stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	conn.Close()
+	_ = os.Remove(filepath.Join(w.dir, "routes.json"))
+	_ = os.Remove(filepath.Join(w.dir, "calls"))
+	out = w.askHuman("--file", task(w, "q2.md", "And the other commit?\n"))
+	if out.code != 0 || !strings.HasPrefix(w.calls(), "fednet client open-thread -socket /run/fednet.sock -channel C0789 --") {
+		t.Fatalf("again: %+v, calls %q", out, w.calls())
+	}
+}
+
+func TestAskHumanTakesTheGeneralChannelFromFednetsRoutes(t *testing.T) {
+	general := ""
+	for name, routes := range map[string]string{
+		// The routes name the general channel, not the repo's.
+		"named": `{"routes":[{"channel":"C0999","name":"repo-other"},{"channel":"C0123","name":"x-repo-general"}]}`,
+		// Routes fednet cannot give name no channel; the ledger's id of the
+		// general channel is taken.
+		"unreadable": "not json",
+	} {
+		t.Run(name, func(t *testing.T) {
+			w := threadWorld(t, "")
+			openSingleRepoJob(w)
+			general = dir(w, filepath.Join("home", "x-repo", "general"))
+			if name == "unreadable" {
+				if out := w.inbox(w.eventIn("m1", "hello", "", `"channel_name":"x-repo-general"`)); out.code != 0 {
+					t.Fatalf("%+v", out)
+				}
+			}
+			task(w, "routes.json", routes)
+			_ = os.Remove(filepath.Join(w.dir, "calls"))
+			out := w.askHuman("--file", task(w, "q.md", "main of example-dataset is red: revert?\n"))
+			if out.code != 0 || !strings.Contains(w.calls(), "fednet client open-thread -socket /run/fednet.sock -channel C0123 --") {
+				t.Fatalf("%+v, calls %q", out, w.calls())
+			}
+			if got := homeThread(w); got != "C0123/1700000099.000 x-repo-general "+general {
+				t.Errorf("home thread = %q", got)
+			}
+			if name == "unreadable" && !strings.Contains(out.stderr, "fleet: fednet client routes: not a JSON reply") {
+				t.Errorf("stderr = %q", out.stderr)
+			}
+		})
 	}
 }
