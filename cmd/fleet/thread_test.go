@@ -556,6 +556,53 @@ func TestInboxStartsTheAgentWithoutItsTicketWhenLinearStaysDown(t *testing.T) {
 	}
 }
 
+func TestASummaryLinearDidNotTakeIsWrittenByTheNextSession(t *testing.T) {
+	w := threadWorld(t, "")
+	failAtb(w, "create", 99, 1)
+	if out := w.inbox(w.event("m1", "hello", "")); out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	// Linear still down at the end: the ending goes on, the summary is kept.
+	if err := os.WriteFile(filepath.Join(w.dir, "has-thread-c0123-1700000000-123"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	summary := task(w, "summary.md", "Answered while Linear was down. 0xKEPT\n")
+	out := w.asThreadAgent("", "thread", "end", "--summary-file", summary)
+	if out.code != 0 || !strings.Contains(out.stdout, "it is kept, and the next session that reaches Linear writes it") {
+		t.Fatalf("%+v", out)
+	}
+	kept := filepath.Join(w.dir, "home", ".local", "state", "fleet", "main-summaries", "c0123-1700000000-123", "000001.md")
+	if got, _ := os.ReadFile(kept); string(got) != "Session 1 ended\n\nAnswered while Linear was down. 0xKEPT\n" {
+		t.Fatalf("kept = %q", got)
+	}
+	// Linear back: the next session creates the ticket, claims it, writes
+	// the kept summary before its own comment, and reads it back.
+	_ = os.Remove(filepath.Join(w.dir, "atb-fails-create"))
+	_ = os.Remove(filepath.Join(w.dir, "has-thread-c0123-1700000000-123"))
+	_ = os.Remove(filepath.Join(w.dir, "calls"))
+	if out := w.inbox(w.event("m2", "again", "")); out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	var atbCalls []string
+	for _, c := range strings.Split(strings.TrimSpace(w.calls()), "\n") {
+		if strings.HasPrefix(c, "atb ") {
+			atbCalls = append(atbCalls, strings.Join(strings.Fields(c)[:4], " "))
+		}
+	}
+	if got := strings.Join(atbCalls, "|"); got != "atb linear create --team|atb linear claim TH-5|atb linear comment TH-5|atb linear comment TH-5|atb linear query {" {
+		t.Errorf("atb calls = %q", got)
+	}
+	if !strings.Contains(w.calls(), "--body-file "+kept) {
+		t.Errorf("the kept file was not the first comment: %q", w.calls())
+	}
+	if fileExists(kept) {
+		t.Errorf("%s is still kept after it was written", kept)
+	}
+	if got := w.file("comment-TH-5"); !strings.HasPrefix(got, "Session 2 started") {
+		t.Errorf("last comment = %q, want this session's own after the kept one", got)
+	}
+}
+
 func TestInboxRetriesAFailedLinearStepAndGoesOn(t *testing.T) {
 	w := threadWorld(t, "")
 	failAtb(w, "claim", 1, 1)

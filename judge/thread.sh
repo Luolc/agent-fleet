@@ -225,8 +225,7 @@ settled "$A"
 # Linear down for good at a new thread, and the outage line cannot be
 # posted either: the create is tried three times, each try logged with
 # atb's exit and stderr, and the agent starts anyway without a ticket,
-# the message delivered (exit 0). Linear back at the end: thread end
-# writes the summary to a ticket it creates, without claiming it.
+# the message delivered (exit 0).
 LOG=/home/agent/.local/state/$T/main-linear.log
 : > /home/agent/atb.log
 : > /home/agent/fednet.log
@@ -252,37 +251,41 @@ check "inbox: Linear down, each try logged with atb's exit, stderr and outcome" 
   "$(jq -r 'select(.thread == "C0999/1.1") | "\(.step) \(.exit) \(.stderr) \(.outcome)"' "$LOG" | tr '\n' '|')"
 check "inbox: the Linear log is the owner's only" 600 "$(stat -c %a "$LOG")"
 settled thread-c0999-1-1
-rm /home/agent/linear-down
+# Linear still down at the end: the ending goes on and the summary is kept
+# on the machine for the next session that reaches Linear.
 : > /home/agent/atb.log
 : > /home/agent/fednet.log
 printf 'Answered without a ticket. 0xSUM4\n' > /home/agent/summary4.md
 out=$(thra C0999/1.1 "" -- thread end --summary-file /home/agent/summary4.md 2>&1); rc=$?
-check "thread end without a ticket: exit 0" 0 "$rc"
+rm /home/agent/linear-down
+KEPT=/home/agent/.local/state/$T/main-summaries/c0999-1-1/000001.md
+check "thread end, Linear still down: exit 0, the row ended" "0 ended " \
+  "$rc $(tledger "SELECT state FROM agents WHERE name = 'thread-c0999-1-1' ORDER BY id DESC LIMIT 1")"
 [ "$rc" = 0 ] || printf '%s\n' "$out"
-check "thread end without a ticket: a ticket created, the summary written to it, nothing claimed or released" \
-  "linear create --team TH --label thread --title hello 0xMSG4 --description-file DESC --json|linear comment TH-5 --body-file BODY|" \
-  "$(sed -e 's/--description-file [^ ]*/--description-file DESC/' -e 's/--body-file [^ ]*/--body-file BODY/' /home/agent/atb.log | tr '\n' '|')"
-check "thread end without a ticket: the summary is the comment" "Session 1 ended||Answered without a ticket. 0xSUM4|" \
-  "$(tr '\n' '|' < /home/agent/comment-TH-5.md)"
-check "thread end without a ticket: the thread keeps the ticket, the closing line links it" \
-  "TH-5 |client post -socket /home/agent/fednet.sock -thread C0999/1.1 -footer -- 会话已结束 · [TH-5](https://linear.example.test/TH-5)|" \
-  "$(tledger "SELECT ticket FROM threads WHERE thread = 'C0999/1.1'")|$(tr '\n' '|' < /home/agent/fednet.log)"
+has "thread end, Linear still down: says the summary is kept" "$out" "it is kept, and the next session that reaches Linear writes it"
+check "thread end, Linear still down: the summary kept, the owner's only" "Session 1 ended||Answered without a ticket. 0xSUM4|600" \
+  "$(tr '\n' '|' < "$KEPT")$(stat -c %a "$KEPT")"
+check "thread end, Linear still down: the closing line without a ticket" \
+  "client post -socket /home/agent/fednet.sock -thread C0999/1.1 -footer -- 会话已结束|" "$(tr '\n' '|' < /home/agent/fednet.log)"
 
-# One failed call, then Linear answers: the claim of the next session is
-# tried again and goes through; nothing is posted about it.
+# Linear back, with one failed call: the next session's create is tried
+# again and goes through, the ticket is claimed, the kept summary written
+# before the session's own comment; nothing is posted about it.
 : > /home/agent/atb.log
 : > /home/agent/fednet.log
 touch /home/agent/linear-fails-once
 out=$(inbox "$(event m4b C0999/1.1 'back again 0xMSG4B')" 2>&1); rc=$?
-check "inbox: one failed claim, exit 0" 0 "$rc"
-check "inbox: one failed claim, tried again, then the session comment and the summaries" \
-  "linear claim TH-5|linear claim TH-5|linear comment TH-5|linear query QUERY|" \
-  "$(sed -e 's/ --agent.*//' -e 's/ --body-file.*//' -e 's/query .*/query QUERY/' /home/agent/atb.log | tr '\n' '|')"
-check "inbox: one failed claim, the agent has the ticket, nothing posted" "TH-5 |" \
+check "inbox: one failed call, exit 0" 0 "$rc"
+check "inbox: one failed create tried again, then the claim, the kept summary, the session comment and the summaries" \
+  "linear create|linear create|linear claim TH-5|linear comment TH-5 KEPT|linear comment TH-5 BODY|linear query QUERY|" \
+  "$(sed -e 's/ --team.*//' -e 's/ --agent.*//' -e "s| --body-file $KEPT| KEPT|" -e 's/ --body-file .*/ BODY/' -e 's/query .*/query QUERY/' /home/agent/atb.log | tr '\n' '|')"
+check "inbox: the kept summary is gone once written, the thread has the ticket" "no TH-5 " \
+  "$([ -e "$KEPT" ] && echo yes || echo no) $(tledger "SELECT ticket FROM threads WHERE thread = 'C0999/1.1'")"
+check "inbox: one failed call, the agent has the ticket, nothing posted" "TH-5 |" \
   "$(tledger "SELECT issue FROM agents WHERE name = 'thread-c0999-1-1' AND state != 'ended'")|$(cat /home/agent/fednet.log)"
-has "inbox: one failed claim, the session gets the summary thread end wrote" "$(received thread-c0999-1-1)" "0xMSG4B" "Earlier sessions"
-check "inbox: one failed claim logged as retried" "atb linear claim TH-5 1 retried" \
-  "$(jq -r 'select(.thread == "C0999/1.1" and .step != "atb linear create") | "\(.step) \(.exit) \(.outcome)"' "$LOG")"
+has "inbox: one failed call, the session gets the earlier summaries" "$(received thread-c0999-1-1)" "0xMSG4B" "Earlier sessions"
+check "inbox: the failed create logged as retried" "atb linear create 1 retried" \
+  "$(jq -r 'select(.thread == "C0999/1.1") | "\(.step) \(.exit) \(.outcome)"' "$LOG" | tail -n 1)"
 settled thread-c0999-1-1
 thra C0999/1.1 TH-5 -- thread end --summary-file /home/agent/summary4.md >/dev/null 2>&1
 
@@ -302,7 +305,10 @@ has "inbox: a held claim is told to the agent" "$(received thread-c0999-1-1)" "A
 check "inbox: a held claim, the row without the ticket, the message delivered" " |delivered " \
   "$(tledger "SELECT issue FROM agents WHERE name = 'thread-c0999-1-1' AND state != 'ended'")|$(tledger "SELECT state FROM inbox WHERE msg_id = 'm4c'")"
 settled thread-c0999-1-1
-thra C0999/1.1 "" -- thread end --summary-file /home/agent/summary4.md >/dev/null 2>&1
+: > /home/agent/atb.log
+out=$(thra C0999/1.1 "" -- thread end --summary-file /home/agent/summary4.md 2>&1); rc=$?
+check "thread end without the held ticket: exit 0, the summary written to the ticket, nothing released" \
+  "0 linear comment TH-5|" "$rc $(sed 's/ --body-file.*//' /home/agent/atb.log | tr '\n' '|')"
 
 # The thread's checkout is behind origin: fast-forwarded before the start.
 # With a change to a tracked file it is left as it is, and the agent told.

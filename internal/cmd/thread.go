@@ -77,7 +77,8 @@ const (
 		"summary. A session that started without its ticket because Linear failed (FLEET_ISSUE empty " +
 		"in a scope with a Linear team) has its summary written to the thread's ticket instead, the " +
 		"ticket created first when the thread has none (not claimed, so not released); when Linear " +
-		"does not answer, that is said and the ending goes on. Then fleet posts one line of small grey text to the thread, `会话已结束 · " +
+		"does not answer, the summary is kept on this machine for the next session that reaches " +
+		"Linear, and the ending goes on. Then fleet posts one line of small grey text to the thread, `会话已结束 · " +
 		"<ticket>` with the ticket linked (`会话已结束` alone without a ticket; nothing when the " +
 		"scope has no fednet socket), which also completes an open progress card. Then your " +
 		"row in the ledger is ended, and last your tab is closed, which ends your own pane.\n\n" +
@@ -467,7 +468,7 @@ func (s *threadStart) linearSteps() error {
 	if s.cfg.LinearTeam == "" {
 		return nil
 	}
-	log := linearLog{scope: s.id.Scope, thread: s.msg.Thread, agent: s.id.Agent}
+	log := newLinearLog(s.id.Scope, s.msg.Thread, s.id.Agent)
 	if s.known == nil || s.known.Ticket == "" {
 		title := WorkOrderTitle(WithoutLeadingMentions(s.msg.Text))
 		if title == "" {
@@ -502,6 +503,11 @@ func (s *threadStart) linearSteps() error {
 		return err
 	}
 	s.claimed = true
+	// What earlier sessions kept while Linear was down, before this
+	// session's comment, so the comments stay in order.
+	if err := log.writeKept(s.ticket.Identifier); err != nil {
+		return err
+	}
 	if s.session == 1 {
 		return nil
 	}
@@ -1034,7 +1040,9 @@ func ThreadEnd(h *herdr.Herdr, args ThreadEndArgs) (exit.Code, error) {
 		return 0, err
 	}
 	if me.Issue == "" && cfg.LinearTeam != "" {
-		e.catchUp(me, cfg.LinearTeam, string(summary))
+		if err := e.catchUp(me, cfg.LinearTeam, string(summary)); err != nil {
+			return 0, err
+		}
 	}
 	// The closing line goes before the row ends, after Linear: it is what
 	// the thread sees of the ending, and the hub completes an open
@@ -1179,13 +1187,20 @@ func (e *threadEnding) linearSteps(agent, issue, summary string) error {
 
 // catchUp is the Linear part of ending a session that ran without its
 // ticket (FLEET_ISSUE empty in a scope with a Linear team: Linear failed
-// at its start): the summary goes to the thread's ticket, created first
-// when the thread has none, each step tried as at a start and recorded.
+// at its start). The summary is kept first (keepSummary), then written to
+// the thread's ticket, created when the thread has none, with any summary
+// an earlier session kept; each step tried as at a start and recorded.
 // The ticket is not claimed, so nothing is released; the next session
-// claims it. Best effort: this session never had the ticket, so a
-// failure is said and the ending goes on.
-func (e *threadEnding) catchUp(me *identity.Identity, team, summary string) {
-	log := linearLog{scope: me.Scope, thread: e.thread, agent: me.Agent}
+// claims it. When Linear fails, the summaries stay kept for the next
+// session that reaches Linear, and the ending goes on; only keeping the
+// summary can fail it.
+func (e *threadEnding) catchUp(me *identity.Identity, team, summary string) error {
+	if err := runStep(e.conn, e.key, "keep", func() error {
+		return keepSummary(me.Scope, e.thread, e.session, fmt.Sprintf("Session %d ended\n\n%s", e.session, strings.TrimSpace(summary)+"\n"))
+	}); err != nil {
+		return err
+	}
+	log := newLinearLog(me.Scope, e.thread, me.Agent)
 	err := runStep(e.conn, e.key, "create", func() error { return e.createTicket(log, team) })
 	if err == nil && e.ticket == "" {
 		// Created by an earlier run of this ending.
@@ -1196,23 +1211,17 @@ func (e *threadEnding) catchUp(me *identity.Identity, team, summary string) {
 	}
 	if err == nil {
 		e.footer = closingLine(endedLine, e.ticket, e.ticketURL)
-		var file string
-		var remove func()
-		if file, remove, err = tempFile(fmt.Sprintf("Session %d ended\n\n%s", e.session, strings.TrimSpace(summary)+"\n")); err == nil {
-			defer remove()
-			err = runStep(e.conn, e.key, "comment", func() error {
-				return log.try(func() error { return atb.Comment(e.ticket, file) })
-			})
-		}
+		err = log.writeKept(e.ticket)
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "fleet: %v\n", err)
 		log.fleetError(err)
-		fmt.Fprintf(os.Stdout, "this session ran without its ticket, and its summary could not be written to Linear "+
-			"(%s); later sessions will not get it\n", linearClass(err))
-		return
+		fmt.Fprintf(os.Stdout, "this session ran without its ticket, and Linear did not take its summary (%s); it is kept, "+
+			"and the next session that reaches Linear writes it to the thread's ticket\n", linearClass(err))
+		return nil
 	}
 	fmt.Fprintf(os.Stdout, "this session ran without its ticket; its summary is now on %s\n", e.ticket)
+	return nil
 }
 
 // createTicket creates the thread's ticket for catchUp when the thread has

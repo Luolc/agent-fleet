@@ -36,7 +36,7 @@ func TestLinearTryRetriesOnlyAnAtbExit(t *testing.T) {
 		"not atb's":       {exit.Database(errors.New("locked")), 1, ""},
 		"fails then goes": {nil, 2, "retried"},
 	} {
-		log := linearLog{scope: strings.ReplaceAll(name, " ", "-"), thread: "C1/1.0", agent: "thread-c1-1-0"}
+		log := newLinearLog(strings.ReplaceAll(name, " ", "-"), "C1/1.0", "thread-c1-1-0")
 		tries := 0
 		err := log.try(func() error {
 			tries++
@@ -61,6 +61,45 @@ func TestLinearTryRetriesOnlyAnAtbExit(t *testing.T) {
 		}
 		if info, err := os.Stat(path); err == nil && info.Mode().Perm() != 0o600 {
 			t.Errorf("%s: log mode %v", name, info.Mode().Perm())
+		}
+	}
+}
+
+// The steps of a start share one deadline: with every atb call slow (59 s
+// to fail, or 60 s to time out), no try begins after LinearBudget, so the
+// Linear steps end within the budget and one call.
+func TestLinearStepsStopAtTheirDeadline(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	clock := time.Date(2026, 10, 12, 0, 0, 0, 0, time.UTC)
+	now, sleep := linearNow, linearSleep
+	linearNow = func() time.Time { return clock }
+	linearSleep = func(d time.Duration) { clock = clock.Add(d) }
+	defer func() { linearNow, linearSleep = now, sleep }()
+	for name, call := range map[string]struct {
+		took time.Duration
+		code int
+	}{"slow exits": {59 * time.Second, 1}, "timeouts": {60 * time.Second, -1}} {
+		start := clock
+		log := newLinearLog("budget", "C1/1.0", "thread-c1-1-0")
+		calls := 0
+		var err error
+		// Four steps, as a known thread without its ticket has: create,
+		// claim, comment, summaries; each would succeed on its third try.
+		for step := 0; step < 4 && err == nil; step++ {
+			tries := 0
+			err = log.try(func() error {
+				calls++
+				tries++
+				clock = clock.Add(call.took)
+				if tries < 3 {
+					return &atb.Failure{Failure: exit.Environmentf("failed"), Op: "atb linear claim EX-1",
+						ExitCode: call.code, Class: "exit"}
+				}
+				return nil
+			})
+		}
+		if took := clock.Sub(start); err == nil || took > LinearBudget+60*time.Second {
+			t.Errorf("%s: %d calls took %v, err %v; want a failure within %v", name, calls, took, err, LinearBudget+60*time.Second)
 		}
 	}
 }

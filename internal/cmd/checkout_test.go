@@ -50,22 +50,36 @@ func behindOrigin(t *testing.T) (checkout, other string) {
 func TestSyncCheckoutFastForwardsOnlyACleanCheckoutThatIsBehind(t *testing.T) {
 	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
 	for name, c := range map[string]struct {
-		setup  func(t *testing.T, checkout string)
+		setup  func(t *testing.T, checkout, other string)
 		reason string // "" when it is fast-forwarded
 	}{
-		"behind":   {func(*testing.T, string) {}, ""},
-		"dirty":    {func(t *testing.T, d string) { _ = os.WriteFile(filepath.Join(d, "a"), []byte("x\n"), 0o644) }, "it has local changes"},
-		"diverged": {func(t *testing.T, d string) { commit(t, d, "c") }, "it has diverged from origin/main (ahead by 1, behind by 1)"},
-		"branch":   {func(t *testing.T, d string) { gitIn(t, d, "switch", "--quiet", "-c", "topic") }, "it is on topic, not on origin/main's branch"},
-		"detached": {func(t *testing.T, d string) { gitIn(t, d, "switch", "--quiet", "--detach") }, "HEAD is detached"},
-		"no fetch": {func(t *testing.T, d string) {
+		"behind": {func(*testing.T, string, string) {}, ""},
+		"dirty": {func(t *testing.T, d, _ string) { _ = os.WriteFile(filepath.Join(d, "a"), []byte("x\n"), 0o644) },
+			"it has local changes"},
+		"diverged": {func(t *testing.T, d, _ string) { commit(t, d, "c") },
+			"it has diverged from origin/main (ahead by 1, behind by 1)"},
+		"branch": {func(t *testing.T, d, _ string) { gitIn(t, d, "switch", "--quiet", "-c", "topic") },
+			"it is on topic, not on origin/main's branch"},
+		"detached": {func(t *testing.T, d, _ string) { gitIn(t, d, "switch", "--quiet", "--detach") }, "HEAD is detached"},
+		"no fetch": {func(t *testing.T, d, _ string) {
 			gitIn(t, d, "remote", "set-url", "origin", filepath.Join(d, "missing.git"))
-		},
-			"`git fetch origin` failed (exit 128)"},
+		}, "`git fetch origin` failed (exit 128)"},
+		// A file ignored here that origin now tracks: the update would
+		// overwrite it.
+		"ignored file in the way": {func(t *testing.T, d, other string) {
+			commit(t, other, "local.cfg")
+			gitIn(t, other, "push", "--quiet", "origin", "main")
+			if err := os.WriteFile(filepath.Join(d, ".git", "info", "exclude"), []byte("local.cfg\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(d, "local.cfg"), []byte("local settings\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}, "`git merge --ff-only` failed, as it does when a file it would bring in is there untracked or ignored"},
 	} {
-		checkout, _ := behindOrigin(t)
+		checkout, other := behindOrigin(t)
 		before := gitIn(t, checkout, "rev-parse", "HEAD")
-		c.setup(t, checkout)
+		c.setup(t, checkout, other)
 		head := gitIn(t, checkout, "rev-parse", "HEAD")
 		note := syncCheckout(checkout)
 		after := gitIn(t, checkout, "rev-parse", "HEAD")
@@ -77,6 +91,9 @@ func TestSyncCheckoutFastForwardsOnlyACleanCheckoutThatIsBehind(t *testing.T) {
 		}
 		if !strings.Contains(note, "was not updated from origin before you started: "+c.reason+".") || after != head {
 			t.Errorf("%s: note %q, HEAD %s -> %s", name, note, head, after)
+		}
+		if data, err := os.ReadFile(filepath.Join(checkout, "local.cfg")); err == nil && string(data) != "local settings\n" {
+			t.Errorf("%s: the ignored file was overwritten: %q", name, data)
 		}
 	}
 }

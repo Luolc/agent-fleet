@@ -16,12 +16,13 @@ import (
 
 // fetchTimeout bounds `git fetch` in a start: a hung remote must not hold
 // up the hook, which has the agent to start after it.
-var fetchTimeout = 60 * time.Second
+var fetchTimeout = 30 * time.Second
 
 // syncCheckout fast-forwards the main checkout `dir` to origin, as a
 // person would before working in it: `git fetch origin`, then, when the
 // checkout is on origin/HEAD's branch, has no changes to tracked files and
-// is only behind, `git merge --ff-only`. It never stops a start: anything
+// is only behind, `git merge --ff-only`, which leaves an untracked or
+// ignored file alone. It never stops a start: anything
 // else leaves the checkout as it is, and the returned sentence says why,
 // for the agent's first message; "" when the checkout is up to date.
 func syncCheckout(dir string) string {
@@ -70,8 +71,10 @@ func fastForward(dir string) string {
 	case behind == 0:
 		return ""
 	}
-	if _, err := Git("-C", dir, "merge", "--ff-only", "--quiet", upstream); err != nil {
-		return "`git merge --ff-only` failed"
+	// git counts ignored files as expendable; a local file the update
+	// would track stops it instead.
+	if _, err := Git("-C", dir, "merge", "--ff-only", "--no-overwrite-ignore", "--quiet", upstream); err != nil {
+		return "`git merge --ff-only` failed, as it does when a file it would bring in is there untracked or ignored"
 	}
 	fmt.Fprintf(os.Stderr, "note: fast-forwarded %s to %s, %d behind before\n", dir, upstream, behind)
 	return ""
