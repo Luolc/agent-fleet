@@ -604,7 +604,7 @@ func TestWatchPostsTheReminderWithoutTheMentionFednetRefuses(t *testing.T) {
 func TestWatchRemindsOfAThreadAgentsQuestionThenReclaimsTheSession(t *testing.T) {
 	w := watchThreadWorld(t)
 	w.exec("INSERT INTO threads (thread, slug, ticket, ticket_url, created_at) VALUES ('C1/1.0', 'c1-1-0', 'EX-1', 'https://linear.example.test/EX-1', 0)",
-		"INSERT INTO agents (name, role, thread, pane_id, state, started_at) VALUES ('thread-c1', 'thread', 'C1/1.0', 'p1', 'active', 0)",
+		"INSERT INTO agents (name, role, thread, issue, pane_id, state, started_at) VALUES ('thread-c1', 'thread', 'C1/1.0', 'EX-1', 'p1', 'active', 0)",
 		fmt.Sprintf("INSERT INTO questions (job, thread, asked_by, text, state, asked_at) VALUES ('', 'C1/1.0', 'thread-c1', 'Which month?\nDetails.', 'pending', %d)", t0))
 	w.herdrList("thread-c1 idle 1")
 	w.lastMessage("C1/1.0", t0)
@@ -681,6 +681,25 @@ func TestWatchRemindsOfAThreadAgentsQuestionThenReclaimsTheSession(t *testing.T)
 	}
 	if got := len(w.prompts()); got != 1 {
 		t.Errorf("%q", w.prompts())
+	}
+}
+
+// A session that started without its ticket (Linear down) has nothing to
+// release when watch reclaims it, though its thread has a ticket.
+func TestWatchReclaimsASessionWithoutItsTicketWithoutLinear(t *testing.T) {
+	w := watchThreadWorld(t)
+	w.exec("INSERT INTO threads (thread, slug, ticket, ticket_url, created_at) VALUES ('C1/1.0', 'c1-1-0', 'EX-1', 'https://linear.example.test/EX-1', 0)",
+		fmt.Sprintf("INSERT INTO agents (name, role, thread, issue, pane_id, state, started_at, reclaim_at) "+
+			"VALUES ('thread-c1', 'thread', 'C1/1.0', '', 'p1', 'active', 0, %d)", t0+600))
+	w.herdrList("thread-c1 idle 1")
+	w.lastMessage("C1/1.0", t0)
+	out := w.watchAt(10*time.Minute, 0)
+	if got := w.log("atb.log"); got != "" {
+		t.Errorf("atb: %s", got)
+	}
+	if got := w.query("SELECT state FROM agents WHERE name = 'thread-c1'"); got != "ended" ||
+		!strings.Contains(out.stdout, "reclaimed the session of thread-c1 on thread C1/1.0") {
+		t.Errorf("row %s, %+v", got, out)
 	}
 }
 

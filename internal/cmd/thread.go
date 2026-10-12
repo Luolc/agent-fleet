@@ -1036,13 +1036,8 @@ func ThreadEnd(h *herdr.Herdr, args ThreadEndArgs) (exit.Code, error) {
 			return 0, err
 		}
 	}
-	if err := e.linearSteps(me.Agent, me.Issue, string(summary)); err != nil {
+	if err := e.linearSteps(me, cfg.LinearTeam, string(summary)); err != nil {
 		return 0, err
-	}
-	if me.Issue == "" && cfg.LinearTeam != "" {
-		if err := e.catchUp(me, cfg.LinearTeam, string(summary)); err != nil {
-			return 0, err
-		}
 	}
 	// The closing line goes before the row ends, after Linear: it is what
 	// the thread sees of the ending, and the hub completes an open
@@ -1078,7 +1073,7 @@ func ThreadEnd(h *herdr.Herdr, args ThreadEndArgs) (exit.Code, error) {
 func newThreadEnding(conn *sql.DB, agent string, force bool) (*threadEnding, error) {
 	e := &threadEnding{conn: conn, force: force, footer: endedLine}
 	var rowID int64
-	if err := conn.QueryRow("SELECT id, thread FROM agents WHERE name = ?1 ORDER BY id DESC LIMIT 1", agent).Scan(&rowID, &e.thread); err != nil {
+	if err := conn.QueryRow("SELECT id, thread, issue FROM agents WHERE name = ?1 ORDER BY id DESC LIMIT 1", agent).Scan(&rowID, &e.thread, &e.issue); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, exit.Refusedf("the ledger has no row for %s", agent)
 		}
@@ -1160,6 +1155,7 @@ type threadEnding struct {
 	session   int64
 	ticket    string
 	ticketURL string
+	issue     string // the agent's row's: empty for a session without its ticket
 	footer    string
 	force     bool
 	missed    []string
@@ -1167,8 +1163,13 @@ type threadEnding struct {
 }
 
 // linearSteps are the ticket's steps, with a ticket: the summary comment,
-// then the release in the agent's name.
-func (e *threadEnding) linearSteps(agent, issue, summary string) error {
+// then the release in the agent's name. A session without its ticket in a
+// scope with a Linear team (`team`) catches up instead.
+func (e *threadEnding) linearSteps(me *identity.Identity, team, summary string) error {
+	agent, issue := me.Agent, me.Issue
+	if issue == "" && team != "" {
+		return e.catchUp(me, team, summary)
+	}
 	if issue == "" {
 		return nil
 	}
