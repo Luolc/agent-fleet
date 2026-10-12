@@ -1009,20 +1009,10 @@ func TestWatchPostsNothingWhenItCannotStartAThreadAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.lastMessage("C6/6.0", t0)
-	// No checkout on this machine, then Linear down: no agent, no post.
+	// No checkout on this machine: no agent, no post.
 	out := w.watchAt(30*time.Minute, 5)
 	if !strings.Contains(out.stderr, "is not checked out at") {
 		t.Errorf("%+v", out)
-	}
-	if err := os.MkdirAll(checkout, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(w.dir, "atb-down"), nil, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	out = w.watchAt(31*time.Minute, 5)
-	if !strings.Contains(out.stderr, "Linear is unavailable") || !strings.Contains(w.log("atb.log"), "linear create --team EX") {
-		t.Errorf("%+v %s", out, w.log("atb.log"))
 	}
 	if got := w.log("fednet.log"); strings.Contains(got, "client post") {
 		t.Errorf("posted: %s", got)

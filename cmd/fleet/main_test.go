@@ -13,10 +13,15 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/Luolc/agent-fleet/internal/cmd"
 )
 
 func TestMain(m *testing.M) {
 	if os.Getenv("FLEET_TEST_RUN_MAIN") == "1" {
+		// A Linear step's retries wait milliseconds here, not seconds.
+		cmd.LinearPauses = []time.Duration{10 * time.Millisecond, 10 * time.Millisecond}
 		main()
 		return
 	}

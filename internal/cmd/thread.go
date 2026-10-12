@@ -74,7 +74,10 @@ const (
 		"(FLEET_ISSUE), first the summary is written to it as a comment headed `Session <n> " +
 		"ended` (`atb linear comment`), then the ticket is released as done (`atb linear " +
 		"release`); a later message in the thread starts a new session that gets every such " +
-		"summary. Then fleet posts one line of small grey text to the thread, `会话已结束 · " +
+		"summary. A session that started without its ticket because Linear failed (FLEET_ISSUE empty " +
+		"in a scope with a Linear team) has its summary written to the thread's ticket instead, the " +
+		"ticket created first when the thread has none (not claimed, so not released); when Linear " +
+		"does not answer, that is said and the ending goes on. Then fleet posts one line of small grey text to the thread, `会话已结束 · " +
 		"<ticket>` with the ticket linked (`会话已结束` alone without a ticket; nothing when the " +
 		"scope has no fednet socket), which also completes an open progress card. Then your " +
 		"row in the ledger is ended, and last your tab is closed, which ends your own pane.\n\n" +
@@ -360,6 +363,12 @@ type threadStart struct {
 	notes   []string    // for the prompt: earlier summaries
 	text    *promptText // the thread prompt, put together before the reservation
 	created []string
+	// claimed and commented are whether this session's claim and its
+	// `Session <n> started` comment are done.
+	claimed, commented bool
+	// linearNote and checkoutNote are what the agent is told when a Linear
+	// step failed or its checkout was not updated from origin.
+	linearNote, checkoutNote string
 }
 
 // newThreadStart checks what a start needs before anything is written:
@@ -430,18 +439,6 @@ func (s *threadStart) reserve() error {
 	})
 }
 
-// unreserve takes the reservation back after the Linear steps failed:
-// the row is ended and the session uncounted.
-func (s *threadStart) unreserve() error {
-	if err := endRow(s.conn, s.id.Agent); err != nil {
-		return err
-	}
-	if _, err := s.conn.Exec("UPDATE threads SET sessions = sessions - 1 WHERE thread = ?1", s.msg.Thread); err != nil {
-		return exit.Database(err)
-	}
-	return nil
-}
-
 // ticketDescription is a new thread ticket's description: where the
 // thread is, its first message with who wrote it and when (or, for a
 // thread fleet opened for a job, which agent asked), and the channel's
@@ -460,14 +457,17 @@ func (s *threadStart) ticketDescription() string {
 }
 
 // linearSteps are the thread ticket's steps when the scope has a Linear
-// team: a new thread gets its ticket created (label `thread`, no project)
-// and claimed; a known thread gets its ticket claimed again, a `Session
-// <n> started` comment, and its earlier summaries read for the prompt.
-// Any failure means Linear is unavailable to the caller.
+// team: a new thread, or one whose ticket an earlier session could not
+// create, gets its ticket created (label `thread`, no project) and claimed;
+// a known thread gets its ticket claimed again, a `Session <n> started`
+// comment, and its earlier summaries read for the prompt. Each step is
+// tried as linearLog.try does; the first that still fails ends them, and
+// the caller starts the agent without the rest (withoutLinear).
 func (s *threadStart) linearSteps() error {
 	if s.cfg.LinearTeam == "" {
 		return nil
 	}
+	log := linearLog{scope: s.id.Scope, thread: s.msg.Thread, agent: s.id.Agent}
 	if s.known == nil || s.known.Ticket == "" {
 		title := WorkOrderTitle(WithoutLeadingMentions(s.msg.Text))
 		if title == "" {
@@ -478,7 +478,10 @@ func (s *threadStart) linearSteps() error {
 			return err
 		}
 		defer remove()
-		if s.ticket, err = atb.CreateThreadTicket(s.cfg.LinearTeam, title, file); err != nil {
+		if err := log.try(func() (err error) {
+			s.ticket, err = atb.CreateThreadTicket(s.cfg.LinearTeam, title, file)
+			return err
+		}); err != nil {
 			return err
 		}
 		s.created = append(s.created, fmt.Sprintf("thread ticket %s (%s)", s.ticket.Identifier, s.ticket.URL))
@@ -493,9 +496,12 @@ func (s *threadStart) linearSteps() error {
 	if err := setIssue(s.conn, s.id.Agent, s.ticket.Identifier); err != nil {
 		return err
 	}
-	if err := atb.Claim(s.ticket.Identifier, s.id.Agent, s.msg.Thread, s.mapping+": thread "+s.msg.Thread); err != nil {
+	if err := log.try(func() error {
+		return atb.Claim(s.ticket.Identifier, s.id.Agent, s.msg.Thread, s.mapping+": thread "+s.msg.Thread)
+	}); err != nil {
 		return err
 	}
+	s.claimed = true
 	if s.session == 1 {
 		return nil
 	}
@@ -504,11 +510,14 @@ func (s *threadStart) linearSteps() error {
 		return err
 	}
 	defer remove()
-	if err := atb.Comment(s.ticket.Identifier, file); err != nil {
+	if err := log.try(func() error { return atb.Comment(s.ticket.Identifier, file) }); err != nil {
 		return err
 	}
-	s.notes, err = summaries(s.ticket.Identifier)
-	return err
+	s.commented = true
+	return log.try(func() (err error) {
+		s.notes, err = summaries(s.ticket.Identifier)
+		return err
+	})
 }
 
 var sessionEnded = regexp.MustCompile(`^Session [0-9]+ ended\n`)
@@ -587,7 +596,10 @@ func (s *threadStart) slots() map[string]string {
 	}
 	ticket := s.ticket.Identifier
 	note := " (your thread ticket, " + s.ticket.URL + ")"
-	if ticket == "" {
+	switch {
+	case ticket == "" && s.cfg.LinearTeam != "":
+		note = " (empty: this session runs without its thread ticket, see `Note from fleet` below)"
+	case ticket == "":
 		note = " (empty: thread tickets are off for this scope)"
 	}
 	slots := map[string]string{"scope": s.id.Scope, "agent": s.id.Agent, "mapping": s.mapping, "cwd": s.cwd,
@@ -611,7 +623,7 @@ func (s *threadStart) firstMessage() string {
 	if len(s.notes) > 0 {
 		text += "\n## Earlier sessions on this thread\n\n" + strings.Join(s.notes, "\n\n") + "\n"
 	}
-	return text + "\n## The message\n\n" + s.msg.body()
+	return text + noteSection(s.linearNote, s.checkoutNote) + "\n## The message\n\n" + s.msg.body()
 }
 
 // place is the thread's new tab in the `threads` workspace, after the
@@ -647,20 +659,58 @@ func (s *threadStart) start() (exit.Code, error) {
 	return exit.Ok, nil
 }
 
-// linearUnavailable is what `fleet inbox` does when a Linear step failed:
-// no agent (the reservation taken back), then the thread is told.
-// What an agent or watch sent (`fromFleet`) gets the failure back instead
-// of a post: nobody in the thread asked anything.
-func (s *threadStart) linearUnavailable(cause error) error {
-	fmt.Fprintf(os.Stderr, "fleet: Linear is unavailable, no thread agent started: %v\n", cause)
-	if err := s.unreserve(); err != nil {
-		return err
-	}
-	if s.msg.fromFleet() {
+// withoutLinear is what a start does when a Linear step still failed
+// after its tries: the agent starts anyway. Once the ticket is claimed it
+// keeps it and is told what is missing; before that (the ticket not
+// created, or not claimed, Linear unavailable or the claim held by another
+// agent) the session runs without its ticket, the agent and the thread are
+// told, and the next session or `thread end` catches up.
+func (s *threadStart) withoutLinear(cause error) error {
+	fmt.Fprintf(os.Stderr, "fleet: a Linear step failed, the thread agent starts anyway: %v\n", cause)
+	log := linearLog{scope: s.id.Scope, thread: s.msg.Thread, agent: s.id.Agent}
+	log.fleetError(cause)
+	class := linearClass(cause)
+	if s.claimed {
+		missing := ""
+		if !s.commented {
+			missing = fmt.Sprintf(" the `Session %d started` comment is missing, and", s.session)
+		}
+		s.linearNote = fmt.Sprintf("Linear failed after your ticket was claimed (%s), and the Linear steps after it were "+
+			"skipped:%s the earlier sessions' summaries are not below; read them on %s with `atb linear query` when "+
+			"you need them.", class, missing, s.ticket.Identifier)
 		return nil
 	}
-	return s.tell("Linear is unavailable right now, so no agent was started for this thread; please try again later.",
-		"Linear is unavailable")
+	ticket := s.ticket.Identifier
+	s.id.Issue, s.ticket = "", atb.Issue{}
+	if err := setIssue(s.conn, s.id.Agent, ""); err != nil {
+		return err
+	}
+	why := fmt.Sprintf("Linear was unavailable when this session started (%s)", class)
+	line := fmt.Sprintf("Linear is unavailable (%s); this session runs without its ticket.", class)
+	if atb.Held(cause) {
+		why = fmt.Sprintf("Another agent holds the claim on the thread ticket %s (`atb linear claim` exit 3)", ticket)
+		line = fmt.Sprintf("The thread ticket %s is claimed by someone else; this session runs without it.", ticket)
+	}
+	s.linearNote = why + ", so this session runs without its thread ticket: FLEET_ISSUE is empty, and `fleet thread " +
+		"set-project`, `fleet thread relate` and the relation `fleet job start` makes are off. Do not claim the " +
+		"ticket yourself: `fleet thread end` writes your summary to the thread's ticket (creating it when there is " +
+		"none) if Linear answers by then, and the next session claims it."
+	s.notify(line)
+	return nil
+}
+
+// notify posts one line to the thread, as far as it can: a missing socket
+// or a failed post is said on stderr and stops nothing.
+func (s *threadStart) notify(line string) {
+	if s.cfg.FednetSocket == "" {
+		fmt.Fprintf(os.Stderr, "note: fednet.socket is not configured, so the thread was not told: %s\n", line)
+		return
+	}
+	if err := fednet.Post(s.cfg.FednetSocket, s.msg.Thread, line); err != nil {
+		fmt.Fprintf(os.Stderr, "note: the thread was not told (%v): %s\n", err, line)
+		return
+	}
+	fmt.Fprintf(os.Stdout, "posted to the thread: %s\n", line)
 }
 
 // notHere is what a start does when the thread's directory is not on this
@@ -731,21 +781,25 @@ func resumeThreadStart(h *herdr.Herdr, conn *sql.DB, scope string, cfg *config.S
 	if known == nil {
 		return 0, false, exit.Environmentf("the ledger has %s but no row for thread %s", name, msg.Thread)
 	}
-	var pane string
-	if err := conn.QueryRow("SELECT pane_id FROM agents WHERE name = ?1 AND state != 'ended'", name).Scan(&pane); err != nil {
+	// The row's issue, not the thread's ticket: a session that started
+	// without its ticket has none.
+	var pane, issue string
+	if err := conn.QueryRow("SELECT pane_id, issue FROM agents WHERE name = ?1 AND state != 'ended'", name).Scan(&pane, &issue); err != nil {
 		return 0, false, exit.Database(err)
 	}
 	s := &threadStart{h: h, conn: conn, cfg: cfg, msg: msg, known: known, session: known.Sessions, home: home,
-		ticket: atb.Issue{Identifier: known.Ticket, URL: known.TicketURL},
-		id:     &identity.Identity{Agent: name, Role: identity.Thread, Scope: scope, Thread: msg.Thread, Issue: known.Ticket}}
+		id: &identity.Identity{Agent: name, Role: identity.Thread, Scope: scope, Thread: msg.Thread, Issue: issue}}
+	if issue != "" {
+		s.ticket = atb.Issue{Identifier: known.Ticket, URL: known.TicketURL}
+	}
 	if err := s.belong(); err != nil {
 		return 0, false, err
 	}
 	if s.text, err = loadPrompt(cfg, "thread"); err != nil {
 		return s.promptBroken(err)
 	}
-	if known.Ticket != "" && known.Sessions > 1 {
-		if s.notes, err = summaries(known.Ticket); err != nil {
+	if issue != "" && known.Sessions > 1 {
+		if s.notes, err = summaries(issue); err != nil {
 			return 0, false, err
 		}
 	}
@@ -979,6 +1033,9 @@ func ThreadEnd(h *herdr.Herdr, args ThreadEndArgs) (exit.Code, error) {
 	if err := e.linearSteps(me.Agent, me.Issue, string(summary)); err != nil {
 		return 0, err
 	}
+	if me.Issue == "" && cfg.LinearTeam != "" {
+		e.catchUp(me, cfg.LinearTeam, string(summary))
+	}
 	// The closing line goes before the row ends, after Linear: it is what
 	// the thread sees of the ending, and the hub completes an open
 	// progress card before it.
@@ -1118,6 +1175,80 @@ func (e *threadEnding) linearSteps(agent, issue, summary string) error {
 	}
 	return e.linear("release", func() error { return atb.Release(issue, agent, false) },
 		fmt.Sprintf("atb linear release %s --agent %s --reason done --done", issue, agent))
+}
+
+// catchUp is the Linear part of ending a session that ran without its
+// ticket (FLEET_ISSUE empty in a scope with a Linear team: Linear failed
+// at its start): the summary goes to the thread's ticket, created first
+// when the thread has none, each step tried as at a start and recorded.
+// The ticket is not claimed, so nothing is released; the next session
+// claims it. Best effort: this session never had the ticket, so a
+// failure is said and the ending goes on.
+func (e *threadEnding) catchUp(me *identity.Identity, team, summary string) {
+	log := linearLog{scope: me.Scope, thread: e.thread, agent: me.Agent}
+	err := runStep(e.conn, e.key, "create", func() error { return e.createTicket(log, team) })
+	if err == nil && e.ticket == "" {
+		// Created by an earlier run of this ending.
+		var row *threadRow
+		if row, err = threadByKey(e.conn, e.thread); err == nil && row != nil {
+			e.ticket, e.ticketURL = row.Ticket, row.TicketURL
+		}
+	}
+	if err == nil {
+		e.footer = closingLine(endedLine, e.ticket, e.ticketURL)
+		var file string
+		var remove func()
+		if file, remove, err = tempFile(fmt.Sprintf("Session %d ended\n\n%s", e.session, strings.TrimSpace(summary)+"\n")); err == nil {
+			defer remove()
+			err = runStep(e.conn, e.key, "comment", func() error {
+				return log.try(func() error { return atb.Comment(e.ticket, file) })
+			})
+		}
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "fleet: %v\n", err)
+		log.fleetError(err)
+		fmt.Fprintf(os.Stdout, "this session ran without its ticket, and its summary could not be written to Linear "+
+			"(%s); later sessions will not get it\n", linearClass(err))
+		return
+	}
+	fmt.Fprintf(os.Stdout, "this session ran without its ticket; its summary is now on %s\n", e.ticket)
+}
+
+// createTicket creates the thread's ticket for catchUp when the thread has
+// none, titled after the latest message a person posted there, and
+// records it on the thread's row.
+func (e *threadEnding) createTicket(log linearLog, team string) error {
+	if e.ticket != "" {
+		return nil
+	}
+	var channel, last string
+	if err := e.conn.QueryRow("SELECT channel, last_text FROM threads WHERE thread = ?1", e.thread).Scan(&channel, &last); err != nil {
+		return exit.Database(err)
+	}
+	title := WorkOrderTitle(WithoutLeadingMentions(last))
+	if title == "" {
+		title = "Thread " + e.thread
+	}
+	file, remove, err := tempFile(fmt.Sprintf("channel: %s\nthread: %s\n\nCreated by `fleet thread end` at the end of "+
+		"session %d, which ran without its ticket because Linear failed when it started.\n", channel, e.thread, e.session))
+	if err != nil {
+		return err
+	}
+	defer remove()
+	var issue atb.Issue
+	if err := log.try(func() (err error) {
+		issue, err = atb.CreateThreadTicket(team, title, file)
+		return err
+	}); err != nil {
+		return err
+	}
+	if _, err := e.conn.Exec("UPDATE threads SET ticket = ?1, ticket_url = ?2 WHERE thread = ?3",
+		issue.Identifier, issue.URL, e.thread); err != nil {
+		return exit.Database(err)
+	}
+	e.ticket, e.ticketURL = issue.Identifier, issue.URL
+	return nil
 }
 
 // step runs a step through runStep; a failure is returned, or with

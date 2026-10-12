@@ -10,13 +10,18 @@ TDB=/home/agent/.local/state/$T/main.db
 tledger() { sqlite3 "$TDB" "$1" | tr '\n' ' '; }
 mkdir -p /home/agent/.config/$T /home/agent/fake-thread /home/agent/events
 echo '{"linear": {"team": "TH"}, "fednet": {"socket": "/home/agent/fednet.sock"}}' > "/home/agent/.config/$T/main.json"
-# The fake atb fails every call while /home/agent/linear-down exists;
+# The fake atb fails every call (exit 4) while /home/agent/linear-down exists;
 # `create` prints TH-5, `query` prints the team and project of an issue
 # when asked for them, else one earlier summary.
 cat > /home/agent/fake-thread/atb <<'ATB'
 #!/bin/sh
 echo "$*" >> /home/agent/atb.log
 [ -e /home/agent/linear-down ] && { echo "error: Linear unreachable" >&2; exit 4; }
+# /home/agent/linear-fails-once makes the next call fail (exit 1), once;
+# while /home/agent/claim-held exists, `claim` answers that another agent
+# holds the issue (exit 3).
+[ -e /home/agent/linear-fails-once ] && { rm /home/agent/linear-fails-once; echo "error: Linear hiccup" >&2; exit 1; }
+[ "$2" = claim ] && [ -e /home/agent/claim-held ] && { echo "error: TH-5 is claimed by thread-other" >&2; exit 3; }
 # While /home/agent/release-down exists, `release` fails: atb's own
 # failure first (exit 1), then exit 4 (no holder), as atb 0.2.3 answers
 # after a release whose comment was written and whose state update failed.
@@ -217,27 +222,110 @@ check "inbox: retry started no second agent" "1 " \
   "$("${S[@]}" agent list | jq -r '[.result.agents[] | select(.name == "'"$A"'")] | length') "
 settled "$A"
 
-# Linear unavailable and the notice cannot be posted: exit 5, the message
-# kept; then the notice goes through: no agent, the thread told, exit 0.
+# Linear down for good at a new thread, and the outage line cannot be
+# posted either: the create is tried three times, each try logged with
+# atb's exit and stderr, and the agent starts anyway without a ticket,
+# the message delivered (exit 0). Linear back at the end: thread end
+# writes the summary to a ticket it creates, without claiming it.
+LOG=/home/agent/.local/state/$T/main-linear.log
 : > /home/agent/atb.log
 : > /home/agent/fednet.log
 touch /home/agent/linear-down /home/agent/fednet-down
 out=$(inbox "$(event m4 C0999/1.1 'hello 0xMSG4')" 2>&1); rc=$?
 rm /home/agent/fednet-down
-check "inbox: Linear unavailable and the notice fails, exit 5" 5 "$rc"
-has "inbox: says the thread was not told" "$out" "the thread was not told"
-check "inbox: the message is kept reserved" "reserved " "$(tledger "SELECT state FROM inbox WHERE msg_id = 'm4'")"
-out=$(inbox /home/agent/events/m4.json 2>&1); rc=$?
-rm /home/agent/linear-down
-check "inbox: Linear unavailable, exit 0 once the thread is told" 0 "$rc"
-has "inbox: says Linear is unavailable" "$out" "Linear is unavailable"
-check "inbox: Linear unavailable posts the line to the thread, once per attempt" \
-  "client post -socket /home/agent/fednet.sock -thread C0999/1.1 -- Linear is unavailable right now, so no agent was started for this thread; please try again later.|client post -socket /home/agent/fednet.sock -thread C0999/1.1 -- Linear is unavailable right now, so no agent was started for this thread; please try again later.|" \
+check "inbox: Linear down, the agent starts anyway, exit 0" 0 "$rc"
+[ "$rc" = 0 ] || printf '%s\n' "$out"
+check "inbox: Linear down, the create tried three times, no claim" "3 0" \
+  "$(grep -c '^linear create' /home/agent/atb.log) $(grep -c '^linear claim' /home/agent/atb.log)"
+check "inbox: Linear down, the outage line tried once, its failure stops nothing" \
+  "client post -socket /home/agent/fednet.sock -thread C0999/1.1 -- Linear is unavailable (atb linear create: exit 4); this session runs without its ticket.|" \
   "$(tr '\n' '|' < /home/agent/fednet.log)"
-check "inbox: Linear unavailable starts no agent" agent_not_found "$(agent_field thread-c0999-1-1 agent_status)"
-check "inbox: Linear unavailable leaves no live row and no session" "0 0 " \
-  "$(tledger "SELECT count(*) FROM agents WHERE name = 'thread-c0999-1-1' AND state != 'ended'")$(tledger "SELECT sessions FROM threads WHERE thread = 'C0999/1.1'")"
-check "inbox: Linear unavailable drops the message" "dropped " "$(tledger "SELECT state FROM inbox WHERE msg_id = 'm4'")"
+check "inbox: Linear down, the message delivered, the row active without a ticket, the thread without one, one session" \
+  "delivered |active/ |/1 " \
+  "$(tledger "SELECT state FROM inbox WHERE msg_id = 'm4'")|$(tledger "SELECT state || '/' || issue FROM agents WHERE name = 'thread-c0999-1-1' AND state != 'ended'")|$(tledger "SELECT ticket || '/' || sessions FROM threads WHERE thread = 'C0999/1.1'")"
+has "inbox: Linear down, the agent's process has an empty ticket" "$(proc_env thread-c0999-1-1)" "${P}ISSUE= "
+has "inbox: Linear down, the agent is told what it runs without, and gets the message" "$(received thread-c0999-1-1)" \
+  "FLEET_ISSUE= (empty: this session runs without its thread ticket" \
+  "## Note from fleet" "Linear was unavailable when this session started (atb linear create: exit 4)" "0xMSG4"
+check "inbox: Linear down, each try logged with atb's exit, stderr and outcome" \
+  "atb linear create 4 error: Linear unreachable retried|atb linear create 4 error: Linear unreachable retried|atb linear create 4 error: Linear unreachable gave up|" \
+  "$(jq -r 'select(.thread == "C0999/1.1") | "\(.step) \(.exit) \(.stderr) \(.outcome)"' "$LOG" | tr '\n' '|')"
+check "inbox: the Linear log is the owner's only" 600 "$(stat -c %a "$LOG")"
+settled thread-c0999-1-1
+rm /home/agent/linear-down
+: > /home/agent/atb.log
+: > /home/agent/fednet.log
+printf 'Answered without a ticket. 0xSUM4\n' > /home/agent/summary4.md
+out=$(thra C0999/1.1 "" -- thread end --summary-file /home/agent/summary4.md 2>&1); rc=$?
+check "thread end without a ticket: exit 0" 0 "$rc"
+[ "$rc" = 0 ] || printf '%s\n' "$out"
+check "thread end without a ticket: a ticket created, the summary written to it, nothing claimed or released" \
+  "linear create --team TH --label thread --title hello 0xMSG4 --description-file DESC --json|linear comment TH-5 --body-file BODY|" \
+  "$(sed -e 's/--description-file [^ ]*/--description-file DESC/' -e 's/--body-file [^ ]*/--body-file BODY/' /home/agent/atb.log | tr '\n' '|')"
+check "thread end without a ticket: the summary is the comment" "Session 1 ended||Answered without a ticket. 0xSUM4|" \
+  "$(tr '\n' '|' < /home/agent/comment-TH-5.md)"
+check "thread end without a ticket: the thread keeps the ticket, the closing line links it" \
+  "TH-5 |client post -socket /home/agent/fednet.sock -thread C0999/1.1 -footer -- 会话已结束 · [TH-5](https://linear.example.test/TH-5)|" \
+  "$(tledger "SELECT ticket FROM threads WHERE thread = 'C0999/1.1'")|$(tr '\n' '|' < /home/agent/fednet.log)"
+
+# One failed call, then Linear answers: the claim of the next session is
+# tried again and goes through; nothing is posted about it.
+: > /home/agent/atb.log
+: > /home/agent/fednet.log
+touch /home/agent/linear-fails-once
+out=$(inbox "$(event m4b C0999/1.1 'back again 0xMSG4B')" 2>&1); rc=$?
+check "inbox: one failed claim, exit 0" 0 "$rc"
+check "inbox: one failed claim, tried again, then the session comment and the summaries" \
+  "linear claim TH-5|linear claim TH-5|linear comment TH-5|linear query QUERY|" \
+  "$(sed -e 's/ --agent.*//' -e 's/ --body-file.*//' -e 's/query .*/query QUERY/' /home/agent/atb.log | tr '\n' '|')"
+check "inbox: one failed claim, the agent has the ticket, nothing posted" "TH-5 |" \
+  "$(tledger "SELECT issue FROM agents WHERE name = 'thread-c0999-1-1' AND state != 'ended'")|$(cat /home/agent/fednet.log)"
+has "inbox: one failed claim, the session gets the summary thread end wrote" "$(received thread-c0999-1-1)" "0xMSG4B" "Earlier sessions"
+check "inbox: one failed claim logged as retried" "atb linear claim TH-5 1 retried" \
+  "$(jq -r 'select(.thread == "C0999/1.1" and .step != "atb linear create") | "\(.step) \(.exit) \(.outcome)"' "$LOG")"
+settled thread-c0999-1-1
+thra C0999/1.1 TH-5 -- thread end --summary-file /home/agent/summary4.md >/dev/null 2>&1
+
+# The ticket is claimed by another agent (exit 3): not retried, not an
+# outage; the session runs without it and the thread is told so.
+: > /home/agent/atb.log
+: > /home/agent/fednet.log
+touch /home/agent/claim-held
+out=$(inbox "$(event m4c C0999/1.1 'third 0xMSG4C')" 2>&1); rc=$?
+rm /home/agent/claim-held
+check "inbox: a claim another agent holds, exit 0" 0 "$rc"
+check "inbox: a held claim is tried once" 1 "$(grep -c '^linear claim' /home/agent/atb.log)"
+check "inbox: a held claim is told to the thread as such" \
+  "client post -socket /home/agent/fednet.sock -thread C0999/1.1 -- The thread ticket TH-5 is claimed by someone else; this session runs without it.|" \
+  "$(tr '\n' '|' < /home/agent/fednet.log)"
+has "inbox: a held claim is told to the agent" "$(received thread-c0999-1-1)" "Another agent holds the claim on the thread ticket TH-5" "0xMSG4C"
+check "inbox: a held claim, the row without the ticket, the message delivered" " |delivered " \
+  "$(tledger "SELECT issue FROM agents WHERE name = 'thread-c0999-1-1' AND state != 'ended'")|$(tledger "SELECT state FROM inbox WHERE msg_id = 'm4c'")"
+settled thread-c0999-1-1
+thra C0999/1.1 "" -- thread end --summary-file /home/agent/summary4.md >/dev/null 2>&1
+
+# The thread's checkout is behind origin: fast-forwarded before the start.
+# With a change to a tracked file it is left as it is, and the agent told.
+printf 'ff\n' > /home/agent/seed/ff.txt
+git -C /home/agent/seed add ff.txt && git -C /home/agent/seed commit -q -m ff && git -C /home/agent/seed push -q origin main
+inbox "$(event m4d C0995/1.1 'behind 0xMSG4D')" >/dev/null 2>&1; rc=$?
+check "inbox: a checkout behind origin, exit 0" 0 "$rc"
+check "inbox: the checkout is fast-forwarded to origin/main" "$(git -C /home/agent/seed rev-parse HEAD)" "$(git -C "$DEV" rev-parse HEAD)"
+lacks "inbox: a fast-forwarded checkout is no note" "$(received thread-c0995-1-1)" "was not updated from origin"
+settled thread-c0995-1-1
+thra C0995/1.1 TH-5 -- thread end --summary-file /home/agent/summary4.md >/dev/null 2>&1
+printf 'ff 2\n' > /home/agent/seed/ff.txt
+git -C /home/agent/seed commit -q -am ff2 && git -C /home/agent/seed push -q origin main
+before=$(git -C "$DEV" rev-parse HEAD)
+printf 'local change\n' > "$DEV/ff.txt"
+inbox "$(event m4e C0994/1.1 'dirty 0xMSG4E')" >/dev/null 2>&1; rc=$?
+check "inbox: a checkout with local changes, exit 0" 0 "$rc"
+check "inbox: a checkout with local changes is left as it is" "$before local change" "$(git -C "$DEV" rev-parse HEAD) $(cat "$DEV/ff.txt")"
+has "inbox: the agent is told why its checkout was not updated" "$(received thread-c0994-1-1)" \
+  "The checkout $DEV was not updated from origin before you started: it has local changes."
+settled thread-c0994-1-1
+thra C0994/1.1 TH-5 -- thread end --summary-file /home/agent/summary4.md >/dev/null 2>&1
+git -C "$DEV" checkout -q -- ff.txt && git -C "$DEV" merge -q --ff-only origin/main
 
 # A thread prompt the scope's config replaces with a missing file: no
 # agent, nothing reserved and Linear not asked; the thread is told which

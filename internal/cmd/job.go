@@ -531,6 +531,13 @@ func JobStart(h *herdr.Herdr, args JobStartArgs) (exit.Code, error) {
 		return startFailed(c.id.Agent, err, 0, created, hint)
 	}
 	c.id.Issue = issue.Identifier
+	// The lead reads its repo's checkout, or for a cross-repo job the
+	// initiative's checkout its directory is in.
+	checkout := c.cwd
+	if c.repo == "" {
+		checkout = filepath.Dir(c.cwd)
+	}
+	note := noteSection(syncCheckout(checkout))
 	if c.repo == "" {
 		if err := os.Mkdir(c.cwd, 0o777); err != nil {
 			return startFailed(c.id.Agent, exit.IO(err), 0, created, hint)
@@ -555,7 +562,7 @@ func JobStart(h *herdr.Herdr, args JobStartArgs) (exit.Code, error) {
 		}
 	}
 	body := c.prompt.fill(roleSlots(c.sc, c.id, c.cwd, c.repo, c.cwd, c.cfg.MaxAgentsPerJob, issue, c.parent)) +
-		section + taskSection(issue.URL, c.body)
+		note + section + taskSection(issue.URL, c.body)
 	code, err := startAndDeliver(h, conn, c.id, place, c.cwd, args.Model, args.Effort, c.me.Agent, body, &created)
 	if err != nil || code != exit.Ok {
 		return startFailed(c.id.Agent, err, code, created, hint)

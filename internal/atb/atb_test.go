@@ -1,6 +1,14 @@
 package atb
 
-import "testing"
+import (
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/Luolc/agent-fleet/internal/exit"
+)
 
 func TestIdentifiersAreChecked(t *testing.T) {
 	for _, good := range []string{"EX-7", "LL2-123", "A-1"} {
@@ -12,5 +20,33 @@ func TestIdentifiersAreChecked(t *testing.T) {
 		if err := CheckIdentifier(bad); err == nil {
 			t.Errorf("%q accepted", bad)
 		}
+	}
+}
+
+func TestAFailureKeepsAtbsExitAndRedactedStderrOutOfTheMessage(t *testing.T) {
+	dir := t.TempDir()
+	script := "#!/bin/sh\necho \"error: refused for key $LINEAR_API_KEY, token lin_oauth_0xT0K, Bearer 0xB3AR\" >&2\nexit 3\n"
+	if err := os.WriteFile(filepath.Join(dir, "atb"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+":/usr/bin:/bin")
+	t.Setenv("LINEAR_API_KEY", "0xPLAINK3Y")
+	err := Claim("EX-1", "a", "s", "x")
+	var failure *Failure
+	if !errors.As(err, &failure) {
+		t.Fatalf("%v is not a Failure", err)
+	}
+	if failure.ExitCode != 3 || failure.Class != "exit 3" || failure.Op != "atb linear claim EX-1" || !Held(err) {
+		t.Errorf("failure = %+v", failure)
+	}
+	if want := "error: refused for key [redacted], token [redacted], Bearer [redacted]"; failure.Stderr != want {
+		t.Errorf("stderr = %q, want %q", failure.Stderr, want)
+	}
+	var code *exit.Failure
+	if !errors.As(err, &code) || code.Code != exit.Environment || strings.Contains(err.Error(), "refused") {
+		t.Errorf("message = %q", err.Error())
+	}
+	if got := redact(strings.Repeat("é", maxStderr)); len(got) > maxStderr+len(" [cut]") || !strings.HasSuffix(got, " [cut]") {
+		t.Errorf("cut: %d bytes", len(got))
 	}
 }

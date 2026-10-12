@@ -69,7 +69,23 @@ Claude Code asks once per directory whether to trust it (the folder-trust dialog
 
 ## What to expect
 
-- The hook exits 0 as soon as the thread's agent has the message, or when the message was ignored, already handled, or dropped because the thread's checkout is missing or Linear was unavailable (the thread gets one line saying so). fednet then marks the message delivered.
+- The hook exits 0 as soon as the thread's agent has the message, or when the message was ignored, already handled, or dropped because the thread's checkout is missing or the thread prompt is broken (the thread gets one line saying so). fednet then marks the message delivered. A Linear failure does not drop the message; see below.
 - A non-zero exit makes fednet retry with growing delays, then move the message to its dead letters and alert. The hook keeps its reservation of the `msg_id` across retries, so a retry delivers to the agent an earlier run started rather than starting another.
 - Every post runs `fednet client post` as the user fleet runs as, with only the environment fleet passes on (`PATH`, `HOME`, `USER`, `LOGNAME`, `TMPDIR`, `TERM`, `LANG`, `LC_*`, `XDG_*`, `HERDR_*`) and a 60 s deadline. That user must be able to connect to the socket. A thread agent's post that fails comes back to it with fednet's exit code and stderr; fleet does not retry it.
 - Thread agents live in the herdr workspace `threads` of the scope's session, one tab per thread, in the directory of the thread's channel. A thread keeps the channel and directory recorded at its first message, even if the channel is renamed later.
+
+## When Linear fails
+
+Every Linear step of a thread's session (creating or claiming the thread ticket, the `Session <n> started` comment, reading the earlier summaries) runs `atb linear`. A step atb fails is tried twice more, after 3 s and after 7 s; a call that timed out (atb's 60 s) or could not run is not tried again, so the hook stays well inside `-hook-timeout`, and neither is a claim that atb refuses because another agent holds the ticket (exit 3). When a step still fails, the agent starts anyway with the person's message, and its first message says what is missing under `## Note from fleet`. If the ticket was not yet claimed, the session runs without it, and fleet posts one line to the thread: `Linear is unavailable (<step>: <exit>); this session runs without its ticket.`, or for a held claim `The thread ticket <ticket> is claimed by someone else; this session runs without it.` When that session ends, `fleet thread end` writes its summary to the thread's ticket (creating the ticket when the thread has none) if Linear answers by then, and the next session claims the ticket as usual.
+
+The hook's stderr is not kept, so each failed try is also appended, as one JSON object per line, to `<scope>-linear.log` next to the scope's ledger, readable only by the user fleet runs as. To read the latest failures of the scope `main` on the machine:
+
+```
+jq -c . ~/.local/state/fleet/main-linear.log | tail -n 20
+```
+
+Each line has `time` (UTC), `thread`, `agent`, `step` (such as `atb linear claim ABC-12`, or `fleet` for an error of fleet's own around the step, with its message in `stderr`), `try`, `exit` (atb's exit code, -1 when it timed out or could not run), `class`, `stderr` (atb's, cut to 2000 bytes, with anything shaped like a Linear key or a `Bearer` value, and the value of `LINEAR_API_KEY`, replaced by `[redacted]`) and `outcome` (`retried`, `gave up` or `held`). fleet never truncates or rotates the file. The redaction goes by shape, so read the file before you paste it anywhere.
+
+## Main checkouts follow origin
+
+Before a thread agent starts in its channel's checkout, and before a lead starts in its repo's checkout (or, for a cross-repo job, in the initiative's), fleet runs `git fetch origin` there and, when the checkout is on origin/HEAD's branch, has no change to a tracked file and is only behind, `git merge --ff-only`. A checkout with local changes, on another branch, ahead or diverged, or whose fetch fails (60 s at most), is left as it is; the start goes on, and the agent's first message says why under `## Note from fleet`. The fetch runs as the user fleet runs as, with the hook's environment, so a remote that needs credentials needs them to work without a prompt (`GIT_TERMINAL_PROMPT=0` is set).

@@ -60,12 +60,20 @@ const (
 		"new thread gets a thread ticket (label `thread`, no project, description with the " +
 		"channel, thread and first message) claimed for the agent; a known thread gets its " +
 		"ticket claimed again, a `Session <n> started` comment, and its earlier session " +
-		"summaries. If a Linear step fails, no agent is started, the message is dropped, one " +
-		"line saying Linear is unavailable is posted to the thread (`fednet client post`) and " +
-		"the exit is 0; when that line cannot be posted (no socket configured, or the post " +
-		"fails), the exit is 5 and the message is kept for fednet's retry. The agent's first " +
-		"message is the built-in thread prompt, the channel context, the summaries and the " +
-		"message. A run killed after the agent started leaves its row `starting`: the retry " +
+		"summaries. A Linear step atb fails is tried twice more, after 3 s and 7 s (not a " +
+		"call that timed out, nor a claim another agent holds, atb's exit 3); each failed try " +
+		"is logged with atb's exit code and its stderr, credentials redacted, as one JSON " +
+		"line in $XDG_STATE_HOME/fleet/<scope>-linear.log. When a step still fails, the " +
+		"steps after it are skipped and the agent starts anyway: before the ticket is " +
+		"claimed, the session runs without it (FLEET_ISSUE empty), the thread is told in one " +
+		"line (`fednet client post`, as far as it can) and `fleet thread end` or the next " +
+		"session catches up; after, it keeps the ticket. Either way its first message says " +
+		"what is missing and the message is delivered. Before the start, the thread's " +
+		"checkout is fetched from origin and fast-forwarded when it is on origin/HEAD's " +
+		"branch, clean and only behind; otherwise it is left and the first message says why. " +
+		"The agent's first " +
+		"message is the built-in thread prompt, the channel context, the summaries, fleet's " +
+		"notes and the message. A run killed after the agent started leaves its row `starting`: the retry " +
 		"finds the agent, gets it to its input box and delivers that first message in full. " +
 		"A live row whose agent is gone from herdr is ended (the session ended abnormally) " +
 		"and a new agent started.\n\n" +
@@ -270,9 +278,9 @@ func inboxLedger(scope, thread, mapping string) (*sql.DB, error) {
 
 // route delivers the message to the thread's live agent, or starts one.
 // exit.Ok means the agent has the message, or (`dropped`) that no agent
-// was started because the thread's checkout is not on this machine,
-// Linear is unavailable or the thread prompt is broken, and the thread
-// was told.
+// was started because the thread's checkout is not on this machine or the
+// thread prompt is broken, and the thread was told. A Linear failure
+// starts the agent all the same, without what Linear did not do.
 // Shared with `ask-human` and the job's conclusion, which reach the
 // job's home thread the same way.
 func route(h *herdr.Herdr, conn *sql.DB, scope string, cfg *config.Scope, msg inboundMessage) (code exit.Code, dropped bool, err error) {
@@ -332,8 +340,11 @@ func startThread(h *herdr.Herdr, conn *sql.DB, scope string, cfg *config.Scope, 
 		if !errors.As(err, &failure) || failure.Code != exit.Environment {
 			return 0, false, err
 		}
-		return exit.Ok, true, s.linearUnavailable(err)
+		if err := s.withoutLinear(err); err != nil {
+			return 0, false, err
+		}
 	}
+	s.checkoutNote = syncCheckout(s.cwd)
 	code, err = s.start()
 	return code, false, err
 }
