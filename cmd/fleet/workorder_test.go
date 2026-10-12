@@ -359,6 +359,9 @@ func TestJobStartCreatesTheParentClaimsItAndMakesTheWorkOrderFirst(t *testing.T)
 	for _, want := range []string{"agent\nprompt\nitem-2-lead\n[FROM: thread-1]\nYou are a lead run by fleet: you run the job item-2 " +
 		"(scope " + scope + ") for the people in its home thread. The job is single-repo: its repo is example-dataset",
 		"FLEET_ISSUE=EX-12 (your work order, https://linear.example.test/EX-12). The job's parent issue is EX-11;",
+		// The checkout is no git repository here, so fleet could not update it.
+		"\n## Note from fleet\n\nThe checkout " + checkout + " was not updated from origin before you started: " +
+			"`git fetch origin` failed (exit 128).",
 		"\n## Latest message from a person in the home thread\n\nfleet has no message from a person recorded for this " +
 			"job's home thread; the task below is all there is.\n\n## Your task\n\nWork order: https://linear.example.test/EX-12\n\n# Import the B table\nall rows\n\n--wait\n"} {
 		if !strings.Contains(string(argv), want) {

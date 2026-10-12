@@ -6,6 +6,8 @@ package main
 
 import (
 	"database/sql"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -76,13 +78,22 @@ esac
 
 // threadAtb is a fake atb: every call logged; `create` prints TH-5;
 // `query` prints the comments of a ticket, two of them session summaries;
-// the subcommand named by failOn exits 4.
+// the subcommand named by failOn exits 1, then 4. While
+// <dir>/atb-fails-<subcommand> holds `<n> <code>`, that subcommand exits
+// <code> the next n times, printing the key on stderr.
 func threadAtb(failOn string) string {
 	return `#!/bin/sh
 dir="$(dirname "$0")/.."
 key=unset
 [ -n "$LINEAR_API_KEY" ] && key=set
 echo "atb $* key=$key" >> "$dir/calls"
+if [ -e "$dir/atb-fails-$2" ]; then
+  read -r n code < "$dir/atb-fails-$2"
+  if [ "$n" -gt 0 ]; then
+    echo "$((n - 1)) $code" > "$dir/atb-fails-$2"
+    echo "error: Linear unreachable (Authorization: Bearer $LINEAR_API_KEY)" >&2; exit "$code"
+  fi
+fi
 if [ "$2" = "` + failOn + `" ]; then
   # The first failure is atb's own (exit 1); after it the issue has no
   # holder, so the retry is exit 4, as atb 0.2.3 answers.
@@ -428,31 +439,234 @@ func TestInboxReopensAKnownThreadWithItsSummariesWhenTheAgentIsGone(t *testing.T
 	}
 }
 
-func TestInboxDropsTheMessageAndTellsTheThreadWhenLinearIsUnavailable(t *testing.T) {
-	w := threadWorld(t, "create")
+// linearLog is the scope main's Linear log, one entry per line.
+func linearLog(w *world) []map[string]any {
+	w.t.Helper()
+	data, _ := os.ReadFile(filepath.Join(w.dir, "home", ".local", "state", "fleet", "main-linear.log"))
+	var entries []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		if line == "" {
+			continue
+		}
+		var e map[string]any
+		if err := json.Unmarshal([]byte(line), &e); err != nil {
+			w.t.Fatalf("log line %q: %v", line, err)
+		}
+		entries = append(entries, e)
+	}
+	return entries
+}
+
+// failAtb makes the fake atb's `sub` exit `code` the next n times.
+func failAtb(w *world, sub string, n, code int) {
+	w.t.Helper()
+	if err := os.WriteFile(filepath.Join(w.dir, "atb-fails-"+sub), []byte(fmt.Sprintf("%d %d\n", n, code)), 0o644); err != nil {
+		w.t.Fatal(err)
+	}
+}
+
+func TestInboxStartsTheAgentWithoutItsTicketWhenLinearStaysDown(t *testing.T) {
+	w := threadWorld(t, "")
+	failAtb(w, "create", 99, 1)
 	out := w.inbox(w.event("m1", "hello", ""))
-	if out.code != 0 || !strings.Contains(out.stderr, "Linear is unavailable") {
+	if out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	calls := w.calls()
+	if n := strings.Count(calls, "atb linear create --"); n != 3 || strings.Contains(calls, "atb linear claim") {
+		t.Errorf("create tried %d times, want 3, and no claim: %q", n, calls)
+	}
+	line := "Linear is unavailable (atb linear create: exit 1); this session runs without its ticket."
+	if !strings.Contains(calls, "fednet client post -socket /run/fednet.sock -thread "+threadKey+" -- "+line) ||
+		!strings.Contains(calls, "herdr agent start") {
+		t.Errorf("calls = %q", calls)
+	}
+	prompt := w.file("argv")
+	for _, want := range []string{"FLEET_ISSUE= (empty: this session runs without its thread ticket",
+		"## Note from fleet\n\nLinear was unavailable when this session started (atb linear create: exit 1)",
+		"## The message\n\nMessage in thread " + threadKey} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt = %q, want %q in it", prompt, want)
+		}
+	}
+	if got := threadAgentRow(w); got != " active" {
+		t.Errorf("row = %q, want no issue, active", got)
+	}
+	if got := threadRow(w); got != " s " {
+		t.Errorf("thread row = %q, want no ticket and one session", got)
+	}
+	if got := inboxRow(w, "m1"); got != "delivered" {
+		t.Errorf("inbox row = %q", got)
+	}
+	log := linearLog(w)
+	var outcomes []string
+	for _, e := range log {
+		outcomes = append(outcomes, fmt.Sprint(e["outcome"]))
+	}
+	if strings.Join(outcomes, " ") != "retried retried gave up" {
+		t.Fatalf("log = %v", log)
+	}
+	e := log[0]
+	if e["step"] != "atb linear create" || e["exit"] != 1.0 || e["thread"] != threadKey ||
+		e["agent"] != "thread-c0123-1700000000-123" || e["stderr"] != "error: Linear unreachable (Authorization: Bearer [redacted])" {
+		t.Errorf("log entry = %v", e)
+	}
+	if data, _ := os.ReadFile(filepath.Join(w.dir, "home", ".local", "state", "fleet", "main-linear.log")); strings.Contains(string(data), "0xK3Y") {
+		t.Errorf("the key is in the log: %q", data)
+	}
+
+	// Linear is back at the end: the summary goes to a ticket created for
+	// the thread, which is not claimed, so nothing is released.
+	_ = os.Remove(filepath.Join(w.dir, "atb-fails-create"))
+	if err := os.WriteFile(filepath.Join(w.dir, "has-thread-c0123-1700000000-123"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.Remove(filepath.Join(w.dir, "calls"))
+	summary := task(w, "summary.md", "Answered without a ticket.\n")
+	out = w.asThreadAgent("", "thread", "end", "--summary-file", summary)
+	if out.code != 0 || !strings.Contains(out.stdout, "its summary is now on TH-5") {
 		t.Fatalf("%+v", out)
 	}
 	got := strings.Split(strings.TrimSpace(w.calls()), "\n")
-	if len(got) != 3 || got[0] != "herdr status server" || !strings.HasPrefix(got[1], "atb linear create") ||
-		got[2] != "fednet client post -socket /run/fednet.sock -thread "+threadKey+" -- Linear is unavailable right now, "+
-			"so no agent was started for this thread; please try again later." {
-		t.Errorf("calls = %q", got)
+	for i := range got {
+		got[i] = strings.SplitN(got[i], " --description-file", 2)[0]
+		got[i] = strings.SplitN(got[i], " --body-file", 2)[0]
 	}
-	if got := threadAgentRow(w); got != " ended" {
-		t.Errorf("row = %q, want ended", got)
+	want := []string{"atb linear create --team TH --label thread --title hello", "atb linear comment TH-5",
+		"fednet client post -socket /run/fednet.sock -thread " + threadKey + " -footer -- 会话已结束 · [TH-5](https://linear.example.test/TH-5)",
+		"herdr pane get", "herdr tab close", "herdr tab get"}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("calls = %q, want %q", got, want)
 	}
-	if got, want := threadRow(w), " "; !strings.HasPrefix(got, want) || strings.Contains(got, "s") {
-		t.Errorf("thread row = %q, want no ticket and no session", got)
+	if got := w.file("comment-TH-5"); got != "Session 1 ended\n\nAnswered without a ticket.\n" {
+		t.Errorf("comment = %q", got)
 	}
-	if got := inboxRow(w, "m1"); got != "dropped" {
-		t.Errorf("inbox row = %q", got)
+	if got := threadRow(w); got != "TH-5 s " {
+		t.Errorf("thread row = %q, want the new ticket", got)
 	}
-	// Dropped stays dropped on a rerun.
+
+	// The next session claims it.
 	_ = os.Remove(filepath.Join(w.dir, "calls"))
-	if out := w.inbox(w.event("m1", "hello", "")); out.code != 0 || w.calls() != "" {
-		t.Errorf("rerun: %+v, calls %q", out, w.calls())
+	_ = os.Remove(filepath.Join(w.dir, "has-thread-c0123-1700000000-123"))
+	if out := w.inbox(w.event("m2", "again", "")); out.code != 0 || !strings.Contains(w.calls(), "atb linear claim TH-5") {
+		t.Errorf("next session: %+v, calls %q", out, w.calls())
+	}
+	if got := threadAgentRow(w); got != "TH-5 active" {
+		t.Errorf("row = %q", got)
+	}
+}
+
+func TestASummaryLinearDidNotTakeIsWrittenByTheNextSession(t *testing.T) {
+	w := threadWorld(t, "")
+	failAtb(w, "create", 99, 1)
+	if out := w.inbox(w.event("m1", "hello", "")); out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	// Linear still down at the end: the ending goes on, the summary is kept.
+	if err := os.WriteFile(filepath.Join(w.dir, "has-thread-c0123-1700000000-123"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	summary := task(w, "summary.md", "Answered while Linear was down. 0xKEPT\n")
+	out := w.asThreadAgent("", "thread", "end", "--summary-file", summary)
+	if out.code != 0 || !strings.Contains(out.stdout, "it is kept, and the next session that reaches Linear writes it") {
+		t.Fatalf("%+v", out)
+	}
+	kept := filepath.Join(w.dir, "home", ".local", "state", "fleet", "main-summaries", "c0123-1700000000-123", "000001.md")
+	if got, _ := os.ReadFile(kept); string(got) != "Session 1 ended\n\nAnswered while Linear was down. 0xKEPT\n" {
+		t.Fatalf("kept = %q", got)
+	}
+	// Linear back: the next session creates the ticket, claims it, writes
+	// the kept summary before its own comment, and reads it back.
+	_ = os.Remove(filepath.Join(w.dir, "atb-fails-create"))
+	_ = os.Remove(filepath.Join(w.dir, "has-thread-c0123-1700000000-123"))
+	_ = os.Remove(filepath.Join(w.dir, "calls"))
+	if out := w.inbox(w.event("m2", "again", "")); out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	var atbCalls []string
+	for _, c := range strings.Split(strings.TrimSpace(w.calls()), "\n") {
+		if strings.HasPrefix(c, "atb ") {
+			atbCalls = append(atbCalls, strings.Join(strings.Fields(c)[:4], " "))
+		}
+	}
+	if got := strings.Join(atbCalls, "|"); got != "atb linear create --team|atb linear claim TH-5|atb linear comment TH-5|atb linear comment TH-5|atb linear query {" {
+		t.Errorf("atb calls = %q", got)
+	}
+	if !strings.Contains(w.calls(), "--body-file "+kept) {
+		t.Errorf("the kept file was not the first comment: %q", w.calls())
+	}
+	if fileExists(kept) {
+		t.Errorf("%s is still kept after it was written", kept)
+	}
+	if got := w.file("comment-TH-5"); !strings.HasPrefix(got, "Session 2 started") {
+		t.Errorf("last comment = %q, want this session's own after the kept one", got)
+	}
+}
+
+func TestInboxRetriesAFailedLinearStepAndGoesOn(t *testing.T) {
+	w := threadWorld(t, "")
+	failAtb(w, "claim", 1, 1)
+	out := w.inbox(w.event("m1", "hello", ""))
+	if out.code != 0 || strings.Contains(w.calls(), "fednet client post") {
+		t.Fatalf("%+v, calls %q", out, w.calls())
+	}
+	if n := strings.Count(w.calls(), "atb linear claim TH-5"); n != 2 {
+		t.Errorf("claim tried %d times, want 2", n)
+	}
+	if got := threadAgentRow(w); got != "TH-5 active" {
+		t.Errorf("row = %q", got)
+	}
+	if prompt := w.file("argv"); strings.Contains(prompt, "## Note from fleet\n\nLinear") ||
+		!strings.Contains(prompt, "FLEET_ISSUE=TH-5 (your thread ticket") {
+		t.Errorf("prompt = %q", prompt)
+	}
+	if log := linearLog(w); len(log) != 1 || log[0]["outcome"] != "retried" || log[0]["step"] != "atb linear claim TH-5" {
+		t.Errorf("log = %v", log)
+	}
+}
+
+func TestInboxStartsWithoutTheTicketAnotherAgentHolds(t *testing.T) {
+	w := threadWorld(t, "")
+	failAtb(w, "claim", 99, 3)
+	out := w.inbox(w.event("m1", "hello", ""))
+	if out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	calls := w.calls()
+	if n := strings.Count(calls, "atb linear claim"); n != 1 {
+		t.Errorf("claim tried %d times, want 1: a held claim is not retried", n)
+	}
+	if !strings.Contains(calls, "-- The thread ticket TH-5 is claimed by someone else; this session runs without it.") {
+		t.Errorf("calls = %q", calls)
+	}
+	if !strings.Contains(w.file("argv"), "## Note from fleet\n\nAnother agent holds the claim on the thread ticket TH-5") {
+		t.Errorf("prompt = %q", w.file("argv"))
+	}
+	if got := threadAgentRow(w) + "|" + threadRow(w); got != " active|TH-5 s " {
+		t.Errorf("rows = %q, want the agent without the ticket, the thread keeping it", got)
+	}
+	if log := linearLog(w); len(log) != 1 || log[0]["outcome"] != "held" || log[0]["exit"] != 3.0 {
+		t.Errorf("log = %v", log)
+	}
+}
+
+func TestInboxKeepsTheTicketWhenLinearFailsAfterTheClaim(t *testing.T) {
+	w := threadWorld(t, "")
+	if out := w.inbox(w.event("m1", "hello", "")); out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	w.exec("UPDATE agents SET state = 'ended'")
+	failAtb(w, "comment", 99, 1)
+	_ = os.Remove(filepath.Join(w.dir, "calls"))
+	out := w.inbox(w.event("m2", "again", ""))
+	if out.code != 0 || strings.Contains(w.calls(), "fednet client post") || strings.Contains(w.calls(), "atb linear query") {
+		t.Fatalf("%+v, calls %q", out, w.calls())
+	}
+	if !strings.Contains(w.file("argv"), "## Note from fleet\n\nLinear failed after your ticket was claimed (atb linear comment TH-5: exit 1)") {
+		t.Errorf("prompt = %q", w.file("argv"))
+	}
+	if got := threadAgentRow(w); got != "TH-5 active" {
+		t.Errorf("row = %q", got)
 	}
 }
 
@@ -1015,40 +1229,21 @@ func TestInboxFinishesAStartItsEarlierRunWasKilledIn(t *testing.T) {
 	}
 }
 
-func TestInboxKeepsTheMessageWhenTheOutageNoticeCannotBePosted(t *testing.T) {
-	w := threadWorld(t, "create")
-	if err := os.WriteFile(filepath.Join(w.dir, "fednet-down"), nil, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	out := w.inbox(w.event("m1", "hello", ""))
-	if out.code != 5 || !strings.Contains(out.stderr, "the thread was not told") {
-		t.Fatalf("%+v", out)
-	}
-	if got := inboxRow(w, "m1"); got != "reserved" {
-		t.Errorf("inbox row = %q, want reserved", got)
-	}
-	if got := threadAgentRow(w); got != " ended" {
-		t.Errorf("row = %q, want ended", got)
-	}
-	// Linear still down, the post works again: dropped now.
-	_ = os.Remove(filepath.Join(w.dir, "fednet-down"))
-	_ = os.Remove(filepath.Join(w.dir, "calls"))
-	out = w.inbox(w.event("m1", "hello", ""))
-	if out.code != 0 || !strings.Contains(w.calls(), "fednet client post") {
-		t.Errorf("retry: %+v, calls %q", out, w.calls())
-	}
-	if got := inboxRow(w, "m1"); got != "dropped" {
-		t.Errorf("inbox row = %q, want dropped", got)
-	}
-	// No socket configured: nothing to post with, kept as well.
-	w2 := threadWorld(t, "create")
-	w2.scopeConfig("main", `{"linear": {"team": "TH"}}`)
-	out = w2.inbox(w2.event("m1", "hello", ""))
-	if out.code != 5 || !strings.Contains(out.stderr, "fednet.socket is not configured") {
-		t.Errorf("no socket: %+v", out)
-	}
-	if got := inboxRow(w2, "m1"); got != "reserved" {
-		t.Errorf("inbox row = %q, want reserved", got)
+func TestInboxStartsTheAgentWhenTheOutageNoticeCannotBePosted(t *testing.T) {
+	for name, setup := range map[string]func(w *world){
+		"post fails": func(w *world) { _ = os.WriteFile(filepath.Join(w.dir, "fednet-down"), nil, 0o644) },
+		"no socket":  func(w *world) { w.scopeConfig("main", `{"linear": {"team": "TH"}}`) },
+	} {
+		w := threadWorld(t, "")
+		failAtb(w, "create", 99, 1)
+		setup(w)
+		out := w.inbox(w.event("m1", "hello", ""))
+		if out.code != 0 || !strings.Contains(out.stderr, "the thread was not told") {
+			t.Fatalf("%s: %+v", name, out)
+		}
+		if got := inboxRow(w, "m1") + " " + threadAgentRow(w); got != "delivered  active" {
+			t.Errorf("%s: rows = %q", name, got)
+		}
 	}
 }
 

@@ -248,8 +248,9 @@ func TestAskHumanRefusalsAndLinearDown(t *testing.T) {
 		t.Errorf("indented again: %+v, calls %q", out, w.calls())
 	}
 
-	// A lead whose home thread needs a new agent while Linear is down:
-	// exit 5, the question posted and pending, no agent started.
+	// A lead whose home thread needs a new agent while Linear is down: the
+	// agent starts without its ticket and gets the question, the thread is
+	// told.
 	w2 := threadWorld(t, "claim")
 	openJobWithHomeThread(w2, true)
 	conn := w2.defaultLedger()
@@ -260,12 +261,17 @@ func TestAskHumanRefusalsAndLinearDown(t *testing.T) {
 	}
 	conn.Close()
 	out = w2.askHuman("--file", task(w2, "q.md", "Which month?\n"))
-	if out.code != 5 || !strings.Contains(out.stderr, "Linear is unavailable") ||
-		!strings.Contains(out.stderr, "the question is posted, run ask-human again to deliver it") {
+	if out.code != 0 {
 		t.Errorf("Linear down: %+v", out)
 	}
-	if strings.Count(w2.calls(), "fednet client post") != 1 || strings.Contains(w2.calls(), "agent start") {
-		t.Errorf("calls = %q", w2.calls())
+	calls := w2.calls()
+	if !strings.Contains(calls, "-- Which month?") || !strings.Contains(calls, "agent start") ||
+		!strings.Contains(calls, "-- Linear is unavailable (atb linear claim TH-5: exit 4); this session runs without its ticket.") {
+		t.Errorf("calls = %q", calls)
+	}
+	if prompt := w2.file("argv"); !strings.Contains(prompt, "FLEET_ISSUE= (empty: this session runs without its thread ticket") ||
+		!strings.Contains(prompt, "Question from item-1-lead") {
+		t.Errorf("prompt = %q", prompt)
 	}
 	if got := questions(w2); got != "item-1 "+threadKey+" item-1-lead plain pending" {
 		t.Errorf("questions = %q", got)

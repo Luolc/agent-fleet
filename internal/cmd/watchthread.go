@@ -17,6 +17,7 @@ import (
 	"github.com/Luolc/agent-fleet/internal/db"
 	"github.com/Luolc/agent-fleet/internal/exit"
 	"github.com/Luolc/agent-fleet/internal/fednet"
+	"github.com/Luolc/agent-fleet/internal/identity"
 )
 
 // reclaimGrace is how long a thread agent asked to end its session has
@@ -713,7 +714,10 @@ func (r *watchRun) endReclaimed(t *watchedThread) error {
 	if err != nil {
 		return err
 	}
-	if err := e.linearSteps(name, e.ticket, "The session was reclaimed by fleet watch; the agent left no summary."); err != nil {
+	// The row's issue, not the thread's ticket: a session that started
+	// without its ticket has nothing to release, and no summary to keep.
+	me := &identity.Identity{Agent: name, Scope: r.scope, Issue: e.issue}
+	if err := e.linearSteps(me, "", "The session was reclaimed by fleet watch; the agent left no summary."); err != nil {
 		return err
 	}
 	if err := r.closeSession(e, name, closingLine(reclaimedLine, e.ticket, e.ticketURL)); err != nil {

@@ -6,6 +6,9 @@ package atb
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"os"
+	"os/exec"
 	"regexp"
 	"strings"
 	"time"
@@ -232,20 +235,86 @@ func Release(issue, agent string, abandon bool) error {
 	return err
 }
 
-// run runs atb with `argv`; `op` names the step in errors. Any non-zero
-// exit is an environment failure naming the step and atb's status. Its
-// stdout is returned for the caller to pick from and its stderr dropped,
-// and neither ever goes into an error: atb holds the key, so what it
-// prints may carry it.
+// Failure is atb not succeeding, for a caller an exit 5 like any other
+// (it unwraps to the *exit.Failure), with what a person needs later to
+// find out why kept apart from the message: atb's exit code and its
+// stderr, redacted. Neither goes into an error message or a thread.
+type Failure struct {
+	*exit.Failure
+	// Op names the step, as the message does.
+	Op string
+	// ExitCode is atb's exit code, -1 when it did not exit by itself
+	// (timed out, killed, or could not be run).
+	ExitCode int
+	// Class is the failure in a few words: `exit 1`, `timed out`, `killed
+	// by a signal`, `could not run`.
+	Class string
+	// Stderr is what atb printed on stderr, redacted (redact) and cut to
+	// maxStderr bytes.
+	Stderr string
+}
+
+// Unwrap gives the exit failure, so `errors.As` finds it.
+func (f *Failure) Unwrap() error { return f.Failure }
+
+// Held is whether `err` is atb refusing a claim because another agent
+// still holds the issue (exit 3).
+func Held(err error) bool {
+	var failure *Failure
+	return errors.As(err, &failure) && failure.ExitCode == 3
+}
+
+// maxStderr is how much of atb's stderr a Failure keeps.
+const maxStderr = 2000
+
+// linearToken and bearerToken are what a Linear credential looks like in
+// text: a personal API key or OAuth token, an Authorization header's value.
+var (
+	linearToken = regexp.MustCompile(`lin_(?:api|oauth)_[A-Za-z0-9_]+`)
+	bearerToken = regexp.MustCompile(`(?i)(bearer)\s+[A-Za-z0-9._~+/=-]+`)
+)
+
+// redact is atb's stderr without anything shaped like a Linear credential
+// or equal to LINEAR_API_KEY, trimmed and cut to maxStderr bytes. A key
+// from LINEAR_API_KEY_CMD is not in fleet's environment, so it is caught
+// only by its shape.
+func redact(stderr string) string {
+	if key := os.Getenv("LINEAR_API_KEY"); len(key) >= 8 {
+		stderr = strings.ReplaceAll(stderr, key, "[redacted]")
+	}
+	stderr = linearToken.ReplaceAllString(stderr, "[redacted]")
+	stderr = strings.TrimSpace(bearerToken.ReplaceAllString(stderr, "$1 [redacted]"))
+	if len(stderr) > maxStderr {
+		stderr = strings.ToValidUTF8(stderr[:maxStderr], "") + " [cut]"
+	}
+	return stderr
+}
+
+// run runs atb with `argv`; `op` names the step in errors. Any failure is
+// a *Failure, exit 5, naming the step and atb's status. Its stdout is
+// returned for the caller to pick from; neither stdout nor stderr ever
+// goes into an error message: atb holds the key, so what it prints may
+// carry it. Only the redacted stderr is kept, on the Failure.
 func run(op string, argv ...string) ([]byte, error) {
-	out, _, err := herdr.Exec(op, envNames, "atb", argv...)
+	out, stderr, err := herdr.Exec(op, envNames, "atb", argv...)
 	var failure *exit.Failure
 	if errors.As(err, &failure) {
-		return nil, failure
+		class := "could not run"
+		if strings.Contains(failure.Message, "timed out") {
+			class = "timed out"
+		}
+		return nil, &Failure{Failure: failure, Op: op, ExitCode: -1, Class: class}
 	}
 	if err != nil {
-		return nil, exit.Environmentf("%s failed (%s); its output is not shown, run it yourself to see why",
-			op, herdr.Status(err))
+		f := &Failure{Op: op, ExitCode: -1, Class: "killed by a signal", Stderr: redact(string(stderr)),
+			Failure: exit.Environmentf("%s failed (%s); its output is not shown, run it yourself to see why",
+				op, herdr.Status(err))}
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() >= 0 {
+			f.ExitCode = exitErr.ExitCode()
+			f.Class = fmt.Sprintf("exit %d", f.ExitCode)
+		}
+		return nil, f
 	}
 	return out, nil
 }

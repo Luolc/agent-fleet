@@ -55,8 +55,9 @@ const (
 		"was started by a caller without FLEET_THREAD), fleet knows neither channel to open " +
 		"a single-repo job's home thread in, or the scope has no fednet socket; " +
 		"2/3/4 as `send` for the delivery; 3 when a new thread agent stops at an unknown " +
-		"screen; 5 when opening the thread or the post fails, or herdr, atb or the database fails. Linear " +
-		"unavailable while a thread agent had to be started is exit 5 too. After a failure " +
+		"screen; 5 when opening the thread or the post fails, or herdr, atb or the database fails. A " +
+		"thread agent that has to be started while Linear is unavailable starts without its " +
+		"ticket, as `fleet inbox` starts one. After a failure " +
 		"the question stays pending; ask again to finish."
 )
 
@@ -308,16 +309,15 @@ func pendingQuestion(conn *sql.DB, job, thread, by, text string) (int64, error) 
 }
 
 // toThread takes an agent's message to a thread as `route` does, with a
-// dropped message (Linear unavailable) an environment failure: unlike
-// fednet, the caller gets nothing from a drop.
+// dropped message an environment failure: unlike fednet, the caller gets
+// nothing from a drop.
 func toThread(h *herdr.Herdr, conn *sql.DB, scope string, cfg *config.Scope, msg inboundMessage) (exit.Code, error) {
 	code, dropped, err := route(h, conn, scope, cfg, msg)
 	if err != nil || code != exit.Ok {
 		return code, err
 	}
 	if dropped {
-		return 0, exit.Environmentf("Linear is unavailable, so no thread agent could be started for %s; try again later",
-			msg.Thread)
+		return 0, exit.Environmentf("no thread agent could be started for %s; try again later", msg.Thread)
 	}
 	return exit.Ok, nil
 }
