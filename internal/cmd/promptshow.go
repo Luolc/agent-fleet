@@ -28,8 +28,8 @@ const (
 	PromptShowAbout     = "Show the prompts as the scope's config makes them, one or all (read-only)"
 	PromptShowLongAbout = "Show the prompts fleet starts agents with, as the scope's config makes them (read-only).\n\n" +
 		"Without NAME: for each of thread, lead, worker, revisit, unblock and screen_guidance, its " +
-		"parts (the built-in text or the file replacing it, the file following it, and fleet's safety " +
-		"default after a replaced thread, lead or worker prompt) and, for a replacement, whether its " +
+		"parts (the built-in text or the file replacing it, and the file following it) and, for a " +
+		"replacement, whether its " +
 		"`base` still is the built-in text. When it is not, the replacement is behind, and two commands " +
 		"follow: one shows what changed in the built-in text, the other records the new base once the " +
 		"replacement has taken the change in. A replacement without a base cannot be checked. A note " +
@@ -160,14 +160,11 @@ func showAll(stdout io.Writer, sc *config.Scope, path string) (exit.Code, error)
 	return exit.Ok, nil
 }
 
-// partLabel says where a part comes from: `built-in`, `safety default`, or
-// its config key and file.
+// partLabel says where a part comes from: `built-in`, or its config key
+// and file.
 func partLabel(sc *config.Scope, part promptPart) string {
-	switch part.Source {
-	case "built-in":
+	if part.Source == "built-in" {
 		return "built-in"
-	case "safety":
-		return "safety default"
 	}
 	return fmt.Sprintf("%s (%s)", part.Source, sc.Tilde(part.Path))
 }

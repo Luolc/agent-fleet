@@ -141,7 +141,7 @@ func TestOneTextShowsEachPartUnderItsSourceWithOnlyTheModelSlotsFilled(t *testin
 	thread := "thread"
 	got := show(PromptShowArgs{Name: &thread})
 	want := "==> prompts.thread.replace (~/.config/fleet/t.md) <==\nStart leads with example-large at low in {{cwd}}.\n\n" +
-		"==> prompts.thread.append (~/.config/fleet/a.md) <==\nOne more rule for {{agent}}.\n\n==> safety default <==\n" + safetyPrompt
+		"==> prompts.thread.append (~/.config/fleet/a.md) <==\nOne more rule for {{agent}}.\n"
 	if got.err != nil || got.stdout != want {
 		t.Errorf("err %v, stdout:\n%s", got.err, got.stdout)
 	}

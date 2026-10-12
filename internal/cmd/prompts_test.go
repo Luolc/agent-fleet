@@ -174,7 +174,7 @@ func TestAReplacementMayUseEverySlotOfItsTextAndAllAreFilled(t *testing.T) {
 	}
 }
 
-func TestATextIsTheReplacementThenTheAdditionThenTheSafetyDefault(t *testing.T) {
+func TestATextIsTheReplacementThenTheAddition(t *testing.T) {
 	files := map[string]string{"r.md": "Replaced, {{agent}}.\n", "a.md": "Added, {{job}}.", "base.md": "the old built-in\n"}
 	cases := []struct {
 		name   string
@@ -182,9 +182,9 @@ func TestATextIsTheReplacementThenTheAdditionThenTheSafetyDefault(t *testing.T) 
 		want   string
 	}{
 		{"lead", map[string]string{"append": "a.md"}, golden(t, "lead") + "\nAdded, wire.\n"},
-		{"lead", map[string]string{"replace": "r.md", "base": "base.md"}, "Replaced, wire-lead.\n\n" + safetyPrompt},
-		{"lead", map[string]string{"replace": "r.md", "append": "a.md"}, "Replaced, wire-lead.\n\nAdded, wire.\n\n" + safetyPrompt},
-		{"worker", map[string]string{"replace": "r.md"}, "Replaced, wire-a.\n\n" + safetyPrompt},
+		{"lead", map[string]string{"replace": "r.md", "base": "base.md"}, "Replaced, wire-lead.\n"},
+		{"lead", map[string]string{"replace": "r.md", "append": "a.md"}, "Replaced, wire-lead.\n\nAdded, wire.\n"},
+		{"worker", map[string]string{"replace": "r.md"}, "Replaced, wire-a.\n"},
 	}
 	for _, c := range cases {
 		sc := promptScope(t, map[string]map[string]string{c.name: c.fields}, "", files)
@@ -193,15 +193,8 @@ func TestATextIsTheReplacementThenTheAdditionThenTheSafetyDefault(t *testing.T) 
 		}
 	}
 	got := renders(t, promptScope(t, map[string]map[string]string{"thread": {"replace": "r.md"}}, "", files))["thread"]
-	if !strings.HasPrefix(got, "Replaced, thread-c1-1-0.\n\n"+safetyPrompt+"\n## The message\n") {
-		t.Errorf("thread: the safety default is not between the replacement and fleet's sections: %q", got)
-	}
-	// revisit agents and helpers never get it: they run no fleet commands.
-	for _, name := range []string{"revisit", "unblock"} {
-		got := renders(t, promptScope(t, map[string]map[string]string{name: {"replace": "r.md"}}, "", files))[name]
-		if strings.Contains(got, "## Safety") || !strings.HasPrefix(got, "Replaced, ") {
-			t.Errorf("%s replaced: %q", name, got)
-		}
+	if !strings.HasPrefix(got, "Replaced, thread-c1-1-0.\n\n## The message\n") {
+		t.Errorf("thread: fleet's sections do not follow the replacement: %q", got)
 	}
 }
 

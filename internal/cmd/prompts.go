@@ -1,14 +1,12 @@
 // fleet's built-in texts as the scope's config changes them
 // (docs/design.md): each text is the built-in one or the file replacing
-// it, then the file following it, then, for a replaced thread, lead or
-// worker prompt, fleet's safety default; its slots are filled when the
-// agent starts.
+// it, then the file following it; its slots are filled when the agent
+// starts.
 
 package cmd
 
 import (
 	"crypto/sha256"
-	_ "embed" // the safety default
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -23,12 +21,6 @@ import (
 	"github.com/Luolc/agent-fleet/internal/exit"
 )
 
-// safetyPrompt follows a replaced thread, lead or worker prompt, so no
-// replacement drops what needs a person's yes.
-//
-//go:embed safety_prompt.md
-var safetyPrompt string
-
 // slotPattern is a slot: lower-case letters and underscores in double
 // braces. Anything else in braces is text.
 var slotPattern = regexp.MustCompile(`\{\{([a-z_]+)\}\}`)
@@ -37,12 +29,11 @@ var slotPattern = regexp.MustCompile(`\{\{([a-z_]+)\}\}`)
 // leads and the lead prompt for workers; the three prompts all have them.
 var modelSlots = []string{"lead_model", "lead_effort", "worker_model", "worker_effort"}
 
-// promptSpec is what fleet knows of one text: the built-in text, its
-// slots, and whether a replacement is followed by the safety default.
+// promptSpec is what fleet knows of one text: the built-in text and its
+// slots.
 type promptSpec struct {
 	builtin string
 	slots   []string
-	safety  bool
 }
 
 // specOf is the spec of the text `name`, one of config.PromptNames.
@@ -52,24 +43,24 @@ func specOf(name string) promptSpec {
 	switch name {
 	case "thread":
 		return promptSpec{threadPrompt, append([]string{"scope", "agent", "mapping", "cwd", "rules", "xrepo", "checkouts",
-			"ticket", "ticket_note", "post", "progress"}, modelSlots...), true}
+			"ticket", "ticket_note", "post", "progress"}, modelSlots...)}
 	case "lead":
-		return promptSpec{leadPrompt, role, true}
+		return promptSpec{leadPrompt, role}
 	case "worker":
-		return promptSpec{workerPrompt, role, true}
+		return promptSpec{workerPrompt, role}
 	case "revisit":
-		return promptSpec{revisitPrompt, []string{"agent", "scope", "dir", "issue", "unchanged", "create", "ask", "again"}, false}
+		return promptSpec{revisitPrompt, []string{"agent", "scope", "dir", "issue", "unchanged", "create", "ask", "again"}}
 	case "unblock":
-		return promptSpec{unblockPrompt, []string{"agent", "scope", "dir", "blocked", "who", "cwd", "question_file", "ticket"}, false}
+		return promptSpec{unblockPrompt, []string{"agent", "scope", "dir", "blocked", "who", "cwd", "question_file", "ticket"}}
 	case "screen_guidance":
-		return promptSpec{screenGuidance, nil, false}
+		return promptSpec{screenGuidance, nil}
 	}
 	panic("no built-in text " + name)
 }
 
-// promptPart is one part of a text: fleet's own (Source `built-in` or
-// `safety`) or a file the scope's config names (Source its key, as
-// `prompts.lead.append`, and Path the file).
+// promptPart is one part of a text: fleet's own (Source `built-in`) or a
+// file the scope's config names (Source its key, as `prompts.lead.append`,
+// and Path the file).
 type promptPart struct {
 	Source string
 	Path   string
@@ -127,7 +118,7 @@ func brokenPrompt(key, path, content, format string, args ...any) *promptError {
 // unreadable or empty, or has a slot the text does not have, is a
 // promptError. The base is only read, to refuse it the same way.
 func loadPrompt(sc *config.Scope, name string) (*promptText, error) {
-	spec, conf := specOf(name), sc.Prompts[name]
+	conf := sc.Prompts[name]
 	p := builtinText(name)
 	replace, err := readPromptFile(sc, name, "replace", conf.Replace, true)
 	if err != nil {
@@ -145,9 +136,6 @@ func loadPrompt(sc *config.Scope, name string) (*promptText, error) {
 	}
 	if addition != nil {
 		p.Parts = append(p.Parts, *addition)
-	}
-	if replace != nil && spec.safety {
-		p.Parts = append(p.Parts, promptPart{Source: "safety", Text: safetyPrompt})
 	}
 	return p, nil
 }
