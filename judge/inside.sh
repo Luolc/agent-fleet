@@ -128,6 +128,15 @@ for suite in $suites; do
   case " $all " in *" $suite "*) ;; *) echo "unknown suite $suite; the suites are: $all" >&2; exit 2 ;; esac
 done
 
+# The judge uses the detection rules built into the pinned herdr. By default
+# a server fetches them from herdr.dev at start; with no cache in a fresh
+# container the fetch always counts as an update and resets every Claude
+# pane's detection, so a delivery made just then can see no working state
+# within herdr's 5 s and end with no clear signal (exit 2).
+herdr_state=/home/agent/.local/state/herdr
+mkdir -p /home/agent/.config/herdr
+printf '[update]\nmanifest_check = false\n' > /home/agent/.config/herdr/config.toml
+
 for session in fleet-$SCOPE fleet-main; do
   herdr --session "$session" server >"/home/agent/server-$session.log" 2>&1 &
   for _ in $(seq 1 100); do herdr --session "$session" status server >/dev/null 2>&1 && break; sleep 0.2; done
@@ -137,6 +146,9 @@ done
 for suite in $all; do
   case " $suites " in *" $suite "*) . "$here/$suite.sh" ;; esac
 done
+# herdr writes this file after every fetch of the rules, failed or not.
+check "herdr fetched no detection rules" absent \
+  "$([ -e "$herdr_state/agent-detection/status.toml" ] && echo present || echo absent)"
 for session in fleet-$SCOPE fleet-main; do herdr --session "$session" server stop >/dev/null; done
 echo "judge: $passed ok, $( [ "$fail" = 0 ] && echo "0 failed" || echo "some failed")"
 exit $fail
