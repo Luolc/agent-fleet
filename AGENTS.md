@@ -13,14 +13,16 @@ The long-term goal: fleet is a multi-agent framework that needs only herdr.
 Git, GitHub, Linear and Slack (through fednet) are optional, not prerequisites.
 
 - A new feature adds no coupling to them. The coupling already there comes out
-  over time: when a change touches such code anyway, move it toward the goal,
-  but do not rework code only to remove a dependency.
+  later, a step at a time; a change that touches such code moves it toward the
+  goal where it can.
 - Code-hosting workflow stays out of fleet: no `fleet merge`, no
   `fleet ci watch`. Merging and watching CI belong to the user's own workflow
-  or to tools outside fleet.
-- A change adds coupling when it adds a call to `git`, `gh`, `atb` or `fednet`,
-  or writes a step with these tools into a built-in prompt. Fixing a call that
-  is already there does not.
+  or to tools outside fleet. The merge and CI steps in the lead's built-in
+  prompt are coupling already there; do not extend them.
+- A change adds coupling when fleet needs one of them for it: a new call to
+  `git`, `gh`, `atb`, `fednet` or the services behind them, a new step with
+  them in a built-in prompt, or a feature that fails without them. Fixing a
+  call that is already there does not.
 
 ## Layout
 
