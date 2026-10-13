@@ -101,7 +101,8 @@ func dialogPart(screen string) string {
 
 // screenWorkers are the names of the workers for the stopped agent whose
 // row has `id`: the `unblock` watch's, the same for every worker of that
-// row so the ledger counts them, and the helper's of before the upgrade.
+// row so the ledger counts them, and the name its helpers had before the
+// upgrade.
 func screenWorkers(id int64) []string {
 	key := strconv.FormatInt(id, 10)
 	return []string{workerName(screenWatch, key), legacyHelperPrefix + key}
@@ -421,10 +422,10 @@ func (r *watchRun) promptBroken(err error, thread, what string) error {
 
 // helperIssue is the ticket an earlier worker of one of `names` opened,
 // "" when none did.
-func helperIssue(conn *sql.DB, names ...string) (string, error) {
+func helperIssue(conn *sql.DB, names []string) (string, error) {
 	var issue string
-	err := conn.QueryRow("SELECT issue FROM agents WHERE name IN (?1, ?2) AND issue != '' ORDER BY id DESC LIMIT 1",
-		names[0], names[len(names)-1]).Scan(&issue)
+	err := conn.QueryRow("SELECT issue FROM agents WHERE name IN (?"+strings.Repeat(", ?", len(names)-1)+
+		") AND issue != '' ORDER BY id DESC LIMIT 1", anys(names)...).Scan(&issue)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
@@ -443,7 +444,7 @@ func (u *workers) ticket(row stopRow, screen string) (string, error) {
 		return "", nil
 	}
 	names := screenWorkers(row.ID)
-	if issue, err := helperIssue(u.conn, names...); err != nil || issue != "" {
+	if issue, err := helperIssue(u.conn, names); err != nil || issue != "" {
 		return issue, err
 	}
 	if err := os.MkdirAll(u.dir, 0o755); err != nil {

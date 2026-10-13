@@ -178,7 +178,7 @@ func (w *workers) askFor(row stopRow, live map[string]stopRow, question string) 
 		}
 		text := fmt.Sprintf("%s (%s) is stopped at a screen that fleet's guidance does not cover, so its helper "+
 			"%s asks:\n\n%s", stopped.Name, stopped.who(), row.Name, question)
-		if issue, _ := helperIssue(w.conn, row.Name); issue != "" {
+		if issue, _ := helperIssue(w.conn, []string{row.Name}); issue != "" {
 			text += "\n\nTicket: " + issue
 		}
 		if err := w.ask(stopped, row.Name, text); err != nil {
