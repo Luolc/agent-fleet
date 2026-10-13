@@ -125,6 +125,17 @@ var threadPrompt string
 // characters one `-`, and cut with a hash when `thread-<slug>` would pass
 // herdr's 32 characters. Stable: the same key always gives the same slug.
 func ThreadSlug(key string) string {
+	slug := slugOf(key)
+	if len("thread-"+slug) > 32 {
+		sum := sha256.Sum256([]byte(key))
+		slug = strings.TrimRight(slug[:16], "-") + "-" + hex.EncodeToString(sum[:4])
+	}
+	return slug
+}
+
+// slugOf is `key` lower-cased, with each run of characters other than
+// [a-z0-9] as one `-`, none at either end; `x` when nothing is left.
+func slugOf(key string) string {
 	var b strings.Builder
 	dash := true
 	for _, c := range strings.ToLower(key) {
@@ -139,10 +150,6 @@ func ThreadSlug(key string) string {
 	slug := strings.TrimRight(b.String(), "-")
 	if slug == "" {
 		slug = "x"
-	}
-	if len("thread-"+slug) > 32 {
-		sum := sha256.Sum256([]byte(key))
-		slug = strings.TrimRight(slug[:16], "-") + "-" + hex.EncodeToString(sum[:4])
 	}
 	return slug
 }
@@ -288,9 +295,10 @@ type inboundMessage struct {
 	Conclusion bool
 	// Watch marks a notice from `fleet watch`, delivered as it is.
 	Watch bool
-	// Screen marks a question `watch` asks for a screen helper about an
-	// agent stopped at a screen: there is no agent to pass the answer to.
-	Screen bool
+	// Screen marks a question `watch` asks about an agent stopped at a
+	// screen, Worker one a watch worker asks: there is no agent to pass the
+	// answer to.
+	Screen, Worker bool
 }
 
 // channel is the channel part of the thread key `CHANNEL/TS`.
@@ -335,6 +343,11 @@ func (m inboundMessage) body() string {
 		return fmt.Sprintf("Question from %s for the people in thread %s about an agent stopped at a screen, already "+
 			"posted there by fleet. Nothing to pass on: once they answer, fleet's watch gives their answer to a new "+
 			"helper on its next run, or they deal with the screen themselves.\n\n%s\n", m.Question, m.Thread, m.Text)
+	}
+	if m.Worker {
+		return fmt.Sprintf("Question from %s for the people in thread %s, already posted there by fleet. Nothing to "+
+			"pass on: once they answer, fleet's watch starts a new worker with their answer on its next run.\n\n%s\n",
+			m.Question, m.Thread, m.Text)
 	}
 	if m.Question != "" {
 		return fmt.Sprintf("Question from %s for the people in thread %s, already posted there by fleet. %s; at the "+

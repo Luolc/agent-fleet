@@ -19,16 +19,22 @@ type Entry struct {
 	// Source is the built-in source (one of BuiltinSources), or "" for a
 	// command source.
 	Source string
-	// Command is the program and its arguments of a command source.
+	// Command is the program and its arguments of a command source; none
+	// for a `worker` watch without a source, a timer whose one subject is
+	// the watch itself.
 	Command []string
 	// Every is the least time between two runs of the source; 0 is each
 	// run of `watch`.
 	Every time.Duration
-	// Do is what is done about a subject: `tell`.
+	// Do is what is done about a subject: `tell` or `worker`.
 	Do string
 	// Prompt is the file that goes with the text; "" for the built-in
 	// one of a default, none for a command source.
 	Prompt string
+	// Model and Effort are the --model and --effort of a `worker`
+	// watch's starts; "" passes none.
+	Model  string
+	Effort string
 	// Env are the variables a command source gets beyond the runner's
 	// allow-list, by name.
 	Env []string
@@ -44,19 +50,22 @@ type Entry struct {
 
 // The built-in sources, and the defaults that use them: the defaults are
 // the only entries a built-in source may have, since each keeps its state
-// in the ledger's own columns.
+// in the ledger's own columns and rows.
 const (
-	StaleAgents  = "stale-agents"
-	QuietThreads = "quiet-threads"
+	StaleAgents    = "stale-agents"
+	QuietThreads   = "quiet-threads"
+	BlockedScreens = "blocked-screens"
 )
 
 // BuiltinSources maps each built-in source to its default entry.
-var BuiltinSources = map[string]string{StaleAgents: "stale-workers", QuietThreads: "quiet-threads"}
+var BuiltinSources = map[string]string{StaleAgents: "stale-workers", QuietThreads: "quiet-threads",
+	BlockedScreens: "unblock"}
 
 // DefaultWatches are the watches of a scope without `watches`.
 func DefaultWatches() []Entry {
 	return []Entry{{Name: "quiet-threads", Source: QuietThreads, Do: "tell"},
-		{Name: "stale-workers", Source: StaleAgents, Do: "tell"}}
+		{Name: "stale-workers", Source: StaleAgents, Do: "tell"},
+		{Name: "unblock", Source: BlockedScreens, Do: "worker"}}
 }
 
 // watchFile is one `watches.<name>` as written. Source is a string or an
@@ -71,6 +80,8 @@ type watchFile struct {
 	Again  *string         `json:"again"`
 	Max    *int            `json:"max"`
 	Off    *bool           `json:"off"`
+	Model  *string         `json:"model"`
+	Effort *string         `json:"effort"`
 }
 
 var (
@@ -133,7 +144,7 @@ func (f *watchFile) apply(key string, e *Entry, home string) error {
 			name string
 			set  bool
 		}{{"do", f.Do != nil}, {"env", f.Env != nil}, {"per_run", f.PerRun != nil}, {"again", f.Again != nil},
-			{"max", f.Max != nil}} {
+			{"max", f.Max != nil}, {"model", f.Model != nil}, {"effort", f.Effort != nil}} {
 			if given.set {
 				return fmt.Errorf("%s.%s: a built-in source takes only every, prompt and off", key, given.name)
 			}
@@ -145,11 +156,9 @@ func (f *watchFile) apply(key string, e *Entry, home string) error {
 
 // source reads `source`: a default's own built-in source may be named
 // again, any other built-in one is refused, and an object is a command.
+// None is a command watch's only with `do: worker` (command checks).
 func (f *watchFile) source(key string, e *Entry) error {
 	if f.Source == nil {
-		if e.Source == "" {
-			return errors.New(key + ".source: must be given: a watch with `do: tell` needs subjects to tell about")
-		}
 		return nil
 	}
 	var name string
@@ -160,11 +169,9 @@ func (f *watchFile) source(key string, e *Entry) error {
 		case BuiltinSources[name] != "":
 			return fmt.Errorf("%s.source: %s is the source of the default %s; change that entry instead", key, name,
 				BuiltinSources[name])
-		case name == "blocked-screens":
-			return errors.New(key + ".source: blocked-screens is not supported yet")
 		}
-		return fmt.Errorf("%s.source: unknown source %q; the built-in ones are stale-agents and quiet-threads, "+
-			"or give {\"command\": [...]}", key, name)
+		return fmt.Errorf("%s.source: unknown source %q; the built-in ones are stale-agents, quiet-threads and "+
+			"blocked-screens, or give {\"command\": [...]}", key, name)
 	}
 	if e.Source != "" {
 		return fmt.Errorf("%s.source: the default %s keeps its source %s", key, e.Name, e.Source)
@@ -185,15 +192,19 @@ func (f *watchFile) source(key string, e *Entry) error {
 // command reads the keys of a command source's entry.
 func (f *watchFile) command(key string, e *Entry) error {
 	if f.Do == nil {
-		return errors.New(key + ".do: must be given: tell")
+		return errors.New(key + ".do: must be given: tell or worker")
 	}
 	switch *f.Do {
-	case "tell":
+	case "tell", "worker":
 		e.Do = *f.Do
-	case "worker":
-		return errors.New(key + ".do: worker is not supported yet; tell is")
 	default:
-		return fmt.Errorf("%s.do: unknown %q; tell is the one", key, *f.Do)
+		return fmt.Errorf("%s.do: unknown %q; tell and worker are the two", key, *f.Do)
+	}
+	if e.Command == nil && e.Do == "tell" {
+		return errors.New(key + ".source: must be given: a watch with `do: tell` needs subjects to tell about")
+	}
+	if err := f.models(key, e); err != nil {
+		return err
 	}
 	if f.Env != nil {
 		for _, name := range *f.Env {
@@ -223,6 +234,27 @@ func (f *watchFile) command(key string, e *Entry) error {
 			return err
 		}
 		e.Again = d
+	}
+	return nil
+}
+
+// models reads `model` and `effort`, which only a `worker` watch takes.
+func (f *watchFile) models(key string, e *Entry) error {
+	for _, s := range []struct {
+		name  string
+		value *string
+		into  *string
+	}{{"model", f.Model, &e.Model}, {"effort", f.Effort, &e.Effort}} {
+		if s.value == nil {
+			continue
+		}
+		if e.Do != "worker" {
+			return fmt.Errorf("%s.%s: only a watch with `do: worker` starts an agent", key, s.name)
+		}
+		if *s.value == "" {
+			return fmt.Errorf("%s.%s: must not be empty; leave the key out for the default", key, s.name)
+		}
+		*s.into = *s.value
 	}
 	return nil
 }

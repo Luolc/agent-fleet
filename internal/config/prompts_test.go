@@ -21,7 +21,7 @@ func TestPromptsAndModelsAreReadWithTheirPathsResolved(t *testing.T) {
 	body := `{
 		"prompts": {
 			"lead": {"replace": "prompts/lead.md", "base": "prompts/../lead.base.md", "append": "~/notes/lead.md"},
-			"screen_guidance": {"append": "/srv/fleet/screens.md"}
+			"worker": {"append": "/srv/fleet/worker.md"}
 		},
 		"models": {"lead": {"model": "example-large", "effort": "medium"}, "worker": {"effort": "low"}}
 	}`
@@ -35,7 +35,7 @@ func TestPromptsAndModelsAreReadWithTheirPathsResolved(t *testing.T) {
 	want := map[string]Prompt{
 		"lead": {Replace: filepath.Join(config, "fleet/prompts/lead.md"), Append: "/home/u/notes/lead.md",
 			Base: filepath.Join(config, "fleet/lead.base.md")},
-		"screen_guidance": {Append: "/srv/fleet/screens.md"},
+		"worker": {Append: "/srv/fleet/worker.md"},
 	}
 	if !reflect.DeepEqual(got.Prompts, want) {
 		t.Errorf("prompts:\n%+v\nwant\n%+v", got.Prompts, want)
@@ -52,7 +52,7 @@ func TestPromptsAndModelsAreReadWithTheirPathsResolved(t *testing.T) {
 
 func TestPromptsAndModelsRefuseWhatCannotWork(t *testing.T) {
 	for body, says := range map[string]string{
-		`{"prompts": {"screen-guidance": {"append": "a.md"}}}`:      "prompts.screen-guidance: unknown name; the names are common, thread, lead, worker, revisit, unblock, screen_guidance",
+		`{"prompts": {"screen-guidance": {"append": "a.md"}}}`:      "prompts.screen-guidance: unknown name; the names are common, thread, lead, worker",
 		`{"prompts": {"lead": {}}}`:                                 "prompts.lead: must have replace or append",
 		`{"prompts": {"lead": {"append": "a.md", "base": "b.md"}}}`: "prompts.lead.base: only goes with replace",
 		`{"prompts": {"lead": {"append": ""}}}`:                     "prompts.lead.append: must not be empty",

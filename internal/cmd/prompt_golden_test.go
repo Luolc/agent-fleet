@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/Luolc/agent-fleet/internal/atb"
 	"github.com/Luolc/agent-fleet/internal/config"
@@ -17,11 +16,11 @@ import (
 var update = flag.Bool("update", false, "rewrite the golden files in testdata/prompts")
 
 // TestBuiltInPromptsMatchTheirGoldenFiles renders the first messages of
-// every role from fixed contexts and compares them byte for byte with
+// every role and of the `unblock` watch's worker from fixed contexts and compares them byte for byte with
 // testdata/prompts: a change to a prompt or to how it is filled shows up as
 // a diff of the golden files. The contexts take both sides of the job
-// kind, the work order, the channel, the socket, the ticket, the thread to
-// ask in and the project; other branches (the stopped agent's role,
+// kind, the work order, the channel, the socket and the ticket; other
+// branches (the stopped agent's role,
 // earlier questions, the kinds of thread message) are not covered. The
 // scope configs have no prompts or models, so these are the texts a start
 // sends by default. `go test ./internal/cmd -run Golden -update` rewrites
@@ -56,26 +55,10 @@ func TestBuiltInPromptsMatchTheirGoldenFiles(t *testing.T) {
 		VALUES ('a', 'EX-1', '/c', 'C1/1.0', 'ended', 'done', 1699000000, 1699100000)`); err != nil {
 		t.Fatal(err)
 	}
-	unblocker := func(cfg *config.Scope) *unblocking {
-		return &unblocking{watchRun: &watchRun{conn: conn, scope: "main", cfg: cfg, now: 1700000000},
-			dir: "/home/u/.local/state/fleet/main-unblock"}
-	}
-	revisit := func(cfg *config.Scope, id string, project bool) string {
-		p := parent(id, "started", 80*time.Hour, 1)
-		if project {
-			p.Team = &struct{ Key string }{"EX"}
-			p.Project = &struct{ Name, Description, Content string }{"Example project", "", "Close a parent after a week.\n"}
-		}
-		got, err := unblocker(cfg).revisitBody(p, revisitName(id))
-		if err != nil {
-			t.Fatal(err)
-		}
-		return got
-	}
 	row := stopRow{ID: 7, Name: "wire-a", Role: "worker", Job: "wire", Parent: "wire-lead", Cwd: "/home/u/wt/r/wire",
 		State: "active"}
 	helper := func(ticket string) string {
-		got, err := unblocker(sc).helperPrompt(row, helperName(row.ID), bashPrompt, ticket)
+		got, err := testWorkers(conn, sc).helperPrompt(row, bashPrompt, ticket)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -89,11 +72,9 @@ func TestBuiltInPromptsMatchTheirGoldenFiles(t *testing.T) {
 		"worker-cross-issue": rolePrompt(sc, worker, "/home/u/x-repo/example-init/wire", "", "/home/u/x-repo/example-init/wire", 3, issue, "QT-10"),
 		"thread-repo-socket-ticket": thread(withSocket, "repo-example-dataset", issue, "The channel of example-dataset.",
 			[]string{"Session 1: imported the B table."}),
-		"thread-initiative":      thread(sc, "x-repo-example-init", atb.Issue{}, "", nil),
-		"revisit-thread-project": revisit(withSocket, "EX-1", true),
-		"revisit":                revisit(sc, "EX-2", false),
-		"unblock-ticket":         helper("SC-9"),
-		"unblock":                helper(""),
+		"thread-initiative": thread(sc, "x-repo-example-init", atb.Issue{}, "", nil),
+		"unblock-ticket":    helper("SC-9"),
+		"unblock":           helper(""),
 	} {
 		file := filepath.Join("testdata", "prompts", name+".golden")
 		if *update {

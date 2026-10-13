@@ -23,8 +23,8 @@ type Scope struct {
 	// post`; empty means fleet cannot post to a thread.
 	FednetSocket string
 	// UnblockProject is the Linear project of the tickets `watch` opens
-	// for the screens its helpers handle, in LinearTeam; empty (or no
-	// team) means no tickets.
+	// for the screens its `blocked-screens` workers handle, in LinearTeam;
+	// empty (or no team) means no tickets.
 	UnblockProject string
 	// Paths are the machine's directories, absolute.
 	Paths Paths
@@ -42,6 +42,9 @@ type Scope struct {
 	// Watches are the policy watches of `fleet watch`, the defaults
 	// included, in name order.
 	Watches []Entry
+	// Ignored are the keys given that fleet no longer uses: accepted,
+	// since refusing them would stop `inbox`, and named by `watch`.
+	Ignored []string
 	// home is what `~/` stands for, in Paths and in Tilde.
 	home string
 }
@@ -224,9 +227,12 @@ func ParseScope(data []byte, home string) (*Scope, error) {
 		return nil, err
 	}
 	var err error
-	if t.Prompts, err = prompts(f.Prompts, home); err != nil {
+	t.Ignored = f.Watch.ignored()
+	var retired []string
+	if t.Prompts, retired, err = prompts(f.Prompts, home); err != nil {
 		return nil, err
 	}
+	t.Ignored = append(t.Ignored, retired...)
 	if t.Watches, err = watches(f.Watches, home); err != nil {
 		return nil, err
 	}

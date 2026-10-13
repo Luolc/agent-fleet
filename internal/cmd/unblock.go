@@ -1,47 +1,47 @@
 // What `watch` does for an agent stopped at a screen (docs/design.md): a
 // rule it knows, a person for the screens fleet never answers, and for any
-// other screen a helper agent that answers it as the guidance says or asks
-// the people.
+// other screen, by the `unblock` watch (source blocked-screens), a worker
+// that answers it as the guidance says or asks the people.
 
 package cmd
 
 import (
 	"database/sql"
-	_ "embed" // the helper's prompt and the guidance
+	_ "embed" // the unblock watch's prompt and the guidance
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/Luolc/agent-fleet/internal/atb"
+	"github.com/Luolc/agent-fleet/internal/config"
 	"github.com/Luolc/agent-fleet/internal/db"
 	"github.com/Luolc/agent-fleet/internal/exit"
 	"github.com/Luolc/agent-fleet/internal/fednet"
 	"github.com/Luolc/agent-fleet/internal/identity"
 )
 
-//go:embed unblock_prompt.md
-var unblockPrompt string
-
-// screenGuidance is what a helper may press on which screen. Embedded, so
-// a helper reads the guidance of the binary that started it.
-//
-//go:embed screen_guidance.md
-var screenGuidance string
+// unblockPrompt is the built-in prompt of the `unblock` watch: what its
+// workers do, then screenGuidance, what they may press on which screen.
+// Embedded, so a worker reads the guidance of the binary that started it.
+var (
+	//go:embed unblock_prompt.md
+	unblockPrompt string
+	//go:embed screen_guidance.md
+	screenGuidance string
+)
 
 const (
-	// maxHelpers bounds the helpers started for one stopped agent; after
+	// maxHelpers bounds the workers started for one stopped agent; after
 	// them a person is asked.
 	maxHelpers = 3
 	// startGraceSecs is how long a `starting` row is its starter's before
 	// watch reads its screen: past every bounded step of a start.
 	startGraceSecs int64 = 10 * 60
-	// helperSecs is how long a helper may work before it is closed as
-	// stuck, which counts it against maxHelpers.
-	helperSecs int64 = 30 * 60
-	// screenLabel labels the tickets of the screens helpers handle.
+	// screenLabel labels the tickets of the screens workers handle.
 	screenLabel = "blocked-screen"
 )
 
@@ -49,13 +49,13 @@ const (
 type screenKind int
 
 const (
-	// unknownScreen is a screen no rule knows: a helper's.
+	// unknownScreen is a screen no rule knows: a worker's.
 	unknownScreen screenKind = iota
 	// ownTrustScreen is Claude Code's folder-trust dialog for the agent's
 	// own directory, answered as a start answers it.
 	ownTrustScreen
 	// handsOffScreen is a usage limit, a model switch, a usage reset or a
-	// purchase: nothing is pressed, no helper started, a person asked.
+	// purchase: nothing is pressed, no worker started, a person asked.
 	handsOffScreen
 )
 
@@ -99,31 +99,28 @@ func dialogPart(screen string) string {
 	return screen
 }
 
-// helperPrefix starts the name of every screen helper.
-const helperPrefix = "unblock-"
-
-// helperNamed is whether `name` is that of an agent watch starts, a
-// screen helper or a revisit agent: no job name may start the same way.
-func helperNamed(name string) bool {
-	return strings.HasPrefix(name, helperPrefix) || strings.HasPrefix(name, revisitPrefix)
+// screenWorkers are the names of the workers for the stopped agent whose
+// row has `id`: the `unblock` watch's, the same for every worker of that
+// row so the ledger counts them, and the helper's of before the upgrade.
+func screenWorkers(id int64) []string {
+	key := strconv.FormatInt(id, 10)
+	return []string{workerName(screenWatch, key), legacyHelperPrefix + key}
 }
 
-// helperName is the helper of the stopped agent whose row has `id`: the
-// same name for every helper of that row, so the ledger counts them.
-func helperName(id int64) string {
-	return fmt.Sprintf("%s%d", helperPrefix, id)
-}
+// screenWatch is the name of the default watch with the source
+// blocked-screens.
+const screenWatch = "unblock"
 
-// stopRow is a live row as the unblocking reads it.
+// stopRow is a live row as the screens and the watch workers read it.
 type stopRow struct {
-	ID                                                             int64
-	Name, Role, Job, Parent, Cwd, Pane, State, Thread, ParentIssue string
-	StartedAt                                                      int64
+	ID                                                                   int64
+	Name, Role, Job, Parent, Cwd, Pane, State, Thread, ParentIssue, Task string
+	StartedAt                                                            int64
 }
 
 func stopRows(conn *sql.DB) ([]stopRow, error) {
-	rows, err := conn.Query("SELECT id, name, role, job, parent, cwd, pane_id, state, thread, parent_issue, started_at " +
-		"FROM agents WHERE state != 'ended' ORDER BY id")
+	rows, err := conn.Query("SELECT id, name, role, job, parent, cwd, pane_id, state, thread, parent_issue, task, " +
+		"started_at FROM agents WHERE state != 'ended' ORDER BY id")
 	if err != nil {
 		return nil, exit.Database(err)
 	}
@@ -132,7 +129,7 @@ func stopRows(conn *sql.DB) ([]stopRow, error) {
 	for rows.Next() {
 		var r stopRow
 		if err := rows.Scan(&r.ID, &r.Name, &r.Role, &r.Job, &r.Parent, &r.Cwd, &r.Pane, &r.State, &r.Thread,
-			&r.ParentIssue, &r.StartedAt); err != nil {
+			&r.ParentIssue, &r.Task, &r.StartedAt); err != nil {
 			return nil, exit.Database(err)
 		}
 		all = append(all, r)
@@ -160,142 +157,50 @@ func (r stopRow) who() string {
 	return text
 }
 
-// unblocking is one watch run's look at the stopped agents.
-type unblocking struct {
-	*watchRun
-	inHerdr map[string]InHerdr
-	// dir is where helpers run and write their questions.
-	dir string
-}
-
-// helpers is the run's look at the agents watch starts: in the scope's
-// own directory next to the ledger, `<scope>-unblock`.
-func (r *watchRun) helpers(inHerdr map[string]InHerdr) (*unblocking, error) {
-	ledger, err := db.Path(r.scope)
-	if err != nil {
-		return nil, err
-	}
-	return &unblocking{watchRun: r, inHerdr: inHerdr, dir: strings.TrimSuffix(ledger, ".db") + "-unblock"}, nil
-}
-
-// unblock looks at every live agent stopped at a screen: an active one
-// herdr reports blocked, or one whose start was left at a screen for
-// startGraceSecs. It first closes the helpers that are done. A failure
-// for one agent is recorded on the run and the others are still looked
-// at, while the run has time. Revisit agents are the parent rule's.
-func (r *watchRun) unblock(inHerdr map[string]InHerdr) error {
-	u, err := r.helpers(inHerdr)
+// unblock looks at every live agent stopped at a screen, but the agents
+// watch started: an active one herdr reports blocked, or one whose start
+// was left at a screen for startGraceSecs. The rules are built in; the
+// workers for the other screens are the `unblock` watch's, started only
+// when it is due. A failure for one agent is recorded on the run and the
+// others are still looked at, while the run has time.
+func (w *workers) unblock() error {
+	e := w.builtinWatch(config.BlockedScreens)
+	due, err := w.due(e)
 	if err != nil {
 		return err
 	}
-	rows, err := stopRows(r.conn)
+	rows, err := stopRows(w.conn)
 	if err != nil {
 		return err
 	}
-	live := map[string]stopRow{}
 	for _, row := range rows {
-		live[row.Name] = row
-	}
-	helped := map[string]bool{}
-	for _, row := range rows {
-		if row.Role != identity.Unblock.String() {
+		if row.startedByWatch() {
 			continue
 		}
-		if u.outOfTime() {
+		if w.outOfTime() {
 			return nil
 		}
-		busy, err := u.helper(row, live)
-		u.failedFor(row.Name, err)
-		helped[row.Parent] = busy || err != nil
-	}
-	for _, row := range rows {
-		if watchStarted(row.Role) {
-			continue
-		}
-		if u.outOfTime() {
-			return nil
-		}
-		screen, stopped, err := u.stopped(row)
+		screen, stopped, err := w.stopped(row)
 		if err == nil && stopped {
-			if helped[row.Name] {
-				fmt.Fprintf(os.Stdout, "unblock: %s is stopped at a screen; %s is on it\n", row.Name, helperName(row.ID))
+			names := screenWorkers(row.ID)
+			if w.busy[names[0]] || w.busy[names[1]] {
+				fmt.Fprintf(os.Stdout, "unblock: %s is stopped at a screen; %s is on it\n", row.Name, names[0])
 				continue
 			}
-			err = u.handle(row, screen)
+			err = w.handle(e, due, row, screen)
 		}
-		u.failedFor(row.Name, err)
+		if err != nil {
+			w.failed(fmt.Errorf("unblock %s: %w", row.Name, err))
+		}
 	}
-	return nil
-}
-
-// watchStarted is whether `role` is that of an agent watch starts.
-func watchStarted(role string) bool {
-	return role == identity.Unblock.String() || role == identity.Revisit.String()
-}
-
-// failedFor records a failure for the stopped agent or helper `name`.
-func (u *unblocking) failedFor(name string, err error) {
-	if err != nil {
-		u.failed(fmt.Errorf("unblock %s: %w", name, err))
-	}
-}
-
-// helper looks at a live screen helper as closeDone does; its question is
-// asked about the stopped agent, while that agent is live.
-func (u *unblocking) helper(row stopRow, live map[string]stopRow) (busy bool, err error) {
-	return u.closeDone(row, func(question string) error {
-		stopped, ok := live[row.Parent]
-		if !ok {
-			return nil
-		}
-		text := fmt.Sprintf("%s (%s) is stopped at a screen that fleet's guidance does not cover, so its helper "+
-			"%s asks:\n\n%s", stopped.Name, stopped.who(), row.Name, question)
-		if issue, _ := u.helperIssue(row.Name); issue != "" {
-			text += "\n\nTicket: " + issue
-		}
-		if err := u.ask(stopped, text); err != nil {
-			return err
-		}
-		u.tell(stopped, "its helper asked the people in the home thread what to press")
+	if !due {
 		return nil
-	})
-}
-
-// closeDone looks at a live agent watch started (a screen helper or a
-// revisit agent); busy is whether it is still working. One done with its
-// turn (herdr idle or done), stopped at a screen itself, working for
-// helperSecs, gone from herdr, or left `starting` by a start that failed
-// is closed and its row ended, after `ask` is given the question it
-// wrote, if any.
-func (u *unblocking) closeDone(row stopRow, ask func(question string) error) (busy bool, err error) {
-	agent, present := u.inHerdr[row.Name]
-	if present && row.State == "active" && agent.Status != "idle" && agent.Status != "done" &&
-		agent.Status != "blocked" && u.now-row.StartedAt < helperSecs {
-		return true, nil
 	}
-	file := u.questionFile(row.Name)
-	if question, err := os.ReadFile(file); err == nil && strings.TrimSpace(string(question)) != "" {
-		if err := ask(strings.TrimSpace(string(question))); err != nil {
-			return false, err
-		}
-	}
-	if err := os.Remove(file); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return false, exit.IO(err)
-	}
-	if row.Pane != "" {
-		if err := closeOwnTab(u.h, u.conn, row.Name); err != nil {
-			return false, err
-		}
-	}
-	if err := endRow(u.conn, row.Name); err != nil {
-		return false, err
-	}
-	fmt.Fprintf(os.Stdout, "%s: closed %s (herdr status %q)\n", row.Role, row.Name, agent.Status)
-	return false, nil
+	return w.ran(e)
 }
 
 // stopped is the screen of `row` when its agent is stopped at one.
-func (u *unblocking) stopped(row stopRow) (screen string, ok bool, err error) {
+func (u *workers) stopped(row stopRow) (screen string, ok bool, err error) {
 	agent, present := u.inHerdr[row.Name]
 	switch {
 	case !present:
@@ -314,19 +219,18 @@ func (u *unblocking) stopped(row stopRow) (screen string, ok bool, err error) {
 	return screen, true, nil
 }
 
-// handle deals with one stopped agent that has no live helper: nothing
+// handle deals with one stopped agent that has no live worker: nothing
 // while a question about it waits for the people; the folder-trust
 // dialog for its own directory answered; a screen fleet never answers
-// sent to a person once; any other screen to a new helper, at most
-// maxHelpers of them, then to a person once.
-func (u *unblocking) handle(row stopRow, screen string) error {
-	helper := helperName(row.ID)
-	var pending int
-	if err := u.conn.QueryRow("SELECT count(*) FROM questions WHERE asked_by = ?1 AND state = 'pending'",
-		helper).Scan(&pending); err != nil {
-		return exit.Database(err)
+// sent to a person once; any other screen, when the watch `e` is `due`,
+// to a new worker, at most maxHelpers of them, then to a person once.
+func (u *workers) handle(e config.Entry, due bool, row stopRow, screen string) error {
+	names := screenWorkers(row.ID)
+	pending, _, err := pendingFrom(u.conn, names)
+	if err != nil {
+		return err
 	}
-	if pending > 0 {
+	if pending {
 		fmt.Fprintf(os.Stdout, "unblock: %s is stopped at a screen; the people were asked and have not answered\n", row.Name)
 		return nil
 	}
@@ -348,8 +252,17 @@ func (u *unblocking) handle(row stopRow, screen string) error {
 			"limit, a model switch, a usage reset or a purchase. A person has to deal with it at the machine (agent %s "+
 			"in the herdr session %s).", row.Name, row.who(), row.Name, identity.Session(u.scope))+shown)
 	}
+	if !due {
+		why := "is off"
+		if !e.Off {
+			why = "is not due this run"
+		}
+		fmt.Fprintf(os.Stdout, "unblock: %s is stopped at a screen; the watch %s %s\n", row.Name, e.Name, why)
+		return nil
+	}
 	var helpers int
-	if err := u.conn.QueryRow("SELECT count(*) FROM agents WHERE name = ?1", helper).Scan(&helpers); err != nil {
+	if err := u.conn.QueryRow("SELECT count(*) FROM agents WHERE name IN (?1, ?2)", names[0], names[1]).
+		Scan(&helpers); err != nil {
 		return exit.Database(err)
 	}
 	if helpers >= maxHelpers {
@@ -357,7 +270,7 @@ func (u *unblocking) handle(row stopRow, screen string) error {
 			"person has to look at it at the machine (agent %s in the herdr session %s).", row.Name, row.who(), helpers,
 			row.Name, identity.Session(u.scope))+shown)
 	}
-	return u.startHelper(row, helper, screen)
+	return u.startHelper(e, row, screen)
 }
 
 // settleStopped is how the folder-trust rule answers the dialog; a
@@ -371,11 +284,11 @@ func fenced(text string) string {
 
 // askOnce asks the people about `row` once for its `step`: a retry after
 // a failure asks again, a step done is never repeated.
-func (u *unblocking) askOnce(row stopRow, step, text string) error {
+func (u *workers) askOnce(row stopRow, step, text string) error {
 	asked := false
 	err := runStep(u.conn, fmt.Sprintf("unblock:%d", row.ID), step, func() error {
 		asked = true
-		return u.ask(row, text)
+		return u.ask(row, screenWorkers(row.ID)[0], text)
 	})
 	if err != nil || !asked {
 		return err
@@ -386,11 +299,12 @@ func (u *unblocking) askOnce(row stopRow, step, text string) error {
 
 // ask posts `text` to the home thread of `row` (its own thread for a
 // thread agent, else its job's), records it as a question pending from
-// the row's helper, and then, unless the stopped agent is the thread's
-// own, delivers it to the thread's agent as `ask-human` does; a delivery
-// that fails is printed, since the question is out. A single-repo job
-// without a home thread gets one opened first, as `ask-human` opens it.
-func (u *unblocking) ask(row stopRow, text string) error {
+// `helper`, the row's worker, and then, unless the stopped agent is the
+// thread's own, delivers it to the thread's agent as `ask-human` does; a
+// delivery that fails is printed, since the question is out. A
+// single-repo job without a home thread gets one opened first, as
+// `ask-human` opens it.
+func (u *workers) ask(row stopRow, helper, text string) error {
 	thread := row.Thread
 	if row.Role != "thread" {
 		job, err := openJob(u.conn, row.Job)
@@ -409,7 +323,6 @@ func (u *unblocking) ask(row stopRow, text string) error {
 	if thread == "" {
 		return exit.Refusedf("no home thread to ask the people in about %s's screen", row.Name)
 	}
-	helper := helperName(row.ID)
 	if err := u.post(thread, row.Job, helper, text); err != nil {
 		return err
 	}
@@ -450,7 +363,7 @@ func (r *watchRun) post(thread, job, asker, text string) error {
 // or worker whose start stopped at the screen. A thread agent's start is
 // finished by `inbox` with the next message, so nobody is told about it;
 // nor is the caller without a role that started a lead, which is no agent.
-func (u *unblocking) tell(row stopRow, what string) {
+func (u *workers) tell(row stopRow, what string) {
 	if row.Role == "thread" || row.Parent == "" || row.Parent == plainStarter || row.Role == "lead" && row.State != "starting" {
 		return
 	}
@@ -477,7 +390,7 @@ func (u *unblocking) tell(row stopRow, what string) {
 
 // homeThread is the thread the people are asked in about `row`: its own
 // for a thread agent, else its open job's home thread; "" for none.
-func (u *unblocking) homeThread(row stopRow) (string, error) {
+func (u *workers) homeThread(row stopRow) (string, error) {
 	if row.Role == "thread" {
 		return row.Thread, nil
 	}
@@ -506,17 +419,12 @@ func (r *watchRun) promptBroken(err error, thread, what string) error {
 	return errors.Join(err, posted)
 }
 
-// questionFile is where the helper `name` writes its question.
-func (u *unblocking) questionFile(name string) string {
-	return filepath.Join(u.dir, name+"-question.md")
-}
-
-// helperIssue is the ticket an earlier helper of the same name opened,
+// helperIssue is the ticket an earlier worker of one of `names` opened,
 // "" when none did.
-func (u *unblocking) helperIssue(name string) (string, error) {
+func helperIssue(conn *sql.DB, names ...string) (string, error) {
 	var issue string
-	err := u.conn.QueryRow("SELECT issue FROM agents WHERE name = ?1 AND issue != '' ORDER BY id DESC LIMIT 1",
-		name).Scan(&issue)
+	err := conn.QueryRow("SELECT issue FROM agents WHERE name IN (?1, ?2) AND issue != '' ORDER BY id DESC LIMIT 1",
+		names[0], names[len(names)-1]).Scan(&issue)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
@@ -526,21 +434,25 @@ func (u *unblocking) helperIssue(name string) (string, error) {
 	return issue, nil
 }
 
-// ticket is the helper's ticket: the one an earlier helper of the same
+// ticket is the worker's ticket: the one an earlier worker of the same
 // stopped agent opened, else a new one labelled blocked-screen in the
 // scope's Linear team and unblock project; none when either is not
 // configured.
-func (u *unblocking) ticket(row stopRow, helper, screen string) (string, error) {
+func (u *workers) ticket(row stopRow, screen string) (string, error) {
 	if u.cfg.LinearTeam == "" || u.cfg.UnblockProject == "" {
 		return "", nil
 	}
-	if issue, err := u.helperIssue(helper); err != nil || issue != "" {
+	names := screenWorkers(row.ID)
+	if issue, err := helperIssue(u.conn, names...); err != nil || issue != "" {
 		return issue, err
 	}
-	file := filepath.Join(u.dir, helper+"-ticket.md")
+	if err := os.MkdirAll(u.dir, 0o755); err != nil {
+		return "", exit.IO(err)
+	}
+	file := filepath.Join(u.dir, names[0]+"-ticket.md")
 	description := fmt.Sprintf("%s (%s) was stopped at a screen that fleet has no rule for when `fleet watch` read it "+
-		"at %s; the helper %s handles it and records here what it did or asked.\n\nThe screen:\n\n%s\n",
-		row.Name, row.who(), time.Unix(u.now, 0).UTC().Format(time.RFC3339), helper, fenced(tail(screen, 15)))
+		"at %s; the worker %s handles it and records here what it did or asked.\n\nThe screen:\n\n%s\n",
+		row.Name, row.who(), time.Unix(u.now, 0).UTC().Format(time.RFC3339), names[0], fenced(tail(screen, 15)))
 	if err := os.WriteFile(file, []byte(description), 0o644); err != nil {
 		return "", exit.IO(err)
 	}
@@ -551,18 +463,15 @@ func (u *unblocking) ticket(row stopRow, helper, screen string) (string, error) 
 	return issue.Identifier, nil
 }
 
-// startHelper starts the helper of a stopped agent in the scope's
-// `threads` workspace, in the helpers' directory, with the screen, the
-// guidance and what the people said about the screen so far; a broken
-// unblock prompt or guidance starts nothing and opens no ticket.
-func (u *unblocking) startHelper(row stopRow, helper, screen string) error {
-	if err := os.MkdirAll(u.dir, 0o755); err != nil {
-		return exit.IO(err)
-	}
-	prompt, err := loadPrompt(u.cfg, "unblock")
-	var guidance *promptText
+// startHelper starts the `unblock` watch's worker for a stopped agent,
+// its subject the agent, the screen and the ticket, with what the people
+// said about the screen so far; a broken worker text or watch prompt
+// starts nothing and opens no ticket.
+func (u *workers) startHelper(e config.Entry, row stopRow, screen string) error {
+	role, err := u.workerPrompt()
+	var prompt *promptText
 	if err == nil {
-		guidance, err = loadPrompt(u.cfg, "screen_guidance")
+		prompt, err = watchPrompt(u.cfg, e)
 	}
 	if err != nil {
 		thread, threadErr := u.homeThread(row)
@@ -571,99 +480,71 @@ func (u *unblocking) startHelper(row stopRow, helper, screen string) error {
 		}
 		return u.promptBroken(err, thread, fmt.Sprintf("start a screen helper for %s (%s)", row.Name, row.who()))
 	}
-	issue, err := u.ticket(row, helper, screen)
+	issue, err := u.ticket(row, screen)
 	if err != nil {
 		return err
 	}
-	body, err := u.helperMessage(prompt, guidance, row, helper, screen, issue)
+	id, s, body, err := u.screenMessage(e, role, prompt, row, screen, issue)
 	if err != nil {
 		return err
 	}
-	id := &identity.Identity{Agent: helper, Role: identity.Unblock, Parent: row.Name, Scope: u.scope, Issue: issue}
-	if err := u.startInThreads(id, "", body); err != nil {
+	if err := u.startWorker(e, id, s, body); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stdout, "unblock: %s: started %s\n", row.Name, helper)
+	fmt.Fprintf(os.Stdout, "unblock: %s: started %s\n", row.Name, id.Agent)
 	u.tell(row, fmt.Sprintf("fleet started %s, a helper that answers it as fleet's guidance says or asks the people",
-		helper))
+		id.Agent))
 	return nil
 }
 
-// startInThreads starts the agent `id` in a new tab of the scope's
-// `threads` workspace, in the helpers' directory, which is also its
-// `FLEET_SCRATCH`, with `body` as its first message headed
-// `[FROM: watch]`; its row records `parentIssue`.
-func (u *unblocking) startInThreads(id *identity.Identity, parentIssue, body string) error {
-	id.Scratch = u.dir
-	if err := reserve(u.conn, func(q querier) error { return liveNameTaken(q, id.Agent) },
-		func(q querier) error { return insertStarting(q, id, u.dir, "", parentIssue) }); err != nil {
-		return err
-	}
-	created := []string{fmt.Sprintf("ledger row %s (state starting)", id.Agent)}
-	// What a failed start leaves, the next run closes as an agent that
-	// did not get to work.
-	failed := func(err error, code exit.Code) error {
-		code, _ = startFailed(id.Agent, err, code, created, "")
-		return exit.New(code, fmt.Sprintf("the start of %s did not complete; the next run closes what it left", id.Agent))
-	}
-	home, err := Home()
-	if err != nil {
-		return failed(err, 0)
-	}
-	workspace, err := threadsWorkspaceID(u.h, u.scope, home)
-	if err != nil {
-		return failed(err, 0)
-	}
-	place, err := CreateTab(u.h, workspace, id.Agent, u.dir, id)
-	if err != nil {
-		return failed(err, 0)
-	}
-	created = append(created, fmt.Sprintf("tab %s (%s)", id.Agent, place.TabID))
-	code, err := startAndDeliver(u.h, u.conn, id, place, u.dir, nil, nil, watchSender, body, &created)
-	if err != nil || code != exit.Ok {
-		return failed(err, code)
-	}
-	return nil
+// screenMessage is the identity, the subject and the first message of the
+// `unblock` watch's worker for the stopped agent `row`, with the ticket
+// `issue` ("" for none): the worker text `role`, the questions earlier
+// workers asked about the agent, and the agent's screen with the watch's
+// prompt.
+func (u *workers) screenMessage(e config.Entry, role, prompt *promptText, row stopRow, screen, issue string) (
+	*identity.Identity, workerSubject, string, error) {
+	names := screenWorkers(row.ID)
+	id := u.workerID(names[0], issue)
+	s := workerSubject{Watch: e.Name, Key: strconv.FormatInt(row.ID, 10), Job: row.Job, Agent: row.Name}
+	body, err := u.workerMessage(role, prompt, id, s, screenSubject(row, screen, issue), names)
+	return id, s, body, err
 }
 
-// helperMessage is the helper's first message: the unblock prompt
-// `prompt`, the guidance, the screen, and the questions earlier helpers
-// asked about it with the latest message a person posted in the home
-// thread.
-func (u *unblocking) helperMessage(prompt, guidance *promptText, row stopRow, helper, screen, issue string) (string, error) {
+// screenSubject is the text of a stopped agent as the `unblock` watch's
+// worker gets it: the agent, how to read and press on it, the ticket and
+// the screen as watch read it.
+func screenSubject(row stopRow, screen, issue string) string {
 	ticket := "none: tickets are off for this scope, so put what you did or asked in your last message instead."
 	if issue != "" {
 		ticket = fmt.Sprintf("%s, labelled %s; record on it with `atb linear comment %s --body-file <file>`, a file "+
 			"you write first in your directory.", issue, screenLabel, issue)
 	}
-	text := prompt.fill(map[string]string{"agent": helper, "scope": u.scope, "dir": u.cfg.Tilde(u.dir),
-		"blocked": row.Name, "who": row.who(), "cwd": row.Cwd, "question_file": u.questionFile(helper), "ticket": ticket})
-	text += "\n" + guidance.fill(nil) + "\n## The screen\n\nAs watch read it:\n\n" + fenced(strings.TrimRight(screen, "\n")) + "\n"
-	earlier, err := earlierSection(u.conn, helper, "Earlier on this screen")
-	if err != nil {
-		return "", err
-	}
-	return text + earlier, nil
+	return fmt.Sprintf("The agent %s (%s, working directory %s) is stopped at a screen that fleet has no rule for. "+
+		"Read its screen with `herdr agent read %s --source visible`; press a key on it with `herdr agent send-keys %s "+
+		"<key>`.\n\nTicket: %s\n\nThe screen as watch read it:\n\n%s\n", row.Name, row.who(), row.Cwd, row.Name, row.Name,
+		ticket, fenced(strings.TrimRight(screen, "\n")))
 }
 
 // earlierSection is the section `heading` of an agent's first message
-// with the questions `asker` asked, oldest first, and the latest message
-// a person posted in the thread of the last of them; "" when `asker`
-// asked none.
-func earlierSection(conn *sql.DB, asker, heading string) (string, error) {
+// with the questions `askers` asked, oldest first, and the latest message
+// a person posted in the thread of the last of them; "" when they asked
+// none.
+func earlierSection(conn *sql.DB, heading string, askers []string) (string, error) {
 	var earlier []string
 	thread := ""
-	err := eachRow(conn, "SELECT text, state, asked_at, thread FROM questions WHERE asked_by = ?1 ORDER BY id",
-		func(rows *sql.Rows) error {
-			var question, state string
-			var at int64
-			if err := rows.Scan(&question, &state, &at, &thread); err != nil {
-				return err
-			}
-			earlier = append(earlier, fmt.Sprintf("Asked at %s (%s):\n\n> %s", time.Unix(at, 0).UTC().Format(time.RFC3339),
-				state, strings.ReplaceAll(question, "\n", "\n> ")))
-			return nil
-		}, asker)
+	query := "SELECT text, state, asked_at, thread FROM questions WHERE asked_by IN (?" +
+		strings.Repeat(", ?", len(askers)-1) + ") ORDER BY id"
+	err := eachRow(conn, query, func(rows *sql.Rows) error {
+		var question, state string
+		var at int64
+		if err := rows.Scan(&question, &state, &at, &thread); err != nil {
+			return err
+		}
+		earlier = append(earlier, fmt.Sprintf("Asked at %s (%s):\n\n> %s", time.Unix(at, 0).UTC().Format(time.RFC3339),
+			state, strings.ReplaceAll(question, "\n", "\n> ")))
+		return nil
+	}, anys(askers)...)
 	if err != nil || len(earlier) == 0 {
 		return "", err
 	}

@@ -95,6 +95,10 @@ func Done(h *herdr.Herdr, args DoneArgs) (exit.Code, error) {
 	if me.Parent == "" {
 		return 0, exit.Refusedf("FLEET_PARENT is empty: a worker reports to the lead that spawned it")
 	}
+	if me.Parent == watchSender {
+		return 0, exit.Refusedf("fleet's watch started you and reads no report: end your turn, and put a question " +
+			"for the people in the question file your task names")
+	}
 	reportFile, err := reportPath(args, me.Issue)
 	if err != nil {
 		return 0, err

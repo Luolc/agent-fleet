@@ -27,7 +27,7 @@ const (
 	PromptAbout         = "Show the prompts fleet starts agents with (read-only)"
 	PromptShowAbout     = "Show the prompts as the scope's config makes them, one or all (read-only)"
 	PromptShowLongAbout = "Show the prompts fleet starts agents with, as the scope's config makes them (read-only).\n\n" +
-		"Without NAME: for each of common, thread, lead, worker, revisit, unblock and screen_guidance, its " +
+		"Without NAME: for each of common, thread, lead and worker, its " +
 		"parts (the built-in text or the file replacing it, and the file following it) and, for a " +
 		"replacement, whether its " +
 		"`base` still is the built-in text. When it is not, the replacement is behind, and two commands " +

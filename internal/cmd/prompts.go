@@ -48,8 +48,8 @@ type promptSpec struct {
 
 // specOf is the spec of the text `name`, one of config.PromptNames.
 func specOf(name string) promptSpec {
-	role := append([]string{"job", "scope", "agent", "parent", "lead", "cwd", "repo_line", "issue", "issue_note",
-		"linear", "agents_md", "cap", "scratch"}, modelSlots...)
+	role := append([]string{"job", "scope", "agent", "parent", "lead", "one_task", "cwd", "repo_line", "issue",
+		"issue_note", "linear", "agents_md", "cap", "scratch"}, modelSlots...)
 	switch name {
 	case "common":
 		return promptSpec{commonPrompt, nil}
@@ -60,12 +60,6 @@ func specOf(name string) promptSpec {
 		return promptSpec{leadPrompt, role}
 	case "worker":
 		return promptSpec{workerPrompt, role}
-	case "revisit":
-		return promptSpec{revisitPrompt, []string{"agent", "scope", "dir", "issue", "unchanged", "create", "ask", "again"}}
-	case "unblock":
-		return promptSpec{unblockPrompt, []string{"agent", "scope", "dir", "blocked", "who", "cwd", "question_file", "ticket"}}
-	case "screen_guidance":
-		return promptSpec{screenGuidance, nil}
 	}
 	panic("no built-in text " + name)
 }

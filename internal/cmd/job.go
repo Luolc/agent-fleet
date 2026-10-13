@@ -42,7 +42,7 @@ const (
 		"message and the source of the claims. Such a job has no home thread; the lead's " +
 		"first message says so in place of the latest message, and its first `fleet " +
 		"ask-human` opens one (see `fleet ask-human --help`). The scope is --scope or " +
-		"FLEET_SCOPE, as for any caller. Leads, workers and the helpers of `fleet watch` are refused.\n\n" +
+		"FLEET_SCOPE, as for any caller. Leads and workers are refused.\n\n" +
 		"No " +
 		"worktree is made; agents open theirs with `fleet worktree` (`--detach <ref>` for a " +
 		"review checkout of a PR head), never with `git worktree add`, so `job end` removes them.\n\n" +
@@ -229,8 +229,8 @@ func jobStartChecks(h *herdr.Herdr, args JobStartArgs) (*jobChecked, *sql.DB, er
 		return nil, nil, exit.Refusedf("the job name `%s` is reserved for thread agents", threadsWorkspace)
 	}
 	if helperNamed(args.Job + "-") {
-		return nil, nil, exit.Refusedf("the job name %q is reserved: names starting `%s` or `%s` are the helpers `fleet watch` starts",
-			args.Job, helperPrefix, revisitPrefix)
+		return nil, nil, exit.Refusedf("the job name %q is reserved: names starting `%s`, `%s` or `%s` are those of "+
+			"the agents `fleet watch` starts or started", args.Job, workerPrefix, legacyHelperPrefix, legacyRevisitPrefix)
 	}
 	c := &jobChecked{me: me, id: &identity.Identity{Agent: args.Job + "-lead", Role: identity.Lead,
 		Parent: me.Agent, Scope: me.Scope, Job: args.Job}}

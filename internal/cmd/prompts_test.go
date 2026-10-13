@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"os"
@@ -8,7 +9,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/Luolc/agent-fleet/internal/atb"
 	"github.com/Luolc/agent-fleet/internal/config"
@@ -37,24 +37,28 @@ func (s *threadStart) prompt() string {
 	return s.firstMessage()
 }
 
-func (u *unblocking) revisitBody(p atb.Parent, name string) (string, error) {
-	text, err := loadPrompt(u.cfg, "revisit")
+// helperPrompt is the first message of the `unblock` watch's worker for
+// the stopped agent `row`, as startHelper puts it together.
+func (w *workers) helperPrompt(row stopRow, screen, issue string) (string, error) {
+	role, err := w.workerPrompt()
 	if err != nil {
 		return "", err
 	}
-	return u.revisitMessage(text, p, name)
+	e := w.builtinWatch(config.BlockedScreens)
+	prompt, err := watchPrompt(w.cfg, e)
+	if err != nil {
+		return "", err
+	}
+	_, _, body, err := w.screenMessage(e, role, prompt, row, screen, issue)
+	return body, err
 }
 
-func (u *unblocking) helperPrompt(row stopRow, helper, screen, issue string) (string, error) {
-	prompt, err := loadPrompt(u.cfg, "unblock")
-	if err != nil {
-		return "", err
-	}
-	guidance, err := loadPrompt(u.cfg, "screen_guidance")
-	if err != nil {
-		return "", err
-	}
-	return u.helperMessage(prompt, guidance, row, helper, screen, issue)
+// testWorkers are the watch workers of a run in the scope `main` at a
+// fixed clock, with the ledger `conn` and the config `sc`.
+func testWorkers(conn *sql.DB, sc *config.Scope) *workers {
+	return &workers{watchRun: &watchRun{conn: conn, scope: "main", cfg: sc, now: 1700000000},
+		dir: "/home/u/.local/state/fleet/main-watch", legacyDir: "/home/u/.local/state/fleet/main-unblock",
+		busy: map[string]bool{}}
 }
 
 // promptScope is a scope config whose `prompts` are `prompts` and whose
@@ -90,9 +94,9 @@ func promptScope(t *testing.T, prompts map[string]map[string]string, models stri
 	return sc
 }
 
-// renders are the first messages of the six texts' agents (the guidance
-// in the helper's) under the scope `sc`, from the contexts of the golden
-// files `goldenOf` names.
+// renders are the first messages of the three roles' agents and of the
+// `unblock` watch's worker under the scope `sc`, from the contexts of the
+// golden files `goldenOf` names.
 func renders(t *testing.T, sc *config.Scope) map[string]string {
 	t.Helper()
 	conn, err := db.OpenAt(filepath.Join(t.TempDir(), "main.db"))
@@ -106,14 +110,8 @@ func renders(t *testing.T, sc *config.Scope) map[string]string {
 	thread := &threadStart{cfg: sc, mapping: "x-repo-example-init", cwd: MappingDir(sc, "x-repo-example-init"),
 		id:  &identity.Identity{Agent: "thread-c1-1-0", Role: identity.Thread, Scope: "main", Thread: "C1/1.0"},
 		msg: inboundMessage{Thread: "C1/1.0", Text: "import the A table", User: "U0ABC", TS: "1700000000.000"}}
-	u := &unblocking{watchRun: &watchRun{conn: conn, scope: "main", cfg: sc, now: 1700000000},
-		dir: "/home/u/.local/state/fleet/main-unblock"}
-	revisit, err := u.revisitBody(parent("EX-2", "started", 80*time.Hour, 1), revisitName("EX-2"))
-	if err != nil {
-		t.Fatal(err)
-	}
 	row := stopRow{ID: 7, Name: "wire-a", Role: "worker", Job: "wire", Parent: "wire-lead", Cwd: "/home/u/wt/r/wire", State: "active"}
-	helper, err := u.helperPrompt(row, helperName(row.ID), bashPrompt, "")
+	helper, err := testWorkers(conn, sc).helperPrompt(row, bashPrompt, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,14 +119,17 @@ func renders(t *testing.T, sc *config.Scope) map[string]string {
 		"thread":  thread.prompt(),
 		"lead":    rolePrompt(sc, lead, "/home/u/dev/example-dataset", "example-dataset", "/home/u/dev/example-dataset", 4, issue, "QT-10"),
 		"worker":  rolePrompt(sc, worker, "/home/u/wt/example-dataset/wire", "example-dataset", "/home/u/dev/example-dataset", 4, atb.Issue{}, ""),
-		"revisit": revisit,
 		"unblock": helper,
 	}
 }
 
 // goldenOf names the golden file of each of renders' first messages.
 var goldenOf = map[string]string{"thread": "thread-initiative", "lead": "lead-single-issue", "worker": "worker-single",
-	"revisit": "revisit", "unblock": "unblock"}
+	"unblock": "unblock"}
+
+// textOf is the built-in text each of renders' first messages starts
+// with: the unblock watch's worker has the worker text.
+var textOf = map[string]string{"thread": "thread", "lead": "lead", "worker": "worker", "unblock": "worker"}
 
 // golden is the golden file of renders' first message `name`.
 func golden(t *testing.T, name string) string {
@@ -168,7 +169,7 @@ func TestAReplacementMayUseEverySlotOfItsTextAndAllAreFilled(t *testing.T) {
 		if strings.Contains(got, "{{") {
 			t.Errorf("%s: a slot is left unfilled: %q", name, got)
 		}
-		if !strings.Contains(got, name+" agent=") {
+		if !strings.Contains(got, textOf[name]+" agent=") {
 			t.Errorf("%s: the replacement is not in the first message: %q", name, got)
 		}
 	}
@@ -203,18 +204,30 @@ func TestATextIsTheReplacementThenTheAddition(t *testing.T) {
 	if !strings.HasPrefix(got, "Replaced, thread-c1-1-0.\n\n"+commonPrompt+"\n## The message\n") {
 		t.Errorf("thread: common and fleet's sections do not follow the replacement: %q", got)
 	}
-	got = renders(t, promptScope(t, map[string]map[string]string{"common": {"append": "ca.md"}}, "", files))["revisit"]
-	if got != golden(t, "revisit") {
-		t.Errorf("common reached the revisit agent: %q", got)
+	// The unblock watch's worker is a worker: the worker addition reaches
+	// it after common, before fleet's sections.
+	got = renders(t, promptScope(t, map[string]map[string]string{"worker": {"append": "a.md"}}, "", files))["unblock"]
+	if !strings.Contains(got, commonPrompt+"\nAdded, .\n\n## Your task\n") {
+		t.Errorf("unblock: the worker addition is not between common and the task: %q", got)
 	}
 }
 
-func TestTheGuidanceAdditionComesBeforeTheScreen(t *testing.T) {
-	sc := promptScope(t, map[string]map[string]string{"screen_guidance": {"append": "g.md"}}, "",
-		map[string]string{"g.md": "- A `go vet` confirmation: allow it.\n"})
+// The unblock watch's prompt file takes the place of the built-in text
+// and the guidance together; the worker text stays.
+func TestTheUnblockWatchsPromptReplacesItsTextAndTheGuidance(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "u.md"), []byte("Press only `esc`; ask in {{question_file}}.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sc, err := config.ParseScope([]byte(`{"watches": {"unblock": {"prompt": "`+filepath.Join(dir, "u.md")+`"}}}`), "/home/u")
+	if err != nil {
+		t.Fatal(err)
+	}
 	got := renders(t, sc)["unblock"]
-	if !strings.Contains(got, screenGuidance+"\n- A `go vet` confirmation: allow it.\n\n## The screen\n") {
-		t.Errorf("the addition is not right after the guidance and before the screen: %q", got)
+	if strings.Contains(got, "## Guidance") || strings.Contains(got, "Your only task is that screen") ||
+		!strings.HasSuffix(got, "```\n\nPress only `esc`; ask in /home/u/.local/state/fleet/main-watch/watch-unblock-7-question.md.\n") ||
+		!strings.HasPrefix(got, "You are a worker run by fleet: watch-unblock-7,") {
+		t.Errorf("the prompt file did not take the place of the text and the guidance: %q", got)
 	}
 }
 
@@ -231,14 +244,29 @@ func TestAnUnknownSlotIsRefusedAtItsLineAndColumn(t *testing.T) {
 	}
 	want := "prompts.lead.append (" + sc.Prompts["lead"].Append + ":2:30): unknown slot {{repo}}; lead has {{agent}} " +
 		"{{agents_md}} {{cap}} {{cwd}} {{issue}} {{issue_note}} {{job}} {{lead}} {{lead_effort}} {{lead_model}} " +
-		"{{linear}} {{parent}} {{repo_line}} {{scope}} {{scratch}} {{worker_effort}} {{worker_model}}"
+		"{{linear}} {{one_task}} {{parent}} {{repo_line}} {{scope}} {{scratch}} {{worker_effort}} {{worker_model}}"
 	if err.Error() != want {
 		t.Errorf("got  %s\nwant %s", err, want)
 	}
-	sc = promptScope(t, map[string]map[string]string{"screen_guidance": {"replace": "g.md"}}, "",
-		map[string]string{"g.md": "Press {{key}}.\n"})
-	if _, err := loadPrompt(sc, "screen_guidance"); err == nil || !strings.HasSuffix(err.Error(), ":1:7): unknown slot {{key}}; screen_guidance has no slots") {
-		t.Errorf("guidance with a slot: %v", err)
+	sc = promptScope(t, map[string]map[string]string{"common": {"replace": "c.md"}}, "",
+		map[string]string{"c.md": "Press {{key}}.\n"})
+	if _, err := loadPrompt(sc, "common"); err == nil || !strings.HasSuffix(err.Error(), ":1:7): unknown slot {{key}}; common has no slots") {
+		t.Errorf("common with a slot: %v", err)
+	}
+}
+
+// A watch's prompt has {{key}} and {{text}}, and a worker watch's also
+// {{question_file}}.
+func TestAWatchPromptHasTheSlotsOfItsAct(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "p.md")
+	if err := os.WriteFile(file, []byte("{{key}} {{text}} {{question_file}}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for do, want := range map[string]string{"worker": "", "tell": "unknown slot {{question_file}}; a watch's prompt has {{key}} {{text}}"} {
+		_, err := watchPrompt(&config.Scope{}, config.Entry{Name: "w", Do: do, Prompt: file})
+		if want == "" && err != nil || want != "" && (err == nil || !strings.HasSuffix(err.Error(), want)) {
+			t.Errorf("do %s: %v", do, err)
+		}
 	}
 }
 
@@ -267,8 +295,8 @@ func TestAMissingEmptyOrUnreadableFileIsRefused(t *testing.T) {
 
 func TestTheSameMistakeHasOneDigestAndAnotherAnother(t *testing.T) {
 	digest := func(text string) string {
-		sc := promptScope(t, map[string]map[string]string{"unblock": {"append": "u.md"}}, "", map[string]string{"u.md": text})
-		_, err := loadPrompt(sc, "unblock")
+		sc := promptScope(t, map[string]map[string]string{"worker": {"append": "u.md"}}, "", map[string]string{"u.md": text})
+		_, err := loadPrompt(sc, "worker")
 		var broken *promptError
 		if !errors.As(err, &broken) {
 			t.Fatalf("not a promptError: %v", err)
@@ -277,16 +305,16 @@ func TestTheSameMistakeHasOneDigestAndAnotherAnother(t *testing.T) {
 	}
 	// Each scope has its own directory, so the paths in the messages differ; the
 	// same directory is what watch sees run after run.
-	sc := promptScope(t, map[string]map[string]string{"unblock": {"append": "u.md"}}, "", map[string]string{"u.md": "{{x}}\n"})
-	_, first := loadPrompt(sc, "unblock")
-	_, again := loadPrompt(sc, "unblock")
+	sc := promptScope(t, map[string]map[string]string{"worker": {"append": "u.md"}}, "", map[string]string{"u.md": "{{x}}\n"})
+	_, first := loadPrompt(sc, "worker")
+	_, again := loadPrompt(sc, "worker")
 	if first.(*promptError).digest != again.(*promptError).digest {
 		t.Error("the same file gave two digests")
 	}
-	if err := os.WriteFile(sc.Prompts["unblock"].Append, []byte("{{x}}\n\n"), 0o644); err != nil {
+	if err := os.WriteFile(sc.Prompts["worker"].Append, []byte("{{x}}\n\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, changed := loadPrompt(sc, "unblock"); changed.(*promptError).digest == first.(*promptError).digest {
+	if _, changed := loadPrompt(sc, "worker"); changed.(*promptError).digest == first.(*promptError).digest {
 		t.Error("a changed file kept its digest")
 	}
 	if digest("{{x}}\n") == digest("{{y}}\n") {
