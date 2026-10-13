@@ -50,12 +50,12 @@ func helperNamed(name string) bool {
 
 // workerName is the worker of the watch `watch` for the subject `key`:
 // the same name for every worker of that subject, so at most one is live.
-// A key that is not already a name's part, or a name past herdr's 32
-// characters, is cut and hashed.
+// A key that is a name's part but for its case keeps its form; another,
+// or a name past herdr's 32 characters, is cut and hashed.
 func workerName(watch, key string) string {
 	slug := slugOf(key)
 	name := workerPrefix + watch + "-" + slug
-	if slug == key && len(name) <= 32 {
+	if slug == strings.ToLower(key) && len(name) <= 32 {
 		return name
 	}
 	sum := sha256.Sum256([]byte(watch + "\x00" + key))

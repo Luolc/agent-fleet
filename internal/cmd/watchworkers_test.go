@@ -13,8 +13,10 @@ import (
 )
 
 func TestAWorkerNameIsTheWatchAndTheKeyOrCutWithAHash(t *testing.T) {
-	if got := workerName("unblock", "12"); got != "watch-unblock-12" {
-		t.Errorf("plain: %s", got)
+	for key, want := range map[string]string{"12": "watch-unblock-12", "EX-1": "watch-unblock-ex-1"} {
+		if got := workerName("unblock", key); got != want {
+			t.Errorf("%s: %s", key, got)
+		}
 	}
 	for _, key := range []string{"PR/12", "a-very-long-subject-key-of-a-ci-run"} {
 		got := workerName("ci", key)
