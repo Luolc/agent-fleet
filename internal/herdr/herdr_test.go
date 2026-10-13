@@ -93,3 +93,14 @@ func TestNormalCompletionIsUntouched(t *testing.T) {
 		t.Errorf("outcome = %+v, err = %v", outcome, err)
 	}
 }
+
+func TestExecInputFailsWhenTheProgramPrintsPastTheLimit(t *testing.T) {
+	out, _, err := ExecInput("the source", nil, 5*time.Second, 100, []byte("abc"), "sh", "-c", "cat; head -c 97 /dev/zero")
+	if err != nil || len(out) != 100 {
+		t.Fatalf("%d bytes, %v", len(out), err)
+	}
+	_, _, err = ExecInput("the source", nil, 5*time.Second, 100, nil, "sh", "-c", "head -c 101 /dev/zero")
+	if err == nil || err.Error() != "the source printed more than 100 bytes" {
+		t.Errorf("%v", err)
+	}
+}

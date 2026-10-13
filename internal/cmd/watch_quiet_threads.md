@@ -1,0 +1,1 @@
+With jobs open, post their progress to the thread when there is some, ask the people when something is in the way, tell a stuck lead, or reclaim a gone lead's job with `fleet job end <job> --force`. With nothing open, do what is left; when nothing is left to do, end the session with `fleet thread end --summary-file <file>`.

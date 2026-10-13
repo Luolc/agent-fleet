@@ -17,7 +17,7 @@ import (
 	"github.com/Luolc/agent-fleet/internal/exit"
 )
 
-const schemaVersion = 12
+const schemaVersion = 13
 
 // Version 1: the `agents` table. Ended rows are kept as history, so `name`
 // is unique only among rows that have not ended.
@@ -236,8 +236,27 @@ INSERT INTO reminders (msg_id, thread, state)
     SELECT reminder_msg, min(thread), 'posted' FROM questions WHERE reminder_msg != '' GROUP BY reminder_msg ORDER BY min(id);
 `
 
+// Version 13: the subjects of the scope's command watches, one row per
+// subject its source gave in its last run: the digest of the text when it
+// was last acted on, when it was first seen and last acted on, the acts
+// so far, and when the people were asked about it once its acts reached
+// the watch's `max`.
+const schemaV13 = `
+CREATE TABLE watch_subjects (
+    id         INTEGER PRIMARY KEY,
+    watch      TEXT    NOT NULL,
+    key        TEXT    NOT NULL,
+    digest     TEXT    NOT NULL DEFAULT '',
+    first_seen INTEGER NOT NULL,
+    last_acted INTEGER,
+    acts       INTEGER NOT NULL DEFAULT 0,
+    asked_at   INTEGER,
+    UNIQUE (watch, key)
+);
+`
+
 // migrations[v] upgrades a ledger at version v to v+1.
-var migrations = [schemaVersion]string{schema, schemaV2, schemaV3, schemaV4, schemaV5, schemaV6, schemaV7, schemaV8, schemaV9, schemaV10, schemaV11, schemaV12}
+var migrations = [schemaVersion]string{schema, schemaV2, schemaV3, schemaV4, schemaV5, schemaV6, schemaV7, schemaV8, schemaV9, schemaV10, schemaV11, schemaV12, schemaV13}
 
 // Path is where the ledger of `scope` lives:
 // `$XDG_STATE_HOME/fleet/<scope>.db`, with `~/.local/state` when

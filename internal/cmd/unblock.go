@@ -427,18 +427,18 @@ func (u *unblocking) ask(row stopRow, text string) error {
 
 // post posts `text` to `thread` and records it as a question pending from
 // `asker` for `job` (empty for none).
-func (u *unblocking) post(thread, job, asker, text string) error {
-	if u.cfg.FednetSocket == "" {
-		return exit.Refusedf("fednet.socket is not configured for scope %s, so %s cannot ask the people", u.scope, asker)
+func (r *watchRun) post(thread, job, asker, text string) error {
+	if r.cfg.FednetSocket == "" {
+		return exit.Refusedf("fednet.socket is not configured for scope %s, so %s cannot ask the people", r.scope, asker)
 	}
-	_, _, code, err := fednet.Relay(u.cfg.FednetSocket, thread, text, nil)
+	_, _, code, err := fednet.Relay(r.cfg.FednetSocket, thread, text, nil)
 	if err != nil {
 		return err
 	}
 	if code != 0 {
 		return exit.Environmentf("fednet client post failed (exit status: %d)", code)
 	}
-	if _, err := u.conn.Exec("INSERT INTO questions (job, thread, asked_by, text, approval, state, asked_at) "+
+	if _, err := r.conn.Exec("INSERT INTO questions (job, thread, asked_by, text, approval, state, asked_at) "+
 		"VALUES (?1, ?2, ?3, ?4, 0, 'pending', ?5)", job, thread, asker, text, db.Now()); err != nil {
 		return exit.Database(err)
 	}
@@ -488,20 +488,20 @@ func (u *unblocking) homeThread(row stopRow) (string, error) {
 	return job.HomeThread, nil
 }
 
-// promptBroken is what watch does instead of starting `what` when its
-// prompt cannot be put together: the error is posted to `thread`, the one
-// the agent would have asked in, once per error (the steps record
-// `prompt-error:<digest>`), so a thread that meets the same error later
-// is not told; the error is returned for the run's output, which is all
-// there is without a thread or a socket.
-func (u *unblocking) promptBroken(err error, thread, what string) error {
+// promptBroken is what watch does instead of `what` (a start, or telling
+// an agent) when its prompt cannot be put together: the error is posted
+// to `thread`, the one the agent would have asked in, once per error (the
+// steps record `prompt-error:<digest>`), so a thread that meets the same
+// error later is not told; the error is returned for the run's output,
+// which is all there is without a thread or a socket.
+func (r *watchRun) promptBroken(err error, thread, what string) error {
 	var broken *promptError
-	if !errors.As(err, &broken) || thread == "" || u.cfg.FednetSocket == "" {
+	if !errors.As(err, &broken) || thread == "" || r.cfg.FednetSocket == "" {
 		return err
 	}
-	posted := runStep(u.conn, "prompt-error:"+broken.digest, "posted", func() error {
-		return fednet.Post(u.cfg.FednetSocket, thread, fmt.Sprintf("fleet watch did not start %s: fleet's prompt "+
-			"config is broken (%v). This is said once for this error; once it is fixed, a later run starts it.", what, err))
+	posted := runStep(r.conn, "prompt-error:"+broken.digest, "posted", func() error {
+		return fednet.Post(r.cfg.FednetSocket, thread, fmt.Sprintf("fleet watch did not %s: fleet's prompt config is "+
+			"broken (%v). This is said once for this error; once it is fixed, a later run tries again.", what, err))
 	})
 	return errors.Join(err, posted)
 }
@@ -569,7 +569,7 @@ func (u *unblocking) startHelper(row stopRow, helper, screen string) error {
 		if threadErr != nil {
 			return errors.Join(err, threadErr)
 		}
-		return u.promptBroken(err, thread, fmt.Sprintf("a screen helper for %s (%s)", row.Name, row.who()))
+		return u.promptBroken(err, thread, fmt.Sprintf("start a screen helper for %s (%s)", row.Name, row.who()))
 	}
 	issue, err := u.ticket(row, helper, screen)
 	if err != nil {
