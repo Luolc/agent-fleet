@@ -280,15 +280,22 @@ func (r *watchRun) commandWatch(e config.Entry) error {
 	if err != nil {
 		return err
 	}
+	acts := r.actOn(e, prompt, subjects, rows)
+	fmt.Fprintf(os.Stdout, "watch %s: %d subject(s), acted on %d\n", e.Name, len(subjects), acts)
+	return r.ran(e)
+}
+
+// actOn acts on the due subjects, in output order, at most `per_run`,
+// while the run has time: a tell, or at `max` the question to the people.
+// It returns how many it acted on.
+func (r *watchRun) actOn(e config.Entry, prompt *promptText, subjects []subject, rows map[string]watchSubject) int {
 	acts := 0
 	for _, s := range subjects {
 		if acts >= e.PerRun || r.outOfTime() {
 			break
 		}
 		row := rows[s.Key]
-		due := row.acts == 0 || e.Again > 0 && r.now-row.lastActed.Int64 >= secs(e.Again) ||
-			e.Again == 0 && row.digest != Hash(s.Text)
-		if !due || row.askedAt.Valid {
+		if !row.due(e, r.now, s.Text) {
 			continue
 		}
 		acts++
@@ -300,8 +307,23 @@ func (r *watchRun) commandWatch(e config.Entry) error {
 			r.failed(fmt.Errorf("watch %s, subject %s: %w", e.Name, s.Key, err))
 		}
 	}
-	fmt.Fprintf(os.Stdout, "watch %s: %d subject(s), acted on %d\n", e.Name, len(subjects), acts)
-	return r.ran(e)
+	return acts
+}
+
+// due is whether the subject gets an act at `now`: when first seen, then
+// with `again` once that long has passed since its last act, without it
+// when its text changed; never once the people were asked about it.
+func (row watchSubject) due(e config.Entry, now int64, text string) bool {
+	if row.askedAt.Valid {
+		return false
+	}
+	if row.acts == 0 {
+		return true
+	}
+	if e.Again > 0 {
+		return now-row.lastActed.Int64 >= secs(e.Again)
+	}
+	return row.digest != Hash(text)
 }
 
 // syncSubjects records the subjects of this run of the watch `name`: a
