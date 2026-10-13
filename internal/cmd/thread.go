@@ -223,6 +223,16 @@ func MappingDir(sc *config.Scope, mapping string) string {
 	return filepath.Join(sc.Paths.Checkouts, strings.TrimPrefix(mapping, sc.Channels.RepoPrefix))
 }
 
+// mappingScratch is the directory for the files of a mapping's thread
+// agents, their `FLEET_SCRATCH`, named as a job's: `<scratch>/<R>` for a
+// repo's channel, `<scratch>/<initiative prefix><I>` for an initiative's.
+func mappingScratch(sc *config.Scope, mapping string) string {
+	if strings.HasPrefix(mapping, sc.Channels.InitiativePrefix) {
+		return filepath.Join(sc.Paths.Scratch, mapping)
+	}
+	return filepath.Join(sc.Paths.Scratch, strings.TrimPrefix(mapping, sc.Channels.RepoPrefix))
+}
+
 // jobMapping is the channel of a single-repo job's repo, by the checkout
 // its lead runs in: the initiative's channel, whose name is the repo's,
 // for an initiative's repo run in the initiative's checkout (as `fleet
@@ -398,14 +408,15 @@ func newThreadStart(h *herdr.Herdr, conn *sql.DB, scope string, cfg *config.Scop
 // belong sets the thread's mapping and directory: the recorded ones of a
 // known thread, else the message's.
 func (s *threadStart) belong() error {
-	if s.known != nil && s.known.Mapping != "" {
+	switch {
+	case s.known != nil && s.known.Mapping != "":
 		s.mapping, s.cwd = s.known.Mapping, s.known.Cwd
-		return nil
-	}
-	if s.msg.Mapping == "" {
+	case s.msg.Mapping == "":
 		return exit.Environmentf("the ledger records no channel for thread %s", s.msg.Thread)
+	default:
+		s.mapping, s.cwd = s.msg.Mapping, MappingDir(s.cfg, s.msg.Mapping)
 	}
-	s.mapping, s.cwd = s.msg.Mapping, MappingDir(s.cfg, s.msg.Mapping)
+	s.id.Scratch = mappingScratch(s.cfg, s.mapping)
 	return nil
 }
 
@@ -610,7 +621,7 @@ func (s *threadStart) slots() map[string]string {
 	}
 	slots := map[string]string{"scope": s.id.Scope, "agent": s.id.Agent, "mapping": s.mapping, "cwd": s.cwd,
 		"rules": s.jobKind(), "xrepo": crossRepoRoot(s.cfg, s.mapping), "checkouts": s.cfg.Tilde(s.cfg.Paths.Checkouts),
-		"ticket": ticket, "ticket_note": note, "post": post, "progress": progress}
+		"scratch": s.cfg.Tilde(mappingScratch(s.cfg, s.mapping)), "ticket": ticket, "ticket_note": note, "post": post, "progress": progress}
 	maps.Copy(slots, modelValues(s.cfg))
 	return slots
 }

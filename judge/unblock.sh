@@ -92,6 +92,8 @@ has "unblock: the helper's first message: the stopped agent, the guidance, the s
 hcwd=$(readlink "/proc/$("${S[@]}" pane process-info --pane "$(agent_field "$hperm" pane_id)" | jq -r '.result.process_info.foreground_processes[0].pid')/cwd")
 check "unblock: the helper runs in the scope's own directory, outside every checkout" yes \
   "$(case "$hcwd" in /home/agent/dev/* | /home/agent/x-repo/* | /home/agent/wt/* | /home/agent) echo "no: $hcwd" ;; *) [ -d "$hcwd" ] && echo yes ;; esac)"
+check "unblock: the helper's scratch variable is the directory it runs in" "${P}SCRATCH=$hcwd" \
+  "$(proc_env "$hperm" | grep -o "${P}SCRATCH=[^ ]*")"
 check "unblock: the usage-limit menu is left as it is" blocked "$(agent_field l-lead agent_status)"
 has "unblock: the people are asked about the usage limit in the home thread" "$(cat /home/agent/screens-fednet.log)" \
   "$KS" "l-lead (the lead of job l) is stopped at a screen fleet never answers" "usage limit"

@@ -590,9 +590,11 @@ func (u *unblocking) startHelper(row stopRow, helper, screen string) error {
 }
 
 // startInThreads starts the agent `id` in a new tab of the scope's
-// `threads` workspace, in the helpers' directory, with `body` as its first
-// message headed `[FROM: watch]`; its row records `parentIssue`.
+// `threads` workspace, in the helpers' directory, which is also its
+// `FLEET_SCRATCH`, with `body` as its first message headed
+// `[FROM: watch]`; its row records `parentIssue`.
 func (u *unblocking) startInThreads(id *identity.Identity, parentIssue, body string) error {
+	id.Scratch = u.dir
 	if err := reserve(u.conn, func(q querier) error { return liveNameTaken(q, id.Agent) },
 		func(q querier) error { return insertStarting(q, id, u.dir, "", parentIssue) }); err != nil {
 		return err

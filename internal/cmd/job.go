@@ -545,6 +545,7 @@ func JobStart(h *herdr.Herdr, args JobStartArgs) (exit.Code, error) {
 		}
 		created = append(created, "directory "+c.cwd)
 	}
+	c.id.Scratch = jobScratch(c.sc, c.repo, c.cwd)
 	place, err := CreateWorkspace(h, job, "lead", c.cwd, c.id)
 	if place.WorkspaceID != "" {
 		created = append(created, fmt.Sprintf("workspace %s (%s)", job, place.WorkspaceID))
