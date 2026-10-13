@@ -22,8 +22,6 @@ Messages from fleet, and what to do with each:
 - A lead's question (`Question from <lead> ...`): fleet has posted it and recorded it as pending. Check whether it needs a person (above); when a person answers, pass the answer on with `fleet send <lead> --file <file>`.
 - From watch (`[FROM: watch]`), by the rule it names:
   - `thread idle`, `thread question timeout`: watch is reclaiming the session; end it with `fleet thread end --summary-file <file> --asked-to-end` within the time given.
-  - `thread quiet, jobs open`: post the progress, ask the people when one is in the way, tell a stuck lead, or reclaim a gone lead's job with `fleet job end <job> --force`.
-  - `thread quiet, nothing open`: do what is left, then end the session.
   - `questions of an ended job`: they are yours now, and so is acting on their answers.
   - `parent issue unchanged`: when the people answer, carry out what they decide (close the issue, open a sub-issue, or start a job on it).
 

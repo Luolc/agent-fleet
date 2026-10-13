@@ -38,9 +38,9 @@ const runBudget = 45 * time.Second
 
 // WatchAbout and WatchLongAbout are the help texts of `watch`.
 const (
-	WatchAbout     = "Timer check of a scope: stuck workers, stopped agents, unchanged parent issues, quiet threads, idle sessions, unanswered questions"
+	WatchAbout     = "Timer check of a scope: stuck workers, stopped agents, unchanged parent issues, quiet threads, idle sessions, unanswered questions, configured watches"
 	WatchLongAbout = "Timer check of a scope: stuck workers, stopped agents, unchanged parent issues, quiet threads, idle " +
-		"sessions, unanswered questions.\n\n" +
+		"sessions, unanswered questions, configured watches.\n\n" +
 		"Meant for a timer every 5 minutes, with --scope; one run at a time per scope (a lock " +
 		"file next to the ledger; a second run is refused). Each run first reads everything it " +
 		"needs: the ledger, `herdr agent list`, the visible screen of every live lead and worker, " +
@@ -58,7 +58,7 @@ const (
 		"spinner line, the input box and the footer stripped) are recorded; an agent is a suspect " +
 		"when all three have been unchanged for `worker_stale` (10m), or when it is gone from " +
 		"herdr (a `starting` row 10 minutes after its start); an agent blocked at a prompt is not. Each lead is told when the set of suspects " +
-		"among its workers changes; a lead blocked or gone is told again next run. A lead's own " +
+		"among its workers changes (the watch `stale-workers`); a lead blocked or gone is told again next run. A lead's own " +
 		"state goes into the quiet-thread notice below.\n\n" +
 		"Screens: then every live agent stopped at a screen (herdr status blocked, or a start " +
 		"left at a screen for 10 minutes), thread agents included. The folder-trust dialog for " +
@@ -88,7 +88,7 @@ const (
 		"reclaimed: the agent is asked to write its summary and end; 10 minutes later fleet ends it " +
 		"(the ticket gets a comment saying no summary was left), closes its tab and posts the " +
 		"closing line. A thread with no pending question and no message for `thread_quiet` (30m) " +
-		"is asked about once per quiet spell: with open jobs reporting to it, its thread agent " +
+		"is asked about once per quiet spell (the watch `quiet-threads`): with open jobs reporting to it, its thread agent " +
 		"(started for it when none is live) gets each job's state and is asked for progress; " +
 		"with none, a live thread agent is asked why it has not ended.\n\n" +
 		"Questions: the people are reminded of a thread's pending questions in one post listing " +
@@ -103,6 +103,18 @@ const (
 		"pending when its job ended otherwise (`job end`, or `job end --force`) is the thread's from " +
 		"then on: reminded of as before, counted from when it was asked; the live thread agent, if " +
 		"any, is told once; it is closed after `thread_question` without the session being reclaimed.\n\n" +
+		"Watches: the two rules named above are the defaults of `watches` in the scope's settings; an entry " +
+		"of the same name sets only their `every` (the least time between two runs), `prompt` (a file in place " +
+		"of the instructions the notice ends with, slots {{key}} and {{text}}) or `off`. Any other entry has a " +
+		"command source, `\"source\": {\"command\": [...]}`, with `\"do\": \"tell\"`. Its program runs with a 30 s " +
+		"deadline and, beyond a fixed list, only the variables `env` names; it reads one JSON object on stdin " +
+		"(`version`, `scope`, `now`, `jobs`) and prints one JSON object per line, one per subject: `key`, `text`, " +
+		"and the `agent`, `job` or `thread` it concerns. `tell` sends the text and the prompt to that agent, the " +
+		"job's live lead or the thread's agent (started for it when none is live): at most `per_run` (1) " +
+		"subjects a run, a subject again only when its text changed or, with `again`, once that long has " +
+		"passed; at its `max`-th act the people in its thread are asked once instead, and nothing more is done " +
+		"while the source gives it. A tell that did not land is tried again next run; a source that fails " +
+		"skips its watch, saying so, and the exit is 5.\n\n" +
 		"The limits are durations such as `10m` or `72h` under `watch` in the scope's settings " +
 		"(`parent_agents` a number); " +
 		"`worker_stale` and `lead_question` of a single-repo job come from its repo's " +
@@ -111,7 +123,7 @@ const (
 		"a config file or FLEET_WATCH_NOW is invalid, or another run holds the lock; 2, 3 or 4 when " +
 		"a delivery gave no clear signal, found the agent blocked, or did not find it, as for " +
 		"`send` (the next run tries again where that matters); 5 when a read fails (nothing " +
-		"done), an action fails (the rest still done), the run is out of time, or the ledger does " +
+		"done), a watch's source or an action fails (the rest still done), the run is out of time, or the ledger does " +
 		"not exist."
 )
 
@@ -232,9 +244,10 @@ func Watch(h *herdr.Herdr) (exit.Code, error) {
 	}
 	if !on {
 		fmt.Fprintf(os.Stderr, "note: fednet.socket is not configured for scope %s; the thread and question rules are off\n", scope)
-		return r.code, nil
+	} else if err := r.threads(threads, all); err != nil {
+		return 0, err
 	}
-	if err := r.threads(threads, all); err != nil {
+	if err := r.commandWatches(); err != nil {
 		return 0, err
 	}
 	return r.code, nil
@@ -264,14 +277,18 @@ func (r *watchRun) jobs(all []watched) error {
 	if err := saveSuspects(r.conn, leads); err != nil {
 		return err
 	}
-	told, err := r.tellLeads(all)
-	if err != nil {
+	e := r.builtinWatch(config.StaleAgents)
+	if due, err := r.due(e); err != nil || !due {
+		return err
+	}
+	told, cut, err := r.tellLeads(all, e)
+	if err != nil || cut {
 		return err
 	}
 	if !told {
 		fmt.Fprintf(os.Stdout, "suspect set unchanged for every lead (%d suspect)\n", suspects)
 	}
-	return nil
+	return r.ran(e)
 }
 
 // watchNow is the run's clock: FLEET_WATCH_NOW when set, else now.
@@ -348,32 +365,46 @@ func workersByLead(all []watched) (leads []string, byLead map[string][]watched) 
 	return leads, byLead
 }
 
-// tellLeads tells each lead whose set of suspect workers changed, and saves
-// the verdicts of the workers whose lead was told (or may have been: exit
-// 2); told is whether any lead was told.
-func (r *watchRun) tellLeads(all []watched) (bool, error) {
+// tellLeads tells each lead whose set of suspect workers changed, as the
+// watch `e` says, and saves the verdicts of the workers whose lead was
+// told (or may have been: exit 2); told is whether any lead's set changed.
+// A broken prompt tells no lead this run, and is `cut`: the watch did not
+// get through.
+func (r *watchRun) tellLeads(all []watched, e config.Entry) (told, cut bool, err error) {
 	leads, byLead := workersByLead(all)
-	told := false
+	prompt, promptErr := watchPrompt(r.cfg, e)
 	for _, lead := range leads {
 		if r.outOfTime() {
 			break
 		}
-		changed, err := r.tellLead(lead, byLead[lead])
-		if err != nil {
-			return false, err
+		workers := byLead[lead]
+		before, after := suspectSets(workers)
+		if slices.Equal(before, after) {
+			continue
 		}
-		told = told || changed
+		told = true
+		if promptErr != nil {
+			job, err := openJob(r.conn, workers[0].live.Job)
+			if err != nil {
+				return told, true, err
+			}
+			thread := ""
+			if job != nil {
+				thread = job.HomeThread
+			}
+			r.failed(r.promptBroken(promptErr, thread, "tell "+lead+" about its suspect workers"))
+			return told, true, nil
+		}
+		if err := r.tellLead(lead, workers, before, prompt); err != nil {
+			return told, true, err
+		}
 	}
-	return told, nil
+	return told, false, nil
 }
 
-// tellLead tells `lead` when the set of suspects among `workers` changed
-// since the last run; changed is whether it did. Without a clear signal
-// (exit 2) the notice may have arrived; it is not resent blindly. A
-// blocked or missing lead is told again next run, so the verdicts are
-// saved only on exit 0 or 2.
-func (r *watchRun) tellLead(lead string, workers []watched) (bool, error) {
-	var before, after []string
+// suspectSets are the names of the suspects among `workers` at the last
+// run and at this one.
+func suspectSets(workers []watched) (before, after []string) {
 	for _, w := range workers {
 		if w.live.Suspect {
 			before = append(before, w.live.Name)
@@ -382,26 +413,28 @@ func (r *watchRun) tellLead(lead string, workers []watched) (bool, error) {
 			after = append(after, w.live.Name)
 		}
 	}
-	before, after = nameSet(before), nameSet(after)
-	if slices.Equal(before, after) {
-		return false, nil
-	}
-	text, err := WithHeader(watchSender, notice(workers, before, r.now))
+	return nameSet(before), nameSet(after)
+}
+
+// tellLead tells `lead` that the set of suspects among `workers` changed
+// from `before`. Without a clear signal (exit 2) the notice may have
+// arrived; it is not resent blindly. A blocked or missing lead is told
+// again next run, so the verdicts are saved only on exit 0 or 2.
+func (r *watchRun) tellLead(lead string, workers []watched, before []string, prompt *promptText) error {
+	text, err := WithHeader(watchSender, watchMessage(prompt, lead, notice(workers, before, r.now)))
 	if err != nil {
-		return true, err
+		return err
 	}
 	got, err := Deliver(r.h, lead, text)
 	if err != nil {
 		r.failed(err)
-		return true, nil
+		return nil
 	}
 	r.got(got)
 	if got == exit.Ok || got == exit.Unknown {
-		if err := saveSuspects(r.conn, workers); err != nil {
-			return true, err
-		}
+		return saveSuspects(r.conn, workers)
 	}
-	return true, nil
+	return nil
 }
 
 // watchRead reads every live lead and worker from herdr and compares it with
@@ -516,8 +549,7 @@ func notice(workers []watched, before []string, now int64) string {
 	var text strings.Builder
 	text.WriteString("fleet watch, rule `suspect workers`: the set of suspect agents among your workers changed. " +
 		"A suspect has had the same herdr status, state_change_seq and screen for the job's limit, or is gone " +
-		"from herdr. Look at each: a false alarm needs nothing; otherwise send it a message, start another " +
-		"worker to take over, or ask the people with `fleet ask-human`.\n")
+		"from herdr.\n")
 	if len(suspects) == 0 {
 		text.WriteString("\nNo worker of yours is a suspect now.\n")
 	} else {

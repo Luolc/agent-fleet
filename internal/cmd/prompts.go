@@ -178,7 +178,18 @@ func readPromptFile(sc *config.Scope, name, field, path string, checked bool) (*
 	if path == "" {
 		return nil, nil
 	}
-	part := &promptPart{Source: "prompts." + name + "." + field, Path: path}
+	part, shown, err := readPart(sc, "prompts."+name+"."+field, path)
+	if err != nil || !checked {
+		return part, err
+	}
+	return part, checkSlots(part, shown, name, specOf(name).slots)
+}
+
+// readPart is the part the file `path` makes as the config's `key`, and
+// the path as the prompts show it; a file that cannot be read or is empty
+// is a promptError.
+func readPart(sc *config.Scope, key, path string) (*promptPart, string, error) {
+	part := &promptPart{Source: key, Path: path}
 	shown := sc.Tilde(path)
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -186,19 +197,16 @@ func readPromptFile(sc *config.Scope, name, field, path string, checked bool) (*
 		if errors.As(err, &pathErr) {
 			err = pathErr.Err
 		}
-		return nil, brokenPrompt(part.Source, shown, "", "cannot read the file: %v", err)
+		return nil, shown, brokenPrompt(part.Source, shown, "", "cannot read the file: %v", err)
 	}
 	part.Text = string(data)
 	if strings.TrimSpace(part.Text) == "" {
-		return nil, brokenPrompt(part.Source, shown, part.Text, "the file is empty")
+		return nil, shown, brokenPrompt(part.Source, shown, part.Text, "the file is empty")
 	}
 	if !strings.HasSuffix(part.Text, "\n") {
 		part.Text += "\n"
 	}
-	if !checked {
-		return part, nil
-	}
-	return part, checkSlots(part, shown, name, specOf(name).slots)
+	return part, shown, nil
 }
 
 // checkSlots refuses the first slot in `part` that the text `name` does
