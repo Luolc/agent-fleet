@@ -223,8 +223,9 @@ func (u *workers) stopped(row stopRow) (screen string, ok bool, err error) {
 // handle deals with one stopped agent that has no live worker: nothing
 // while a question about it waits for the people; the folder-trust
 // dialog for its own directory answered; a screen fleet never answers
-// sent to a person once; any other screen, when the watch `e` is `due`,
-// to a new worker, at most maxHelpers of them, then to a person once.
+// sent to a person once; any other screen to a person once after
+// maxHelpers workers, before that, when the watch `e` is `due`, to a new
+// worker.
 func (u *workers) handle(e config.Entry, due bool, row stopRow, screen string) error {
 	names := screenWorkers(row.ID)
 	pending, _, err := pendingFrom(u.conn, names)
@@ -253,14 +254,6 @@ func (u *workers) handle(e config.Entry, due bool, row stopRow, screen string) e
 			"limit, a model switch, a usage reset or a purchase. A person has to deal with it at the machine (agent %s "+
 			"in the herdr session %s).", row.Name, row.who(), row.Name, identity.Session(u.scope))+shown)
 	}
-	if !due {
-		why := "is off"
-		if !e.Off {
-			why = "is not due this run"
-		}
-		fmt.Fprintf(os.Stdout, "unblock: %s is stopped at a screen; the watch %s %s\n", row.Name, e.Name, why)
-		return nil
-	}
 	var helpers int
 	if err := u.conn.QueryRow("SELECT count(*) FROM agents WHERE name IN (?1, ?2)", names[0], names[1]).
 		Scan(&helpers); err != nil {
@@ -270,6 +263,14 @@ func (u *workers) handle(e config.Entry, due bool, row stopRow, screen string) e
 		return u.askOnce(row, "ask-helpers", fmt.Sprintf("%s (%s) is still stopped at a screen after %d helpers. A "+
 			"person has to look at it at the machine (agent %s in the herdr session %s).", row.Name, row.who(), helpers,
 			row.Name, identity.Session(u.scope))+shown)
+	}
+	if !due {
+		why := "is off"
+		if !e.Off {
+			why = "is not due this run"
+		}
+		fmt.Fprintf(os.Stdout, "unblock: %s is stopped at a screen; the watch %s %s\n", row.Name, e.Name, why)
+		return nil
 	}
 	return u.startHelper(e, row, screen)
 }

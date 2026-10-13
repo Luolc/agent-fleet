@@ -78,6 +78,10 @@ func AskHuman(h *herdr.Herdr, args AskHumanArgs) (exit.Code, error) {
 	if args.Approval {
 		return 0, exit.Refusedf("approval cards are not supported yet; ask in plain text (\"reply yes to go ahead\") without --approval")
 	}
+	if me.Role == identity.Worker && me.Parent == watchSender {
+		return 0, exit.Refusedf("a worker does not ask people; fleet's watch started you, so write your question " +
+			"to the question file your task names and end your turn")
+	}
 	if me.Role == identity.Worker {
 		return 0, exit.Refusedf("a worker does not ask people; tell your lead with `fleet send %s`", me.Parent)
 	}

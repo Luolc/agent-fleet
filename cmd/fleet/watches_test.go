@@ -4,11 +4,14 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Luolc/agent-fleet/internal/db"
 )
 
 // sourceWorld is a thread watch world whose scope config has `watches`,
@@ -288,5 +291,33 @@ func TestWatchClosesAScreenHelperOfBeforeAndWaitsForItsQuestion(t *testing.T) {
 	}
 	if !strings.Contains(out.stdout, "unblock: j-w is stopped at a screen; the people were asked and have not answered") {
 		t.Errorf("stdout: %s", out.stdout)
+	}
+}
+
+// A watch worker's question is reminded of but never times out, and the
+// thread's session is not reclaimed for it. A watch worker is no job's:
+// gone from herdr it is closed, never a suspect, and `watch` is told
+// nothing.
+func TestAWatchWorkersQuestionNeverTimesOutAndItIsNoSuspect(t *testing.T) {
+	w := sourceWorld(t, `{"quiet-threads": {"off": true}}`, nil)
+	w.exec(fmt.Sprintf("INSERT INTO questions (job, thread, asked_by, text, state, asked_at) VALUES "+
+		"('', 'C1/1.0', 'watch-fix-p1', 'Rebase or close?', 'pending', %d)", db.Now()),
+		"INSERT INTO agents (name, role, parent, task, pane_id, state, started_at) VALUES "+
+			"('watch-fix-p2', 'worker', 'watch', '{\"watch\": \"fix\", \"key\": \"p2\"}', 'p8', 'active', 0)")
+	w.lastMessage("C1/1.0", t0+100*3600)
+	out := w.watchAt(100*time.Hour, 0)
+	if got := w.query("SELECT state || ' ' || reminders FROM questions"); got != "pending 3" {
+		t.Errorf("question %s", got)
+	}
+	if got := w.query("SELECT coalesce(reclaim_at, 'none') FROM agents WHERE name = 'thread-c1'"); got != "none" {
+		t.Errorf("reclaim_at %s", got)
+	}
+	if strings.Contains(out.stdout, "suspect: watch-fix-p2") || w.query("SELECT state FROM agents WHERE name = 'watch-fix-p2'") != "ended" {
+		t.Errorf("stdout: %s", out.stdout)
+	}
+	for _, p := range w.prompts() {
+		if p[0] == "watch" {
+			t.Errorf("told watch: %q", p[1])
+		}
 	}
 }

@@ -339,6 +339,17 @@ func TestDoneKeepsTheRowLiveWhenDeliveryIsUnclear(t *testing.T) {
 	}
 }
 
+// A worker watch started asks nobody itself: its question goes to its
+// question file.
+func TestAskHumanPointsAWatchWorkerToItsQuestionFile(t *testing.T) {
+	w := newWorld(t)
+	out := w.asAgent("watch-fix-p1", "worker", "watch", "", "ask-human", "--file", task(w, "q.md", "Rebase?\n"))
+	if out.code != 1 || !strings.Contains(out.stderr, "write your question to the question file your task names") ||
+		strings.Contains(out.stderr, "fleet send watch") {
+		t.Errorf("%+v", out)
+	}
+}
+
 // A worker watch started reports to nobody: it ends its turn instead.
 func TestDoneRefusesAWorkerWatchStarted(t *testing.T) {
 	w := newWorld(t)

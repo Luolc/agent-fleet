@@ -13,12 +13,10 @@ import (
 )
 
 func TestAWorkerNameIsTheWatchAndTheKeyOrCutWithAHash(t *testing.T) {
-	for key, want := range map[string]string{"12": "watch-unblock-12", "EX-1": "watch-unblock-ex-1"} {
-		if got := workerName("unblock", key); got != want {
-			t.Errorf("%s: %s", key, got)
-		}
+	if got := workerName("unblock", "12"); got != "watch-unblock-12" {
+		t.Errorf("plain: %s", got)
 	}
-	for _, key := range []string{"PR/12", "a-very-long-subject-key-of-a-ci-run"} {
+	for _, key := range []string{"PR/12", "EX-1", "a-very-long-subject-key-of-a-ci-run"} {
 		got := workerName("ci", key)
 		if len(got) > 32 || !strings.HasPrefix(got, "watch-ci-") || got != workerName("ci", key) || CheckAgentName(got) != nil {
 			t.Errorf("%s: %s", key, got)
@@ -26,7 +24,8 @@ func TestAWorkerNameIsTheWatchAndTheKeyOrCutWithAHash(t *testing.T) {
 	}
 	// Keys with the same slug, and the same key of two watches, get names
 	// of their own.
-	if workerName("ci", "PR/12") == workerName("ci", "pr-12") || workerName("a", "k/1") == workerName("b", "k/1") {
+	if workerName("ci", "PR/12") == workerName("ci", "pr-12") || workerName("ci", "EX-1") == workerName("ci", "ex-1") ||
+		workerName("a", "k/1") == workerName("b", "k/1") {
 		t.Error("two subjects share a worker")
 	}
 }
@@ -121,7 +120,9 @@ func TestARunOutOfTimeDoesNotRecordItsWatchsRun(t *testing.T) {
 }
 
 // With the unblock watch off, a screen no rule knows gets no worker; the
-// folder-trust rule still answers its dialog.
+// folder-trust rule still answers its dialog, and the people are still
+// asked about a hands-off screen and after the 3rd worker (here the ask
+// fails, since the agent has no home thread, which shows it was made).
 func TestWithTheUnblockWatchOffOnlyTheRulesAct(t *testing.T) {
 	w, conn := workersAt(t)
 	e := w.builtinWatch(config.BlockedScreens)
@@ -143,5 +144,16 @@ func TestWithTheUnblockWatchOffOnlyTheRulesAct(t *testing.T) {
 	if err := conn.QueryRow("SELECT (SELECT count(*) FROM agents) + (SELECT count(*) FROM questions) + " +
 		"(SELECT count(*) FROM steps)").Scan(&rows); err != nil || rows != 0 {
 		t.Errorf("%d rows, %v", rows, err)
+	}
+	if err := w.handle(e, false, row, limitMenu); err == nil || !strings.Contains(err.Error(), "no home thread to ask the people in about s-perm") {
+		t.Errorf("hands-off screen: %v", err)
+	}
+	for range maxHelpers {
+		if _, err := conn.Exec("INSERT INTO agents (name, role, parent, state, started_at) VALUES ('watch-unblock-7', 'worker', 'watch', 'ended', 0)"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.handle(e, false, row, bashPrompt); err == nil || !strings.Contains(err.Error(), "no home thread to ask the people in about s-perm") {
+		t.Errorf("after the 3rd worker: %v", err)
 	}
 }
