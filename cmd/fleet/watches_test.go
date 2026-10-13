@@ -4,6 +4,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -242,5 +243,79 @@ func TestADefaultWatchWithABrokenPromptIsTakenUpAgainNextRun(t *testing.T) {
 	w.watchAt(5*time.Minute, 0)
 	if prompts := w.prompts(); len(prompts) != 1 || prompts[0][0] != "j-lead" || !strings.HasSuffix(prompts[0][1], "Look at j-lead's workers.") {
 		t.Errorf("%q", prompts)
+	}
+}
+
+// The keys of the rules that left fleet are accepted and named on each
+// run; the rest of the run goes on.
+func TestWatchNamesTheRetiredKeysAndGoesOn(t *testing.T) {
+	w := sourceWorld(t, `{"quiet-threads": {"off": true}}`, nil)
+	w.file("home/.config/fleet/"+scope+".json", `{"fednet": {"socket": "/run/example/fednet.sock"},
+		"watch": {"parent_stale": "24h"}, "prompts": {"revisit": {"replace": "missing.md"}}}`)
+	out := w.watchAt(0, 0)
+	for _, key := range []string{"watch.parent_stale", "prompts.revisit"} {
+		if !strings.Contains(out.stderr, "note: "+key+" in the scope's config is no longer used and is ignored") {
+			t.Errorf("%s not named: %s", key, out.stderr)
+		}
+	}
+}
+
+// A screen helper live at the upgrade is closed as a watch worker is: its
+// question, read where it wrote it, is asked about the agent it helped,
+// and while that question waits no worker is started for the agent.
+func TestWatchClosesAScreenHelperOfBeforeAndWaitsForItsQuestion(t *testing.T) {
+	w := sourceWorld(t, `{"quiet-threads": {"off": true}}`, nil)
+	w.insert(watchRow{name: "j-w", role: "worker", job: "j", parent: "j-lead"})
+	id := w.query("SELECT id FROM agents WHERE name = 'j-w'")
+	helper := "unblock-" + id
+	w.exec("INSERT INTO agents (name, role, parent, pane_id, state, started_at) VALUES ('" + helper + "', 'unblock', 'j-w', 'p9', 'active', 0)")
+	w.herdrList("thread-c1 idle 1", "j-lead idle 1", "j-w blocked 2", helper+" idle 3")
+	w.screen("j-w", "⏺ fake reply\n"+rule+"\n Bash command\n\n   rm -rf build\n\n Do you want to proceed?\n ❯ 1. Yes\n   2. No\n")
+	if err := os.MkdirAll(filepath.Join(w.dir, "home", ".local", "state", "fleet", scope+"-unblock"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	w.file("home/.local/state/fleet/"+scope+"-unblock/"+helper+"-question.md", "Press 1? 0xQUESTION\n")
+
+	out := w.watchAt(time.Minute, 0)
+	if got := w.query("SELECT state FROM agents WHERE name = '" + helper + "'"); got != "ended" {
+		t.Errorf("helper row %s", got)
+	}
+	if !strings.Contains(w.log("fednet.log"), "-thread C1/1.0 -- j-w (a worker of job j, lead j-lead) is stopped at a screen "+
+		"that fleet's guidance does not cover, so its helper "+helper+" asks: | | Press 1? 0xQUESTION") {
+		t.Errorf("fednet: %s", w.log("fednet.log"))
+	}
+	if got := w.query("SELECT asked_by || ' ' || state FROM questions"); got != helper+" pending" {
+		t.Errorf("question %s", got)
+	}
+	if !strings.Contains(out.stdout, "unblock: j-w is stopped at a screen; the people were asked and have not answered") {
+		t.Errorf("stdout: %s", out.stdout)
+	}
+}
+
+// A watch worker's question is reminded of but never times out, and the
+// thread's session is not reclaimed for it. A watch worker is no job's:
+// gone from herdr it is closed, never a suspect, and `watch` is told
+// nothing.
+func TestAWatchWorkersQuestionNeverTimesOutAndItIsNoSuspect(t *testing.T) {
+	w := sourceWorld(t, `{"quiet-threads": {"off": true}}`, nil)
+	w.exec(fmt.Sprintf("INSERT INTO questions (job, thread, asked_by, text, state, asked_at) VALUES "+
+		"('', 'C1/1.0', 'watch-fix-p1', 'Rebase or close?', 'pending', %d)", t0),
+		"INSERT INTO agents (name, role, parent, task, pane_id, state, started_at) VALUES "+
+			"('watch-fix-p2', 'worker', 'watch', '{\"watch\": \"fix\", \"key\": \"p2\"}', 'p8', 'active', 0)")
+	w.lastMessage("C1/1.0", t0+100*3600)
+	out := w.watchAt(100*time.Hour, 0)
+	if got := w.query("SELECT state || ' ' || reminders FROM questions"); got != "pending 3" {
+		t.Errorf("question %s", got)
+	}
+	if got := w.query("SELECT coalesce(reclaim_at, 'none') FROM agents WHERE name = 'thread-c1'"); got != "none" {
+		t.Errorf("reclaim_at %s", got)
+	}
+	if strings.Contains(out.stdout, "suspect: watch-fix-p2") || w.query("SELECT state FROM agents WHERE name = 'watch-fix-p2'") != "ended" {
+		t.Errorf("stdout: %s", out.stdout)
+	}
+	for _, p := range w.prompts() {
+		if p[0] == "watch" {
+			t.Errorf("told watch: %q", p[1])
+		}
 	}
 }

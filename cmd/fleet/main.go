@@ -333,7 +333,7 @@ const promptShowUsage = "Usage: fleet prompt show [OPTIONS] [NAME]"
 var promptShowHelp = cmd.PromptShowLongAbout + "\n\n" + promptShowUsage + `
 
 Arguments:
-  [NAME]  One of common, thread, lead, worker, revisit, unblock, screen_guidance; without it, all of them
+  [NAME]  One of common, thread, lead, worker; without it, all of them
 
 Options:
       --builtin         Only fleet's built-in text of NAME, byte for byte

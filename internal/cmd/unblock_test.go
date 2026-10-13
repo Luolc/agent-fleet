@@ -36,7 +36,7 @@ func TestTheRulesKnowTheOwnTrustDialogAndTheScreensNeverPressed(t *testing.T) {
 	}
 }
 
-func TestTheHelperGetsTheScreenTheGuidanceAndThePeoplesAnswer(t *testing.T) {
+func TestTheUnblockWorkerGetsTheScreenTheGuidanceAndThePeoplesAnswer(t *testing.T) {
 	conn, err := db.OpenAt(filepath.Join(t.TempDir(), "screens.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -46,23 +46,26 @@ func TestTheHelperGetsTheScreenTheGuidanceAndThePeoplesAnswer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	u := &unblocking{watchRun: &watchRun{conn: conn, scope: "screens", cfg: sc}, dir: "/home/u/.local/state/fleet/screens-unblock"}
+	u := testWorkers(conn, sc)
 	row := stopRow{ID: 7, Name: "s-perm", Role: "worker", Job: "s", Parent: "s-lead", Cwd: "/home/u/wt/r/s", State: "active"}
-	got, err := u.helperPrompt(row, helperName(row.ID), bashPrompt, "")
+	got, err := u.helperPrompt(row, bashPrompt, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"You are unblock-7, a screen helper", "in ~/.local/state/fleet/screens-unblock,",
+	for _, want := range []string{"You are a worker run by fleet: watch-unblock-7, one task for fleet's `watch` in scope main",
+		"You run in ~/.local/state/fleet/main-watch.", "FLEET_PARENT=watch,",
 		"The agent s-perm (a worker of job s, lead s-lead, working directory /home/u/wt/r/s)",
-		"`herdr agent send-keys s-perm <key>`", "/home/u/.local/state/fleet/screens-unblock/unblock-7-question.md",
-		"Ticket: none: tickets are off", "## Guidance", "never press anything; ask", "## The screen", "   rm -rf build"} {
+		"`herdr agent send-keys s-perm <key>`", "/home/u/.local/state/fleet/main-watch/watch-unblock-7-question.md",
+		"Ticket: none: tickets are off", "## Guidance", "never press anything; ask", "## Your task", "   rm -rf build"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("%q not in the prompt", want)
 		}
 	}
-	if strings.Contains(got, "{{") || strings.Contains(got, "\n## Earlier on this screen\n") {
+	if strings.Contains(got, "{{") || strings.Contains(got, "\n## Earlier\n") {
 		t.Errorf("a placeholder, or an earlier section without a question: %q", got)
 	}
+	// The helper of before the upgrade asked under its old name; the new
+	// worker gets that question too.
 	if _, err := conn.Exec(`INSERT INTO questions (job, thread, asked_by, text, state, asked_at, answered_at)
 		VALUES ('s', 'C1/1.0', 'unblock-7', 'Press 1 to run rm -rf build?', 'answered', 1700000000, 1700000100)`); err != nil {
 		t.Fatal(err)
@@ -71,13 +74,13 @@ func TestTheHelperGetsTheScreenTheGuidanceAndThePeoplesAnswer(t *testing.T) {
 		VALUES ('C1/1.0', 'c1-1-0', 1700000000, 'yes, press 1', 'U0ABC', '1700000100.000')`); err != nil {
 		t.Fatal(err)
 	}
-	got, err = u.helperPrompt(row, helperName(row.ID), bashPrompt, "SC-9")
+	got, err = u.helperPrompt(row, bashPrompt, "SC-9")
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{"Ticket: SC-9, labelled blocked-screen; record on it with `atb linear comment SC-9",
 		"Act on it only when it plainly answers this screen's question", "Otherwise press nothing and write the question again",
-		"## Earlier on this screen", "Asked at 2023-11-14T22:13:20Z (answered):\n\n> Press 1 to run rm -rf build?",
+		"## Earlier", "Asked at 2023-11-14T22:13:20Z (answered):\n\n> Press 1 to run rm -rf build?",
 		`{"user":"U0ABC","ts":"1700000100.000","text":"yes, press 1"}`} {
 		if !strings.Contains(got, want) {
 			t.Errorf("%q not in the prompt with an answer", want)
@@ -101,9 +104,10 @@ func TestATrustDialogTheRuleDoesNotGetPastStartsNoHelper(t *testing.T) {
 		return exit.New(exit.Blocked, name+" is not ready at its input box (herdr status \"blocked\")")
 	}
 	t.Cleanup(func() { settleStopped = settle })
-	u := &unblocking{watchRun: &watchRun{conn: conn, scope: "screens", cfg: sc}, dir: t.TempDir()}
+	u := testWorkers(conn, sc)
+	u.dir = t.TempDir()
 	row := stopRow{ID: 7, Name: "s-trust", Role: "worker", Job: "s", Parent: "s-lead", Cwd: "/w/x", State: "active"}
-	err = u.handle(row, trust)
+	err = u.handle(u.builtinWatch(config.BlockedScreens), true, row, trust)
 	if pressed != 1 || code(err) != exit.Blocked || !strings.Contains(err.Error(), "did not get it to its input box") {
 		t.Fatalf("pressed %d, %v", pressed, err)
 	}
@@ -144,9 +148,9 @@ func TestAScreenOfALeadWithoutAHomeThreadOpensOne(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	u := &unblocking{watchRun: &watchRun{conn: conn, scope: "screens", cfg: sc}, dir: t.TempDir()}
+	u := testWorkers(conn, sc)
 	row := stopRow{ID: 7, Name: "r-lead", Role: "lead", Job: "r", Parent: plainStarter, State: "active"}
-	if err := u.ask(row, "r-lead is at a usage limit; wait for the reset?"); err != nil {
+	if err := u.ask(row, "watch-unblock-7", "r-lead is at a usage limit; wait for the reset?"); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := os.ReadFile(calls)

@@ -5,7 +5,8 @@
 # ledger rows are inserted directly. Arms that must differ:
 #   s-trust  the folder-trust prompt for its own directory (TRUST): answered
 #            by rule, nobody told
-#   s-perm   a command confirmation (BLOCK): a helper, the lead told
+#   s-perm   a command confirmation (BLOCK): a helper (the `unblock` watch's
+#            worker, watch-unblock-<row id>), the lead told
 #   l-lead   a usage-limit menu (LIMIT): no key, no helper, the people asked
 #   s-new    a start left at an unknown screen an hour ago: a helper, the
 #            starter told; s-young, left there just now, is the starter's
@@ -20,8 +21,10 @@ thr job start setup --task-file "$(task setup 'makes the ledger')" >/dev/null 2>
 thr job end setup --force >/dev/null 2>&1
 check "unblock: the scope's ledger exists" yes "$([ -e "$DB" ] && echo yes || echo no)"
 mkdir -p /home/agent/.config/$T /home/agent/fake-screens
-echo '{"linear": {"team": "SC"}, "unblock": {"project": "Example project"}, "fednet": {"socket": "/home/agent/screens.sock"}}' \
-  > "/home/agent/.config/$T/$SCOPE.json"
+# prompts.screen_guidance names a file that is not there: the key is
+# retired, so it is accepted, named, and not read.
+echo '{"linear": {"team": "SC"}, "unblock": {"project": "Example project"}, "fednet": {"socket": "/home/agent/screens.sock"},
+  "prompts": {"screen_guidance": {"append": "missing.md"}}}' > "/home/agent/.config/$T/$SCOPE.json"
 cat > /home/agent/fake-screens/atb <<'ATB'
 #!/bin/sh
 echo "$*" >> /home/agent/screens-atb.log
@@ -71,24 +74,27 @@ for arm in s-perm:BLOCK s-trust:TRUST l-lead:LIMIT; do
   check "unblock: ${arm%%:*} is blocked" blocked "$(agent_field "${arm%%:*}" agent_status)"
 done
 rowid() { sqlite3 "$DB" "SELECT id FROM agents WHERE name = '$1' AND state != 'ended'"; }
-hperm=unblock-$(rowid s-perm) hnew=unblock-$(rowid s-new) hlimit=unblock-$(rowid l-lead)
-helpers() { "${S[@]}" agent list | jq -r '[.result.agents[].name | select(startswith("unblock-"))] | sort | join(" ")'; }
+hperm=watch-unblock-$(rowid s-perm) hnew=watch-unblock-$(rowid s-new) hlimit=watch-unblock-$(rowid l-lead)
+helpers() { "${S[@]}" agent list | jq -r '[.result.agents[].name | select(startswith("watch-unblock-"))] | sort | join(" ")'; }
 
 uwatch >/home/agent/unblock1.out 2>&1; rc=$?
 check "unblock: first run exit 0" 0 "$rc"
+has "unblock: the retired key is named and ignored" "$(cat /home/agent/unblock1.out)" \
+  "note: prompts.screen_guidance in the scope's config is no longer used and is ignored"
 check "unblock: the trust prompt for its own directory is answered" yes \
   "$(case "$(agent_field s-trust agent_status)" in idle | done) echo yes ;; *) agent_field s-trust agent_status ;; esac)"
 has "unblock: s-trust passed the prompt to its input box" "$(screen s-trust)" "fake reply to: please TRUST"
 check "unblock: one helper for each stopped agent no rule answers, none for the others" \
   "$(printf '%s\n' "$hnew" "$hperm" | sort | tr '\n' ' ' | sed 's/ $//')" "$(helpers)"
-check "unblock: the helper's row" "unblock||s-perm|SC-9 " \
+check "unblock: the helper's row: a worker with no job, its parent watch" "worker||watch|SC-9 " \
   "$(ledger "SELECT role, job, parent, issue FROM agents WHERE name = '$hperm' AND state != 'ended'")"
 check "unblock: the ticket is labelled blocked-screen in the scope's team and project" \
   "linear create --team SC --project Example project --label blocked-screen --title s-perm stopped at a screen" \
   "$(grep -o '.*stopped at a screen' /home/agent/screens-atb.log | grep s-perm)"
 received "$hperm" > /home/agent/unblock-helper1.txt
-has "unblock: the helper's first message: the stopped agent, the guidance, the screen and the ticket" \
-  "$(cat /home/agent/unblock-helper1.txt)" "herdr agent send-keys s-perm" "## Guidance" "rm -rf build" "SC-9"
+has "unblock: the helper's first message: the worker text, the stopped agent, the guidance, the screen and the ticket" \
+  "$(cat /home/agent/unblock-helper1.txt)" "[FROM: watch]" "You are a worker run by fleet: $hperm" "FLEET_PARENT=watch" \
+  "herdr agent send-keys s-perm" "## Guidance" "rm -rf build" "SC-9"
 hcwd=$(readlink "/proc/$("${S[@]}" pane process-info --pane "$(agent_field "$hperm" pane_id)" | jq -r '.result.process_info.foreground_processes[0].pid')/cwd")
 check "unblock: the helper runs in the scope's own directory, outside every checkout" yes \
   "$(case "$hcwd" in /home/agent/dev/* | /home/agent/x-repo/* | /home/agent/wt/* | /home/agent) echo "no: $hcwd" ;; *) [ -d "$hcwd" ] && echo yes ;; esac)"
@@ -135,11 +141,11 @@ SQL
 uwatch >/home/agent/unblock3.out 2>&1; rc=$?
 check "unblock: third run exit 0" 0 "$rc"
 has "unblock: a new helper once the people answered" "$(helpers)" "$hperm"
-has "unblock: it gets their question and answer" "$(received "$hperm")" "## Earlier on this screen" "0xQUESTION" "0xANSWER"
+has "unblock: it gets their question and answer" "$(received "$hperm")" "## Earlier" "0xQUESTION" "0xANSWER"
 check "unblock: it keeps the first helper's ticket" "SC-9|2 " \
   "$(ledger "SELECT issue, (SELECT count(*) FROM agents WHERE name = '$hperm') FROM agents WHERE name = '$hperm' AND state != 'ended'")"
 check "unblock: no second ticket for s-perm" 1 "$(grep -c 'title s-perm stopped' /home/agent/screens-atb.log)"
-# An unblock prompt addition with a slot the prompt does not have: no
+# An unblock watch prompt with a slot the prompt does not have: no
 # helper and no ticket for a newly stopped agent; its home thread is told
 # once, naming the file and line, and the next run does not say it again.
 start_fake s-bad >/dev/null
@@ -147,20 +153,20 @@ sqlite3 "$DB" "INSERT INTO agents (name, role, job, parent, cwd, state, started_
   VALUES ('s-bad', 'worker', 's', 's-lead', '/home/agent', 'active', $now, '')"
 "${S[@]}" agent prompt s-bad "please BLOCK" --wait --until working --timeout 20000 >/dev/null
 "${S[@]}" agent wait s-bad --until blocked --timeout 20000 >/dev/null
-hbad=unblock-$(rowid s-bad)
+hbad=watch-unblock-$(rowid s-bad)
 mkdir -p "/home/agent/.config/$T/prompts"
-printf 'Say hello.\nThen read {{repo}}.\n' > "/home/agent/.config/$T/prompts/unblock.append.md"
+printf 'Say hello.\nThen read {{repo}}.\n' > "/home/agent/.config/$T/prompts/unblock.md"
 cp "/home/agent/.config/$T/$SCOPE.json" /home/agent/screens.json.keep
-jq -c '. + {"prompts": {"unblock": {"append": "prompts/unblock.append.md"}}}' /home/agent/screens.json.keep \
+jq -c '. + {"watches": {"unblock": {"prompt": "prompts/unblock.md"}}}' /home/agent/screens.json.keep \
   > "/home/agent/.config/$T/$SCOPE.json"
 uwatch >/home/agent/unblock4.out 2>&1; rc=$?
 check "unblock: a broken unblock prompt fails the run, exit 1" 1 "$rc"
 has "unblock: the run names the file, line and slot" "$(cat /home/agent/unblock4.out)" \
-  "prompts.unblock.append (~/.config/$T/prompts/unblock.append.md:2:11): unknown slot {{repo}}"
+  "watches.unblock.prompt (~/.config/$T/prompts/unblock.md:2:11): unknown slot {{repo}}"
 check "unblock: no helper and no ticket for s-bad" "0 0" \
   "$(ledger "SELECT count(*) FROM agents WHERE name = '$hbad'")$(grep -c 'title s-bad stopped' /home/agent/screens-atb.log)"
 has "unblock: the home thread is told what was not started and why" "$(cat /home/agent/screens-fednet.log)" \
-  "-thread $KS -- fleet watch did not start a screen helper for" "fleet's prompt config is broken (prompts.unblock.append"
+  "-thread $KS -- fleet watch did not start a screen helper for" "fleet's prompt config is broken (watches.unblock.prompt"
 uwatch >/home/agent/unblock5.out 2>&1; rc=$?
 check "unblock: the next run fails the same way" 1 "$rc"
 check "unblock: the thread is told once" 1 "$(grep -c "fleet's prompt config is broken" /home/agent/screens-fednet.log)"

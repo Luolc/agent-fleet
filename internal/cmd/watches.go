@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"time"
 
@@ -31,8 +32,17 @@ var (
 	quietThreadsPrompt string
 )
 
-// watchSlots are the slots of a watch's prompt.
+// watchSlots are the slots of a watch's prompt; a `worker` watch's also
+// has `question_file`.
 var watchSlots = []string{"key", "text"}
+
+// slotsOf are the slots of the watch `e`'s prompt.
+func slotsOf(e config.Entry) []string {
+	if e.Do == "worker" {
+		return append(slices.Clone(watchSlots), "question_file")
+	}
+	return watchSlots
+}
 
 // sourceTimeout bounds one run of a command source, sourceLimit what it
 // may print.
@@ -88,7 +98,8 @@ func (r *watchRun) ran(e config.Entry) error {
 func watchPrompt(sc *config.Scope, e config.Entry) (*promptText, error) {
 	key := "watches." + e.Name + ".prompt"
 	if e.Prompt == "" {
-		text := map[string]string{config.StaleAgents: staleWorkersPrompt, config.QuietThreads: quietThreadsPrompt}[e.Source]
+		text := map[string]string{config.StaleAgents: staleWorkersPrompt, config.QuietThreads: quietThreadsPrompt,
+			config.BlockedScreens: unblockPrompt + "\n" + screenGuidance}[e.Source]
 		if text == "" {
 			return nil, nil
 		}
@@ -98,7 +109,7 @@ func watchPrompt(sc *config.Scope, e config.Entry) (*promptText, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := checkSlots(part, shown, "a watch's prompt", watchSlots); err != nil {
+	if err := checkSlots(part, shown, "a watch's prompt", slotsOf(e)); err != nil {
 		return nil, err
 	}
 	return &promptText{Name: key, Parts: []promptPart{*part}}, nil
@@ -113,7 +124,8 @@ func watchMessage(prompt *promptText, key, text string) string {
 	return text + "\n" + prompt.fill(map[string]string{"key": key, "text": text})
 }
 
-// subject is one line of a command source's output.
+// subject is one line of a command source's output, or the one subject
+// of a timer.
 type subject struct {
 	Key    string `json:"key"`
 	Text   string `json:"text"`
@@ -164,10 +176,17 @@ func (r *watchRun) sourceInput() ([]byte, error) {
 
 // runSource runs the command source of `e` through herdr's runner and
 // reads its subjects: one JSON object per line, each with a key of its
-// own and a text, and for `tell` the agent, job or thread it concerns.
+// own and a text, and for `tell` the agent, job or thread it concerns. A
+// `worker` watch without a source is a timer: its one subject is the
+// watch itself, its text new each run, so it is due whenever the watch
+// runs and `again` allows.
 // What the source printed on stderr is shown only in its first line, the
 // values of the variables it was given taken out before the line is cut.
-func runSource(e config.Entry, input []byte) ([]subject, error) {
+func runSource(e config.Entry, input []byte, now int64) ([]subject, error) {
+	if e.Command == nil {
+		return []subject{{Key: e.Name, Text: fmt.Sprintf("The timer of the watch `%s`, run at %s.", e.Name,
+			time.Unix(now, 0).UTC().Format(time.RFC3339))}}, nil
+	}
 	out, errOut, err := herdr.ExecInput("its source", e.Env, sourceTimeout, sourceLimit, input, e.Command[0],
 		e.Command[1:]...)
 	var exitErr *exec.ExitError
@@ -197,7 +216,7 @@ func runSource(e config.Entry, input []byte) ([]subject, error) {
 			return nil, exit.Environmentf("its source's line %d has no key or no text", n)
 		case seen[s.Key]:
 			return nil, exit.Environmentf("its source gives the key %q twice", s.Key)
-		case s.Agent == "" && s.Job == "" && s.Thread == "":
+		case s.Agent == "" && s.Job == "" && s.Thread == "" && e.Do == "tell":
 			return nil, exit.Environmentf("its source's line %d names no agent, job or thread to tell", n)
 		}
 		seen[s.Key] = true
@@ -255,8 +274,8 @@ func (r *watchRun) commandWatches() error {
 }
 
 // commandWatch runs one command watch when it is due: its source, then
-// `tell` on each subject due, at most `per_run`. A source that fails, or a
-// broken prompt, skips the watch for this run.
+// its act (`tell`, or `worker`) on each subject due, at most `per_run`. A
+// source that fails, or a broken prompt, skips the watch for this run.
 func (r *watchRun) commandWatch(e config.Entry) error {
 	if due, err := r.due(e); err != nil || !due {
 		return err
@@ -265,50 +284,70 @@ func (r *watchRun) commandWatch(e config.Entry) error {
 	if err != nil {
 		return err
 	}
-	subjects, err := runSource(e, input)
+	subjects, err := runSource(e, input, r.now)
 	if err != nil {
 		r.failed(fmt.Errorf("watch %s skipped: %w", e.Name, err))
 		return nil
 	}
 	prompt, err := watchPrompt(r.cfg, e)
+	var role *promptText
+	if err == nil && e.Do == "worker" {
+		role, err = loadPrompt(r.cfg, "worker")
+	}
 	if err != nil {
 		thread := ""
 		if len(subjects) > 0 {
-			if thread, err = r.subjectThread(subjects[0]); err != nil {
-				return err
+			var threadErr error
+			if thread, threadErr = r.subjectThread(subjects[0]); threadErr != nil {
+				return errors.Join(err, threadErr)
 			}
 		}
-		r.failed(r.promptBroken(err, thread, "tell about the subjects of watch "+e.Name))
+		r.failed(r.promptBroken(err, thread, fmt.Sprintf("%s about the subjects of watch %s",
+			map[string]string{"tell": "tell", "worker": "start a worker"}[e.Do], e.Name)))
 		return nil
 	}
 	rows, err := r.syncSubjects(e.Name, subjects)
 	if err != nil {
 		return err
 	}
-	acts := r.actOn(e, prompt, subjects, rows)
+	acts := r.actOn(e, role, prompt, subjects, rows)
 	fmt.Fprintf(os.Stdout, "watch %s: %d subject(s), acted on %d\n", e.Name, len(subjects), acts)
 	return r.ran(e)
 }
 
 // actOn acts on the due subjects, in output order, at most `per_run`,
-// while the run has time: a tell, or at `max` the question to the people.
-// It returns how many it acted on.
-func (r *watchRun) actOn(e config.Entry, prompt *promptText, subjects []subject, rows map[string]watchSubject) int {
+// while the run has time: a tell or a worker's start (`role` its worker
+// text), or at `max` the question to the people. It returns how many it
+// acted on.
+func (r *watchRun) actOn(e config.Entry, role, prompt *promptText, subjects []subject, rows map[string]watchSubject) int {
 	acts := 0
 	for _, s := range subjects {
 		if acts >= e.PerRun || r.outOfTime() {
 			break
 		}
 		row := rows[s.Key]
-		if !row.due(e, r.now, s.Text) {
+		due := row.due(e, r.now, s.Text)
+		if e.Do == "worker" {
+			var err error
+			if due, err = r.workers.dueFor(e, s, row, due); err != nil {
+				r.failed(fmt.Errorf("watch %s, subject %s: %w", e.Name, s.Key, err))
+				continue
+			}
+		}
+		if !due {
 			continue
 		}
 		acts++
-		act := r.tellSubject
-		if e.Max > 0 && row.acts >= e.Max {
-			act = r.askAboutSubject
+		var err error
+		switch {
+		case e.Max > 0 && row.acts >= e.Max:
+			err = r.askAboutSubject(e, s)
+		case e.Do == "worker":
+			err = r.workers.startFor(e, role, prompt, s)
+		default:
+			err = r.tellSubject(e, prompt, s)
 		}
-		if err := act(e, prompt, s); err != nil {
+		if err != nil {
 			r.failed(fmt.Errorf("watch %s, subject %s: %w", e.Name, s.Key, err))
 		}
 	}
@@ -414,13 +453,19 @@ func (r *watchRun) tellSubject(e config.Entry, prompt *promptText, s subject) er
 	if code != exit.Ok && code != exit.Unknown {
 		return nil
 	}
-	_, err = r.conn.Exec("UPDATE watch_subjects SET digest = ?1, last_acted = ?2, acts = acts + 1 WHERE watch = ?3 AND key = ?4",
-		Hash(s.Text), r.now, e.Name, s.Key)
-	if err != nil {
-		return exit.Database(err)
+	if err := r.acted(e, s); err != nil {
+		return err
 	}
 	fmt.Fprintf(os.Stdout, "watch %s: told %s about %s\n", e.Name, to, s.Key)
 	return nil
+}
+
+// acted records an act on the subject `s`: its text's digest, the time
+// and the count.
+func (r *watchRun) acted(e config.Entry, s subject) error {
+	_, err := r.conn.Exec("UPDATE watch_subjects SET digest = ?1, last_acted = ?2, acts = acts + 1 WHERE watch = ?3 AND key = ?4",
+		Hash(s.Text), r.now, e.Name, s.Key)
+	return dbErr(err)
 }
 
 // liveLead is the name of the job's live lead, "" for none.
@@ -466,7 +511,7 @@ func (r *watchRun) subjectThread(s subject) (string, error) {
 // told there is nothing to pass on. With no thread to ask in, the question
 // is printed on stderr. Either way the subject gets no more acts while its
 // source gives it.
-func (r *watchRun) askAboutSubject(e config.Entry, _ *promptText, s subject) error {
+func (r *watchRun) askAboutSubject(e config.Entry, s subject) error {
 	question := fmt.Sprintf("fleet watch, watch `%s`: subject `%s` has had the watch's max of %d act(s), and its "+
 		"source still gives it:\n\n%s\n\nfleet does nothing more about it while the source gives it; what to do is yours.",
 		e.Name, s.Key, e.Max, strings.TrimRight(s.Text, "\n"))
@@ -492,4 +537,49 @@ func (r *watchRun) askAboutSubject(e config.Entry, _ *promptText, s subject) err
 	}
 	_, err = r.conn.Exec("UPDATE watch_subjects SET asked_at = ?1 WHERE watch = ?2 AND key = ?3", r.now, e.Name, s.Key)
 	return dbErr(err)
+}
+
+// dueFor is whether the `worker` watch `e` starts a worker for the subject
+// `s` now, `byText` being what its row says: never while its worker is
+// live or that worker's question waits for the people; once they
+// answered it after the last start, whatever `again` and the text say.
+func (w *workers) dueFor(e config.Entry, s subject, row watchSubject, byText bool) (bool, error) {
+	name := workerName(e.Name, s.Key)
+	if w.busy[name] {
+		fmt.Fprintf(os.Stdout, "watch %s: %s is on %s\n", e.Name, name, s.Key)
+		return false, nil
+	}
+	pending, answeredAt, err := pendingFrom(w.conn, []string{name})
+	if err != nil || pending {
+		return false, err
+	}
+	if answeredAt == 0 || row.askedAt.Valid {
+		return byText, nil
+	}
+	// Both times are the ledger's clock, not the run's.
+	var started int64
+	if err := w.conn.QueryRow("SELECT COALESCE(max(started_at), 0) FROM agents WHERE name = ?1", name).Scan(&started); err != nil {
+		return false, exit.Database(err)
+	}
+	return byText || answeredAt >= started, nil
+}
+
+// startFor starts the worker of the `worker` watch `e` for the subject
+// `s`, with `role` its worker text and `prompt` the watch's; a start
+// counts as an act once the worker has its first message.
+func (w *workers) startFor(e config.Entry, role, prompt *promptText, s subject) error {
+	id := w.workerID(workerName(e.Name, s.Key), "")
+	ws := workerSubject{Watch: e.Name, Key: s.Key, Job: s.Job, Thread: s.Thread, Agent: s.Agent}
+	body, err := w.workerMessage(role, prompt, id, ws, s.Text, []string{id.Agent})
+	if err != nil {
+		return err
+	}
+	if err := w.startWorker(e, id, ws, body); err != nil {
+		return err
+	}
+	if err := w.acted(e, s); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stdout, "watch %s: started %s for %s\n", e.Name, id.Agent, s.Key)
+	return nil
 }

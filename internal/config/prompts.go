@@ -8,9 +8,14 @@ import (
 )
 
 // PromptNames are fleet's built-in texts a scope's config can change: the
-// text the thread agents, leads and workers share, the prompts of the five
-// roles and the screen helpers' guidance.
-var PromptNames = []string{"common", "thread", "lead", "worker", "revisit", "unblock", "screen_guidance"}
+// text the thread agents, leads and workers share and the prompts of the
+// three roles.
+var PromptNames = []string{"common", "thread", "lead", "worker"}
+
+// retiredPrompts are the names of texts fleet no longer has. They are
+// accepted and ignored, since refusing them would stop `inbox`; the
+// `unblock` watch's prompt takes the place of the last two.
+var retiredPrompts = []string{"revisit", "unblock", "screen_guidance"}
 
 // Prompt is how a scope changes one built-in text: the files that replace
 // it, follow it, and record the built-in text the replacement started
@@ -56,32 +61,37 @@ type modelsFile struct {
 }
 
 // prompts reads `prompts`: only the known names, each with a replacement
-// or an addition, a base only beside a replacement. `~/` is expanded to
-// `home`; a relative path stays relative until LoadScope resolves it
-// against the config file's directory.
-func prompts(files map[string]*promptFile, home string) (map[string]Prompt, error) {
+// or an addition, a base only beside a replacement; a retired name is
+// left out and listed in `ignored`. `~/` is expanded to `home`; a
+// relative path stays relative until LoadScope resolves it against the
+// config file's directory.
+func prompts(files map[string]*promptFile, home string) (out map[string]Prompt, ignored []string, err error) {
 	names := make([]string, 0, len(files))
 	for name := range files {
 		names = append(names, name)
 	}
 	slices.Sort(names)
-	out := map[string]Prompt{}
+	out = map[string]Prompt{}
 	for _, name := range names {
 		key := "prompts." + name
+		if slices.Contains(retiredPrompts, name) {
+			ignored = append(ignored, key)
+			continue
+		}
 		if !slices.Contains(PromptNames, name) {
-			return nil, errors.New(key + ": unknown name; the names are " + strings.Join(PromptNames, ", "))
+			return nil, nil, errors.New(key + ": unknown name; the names are " + strings.Join(PromptNames, ", "))
 		}
 		f := files[name]
 		if f.Replace == nil && f.Append == nil {
-			return nil, errors.New(key + ": must have replace or append")
+			return nil, nil, errors.New(key + ": must have replace or append")
 		}
 		if f.Base != nil && f.Replace == nil {
-			return nil, errors.New(key + ".base: only goes with replace")
+			return nil, nil, errors.New(key + ".base: only goes with replace")
 		}
 		var p Prompt
 		if err := apply([]setting{{key + ".replace", f.Replace, &p.Replace}, {key + ".append", f.Append, &p.Append},
 			{key + ".base", f.Base, &p.Base}}); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		for _, path := range []*string{&p.Replace, &p.Append, &p.Base} {
 			if rest, ok := strings.CutPrefix(*path, "~/"); ok {
@@ -92,7 +102,7 @@ func prompts(files map[string]*promptFile, home string) (map[string]Prompt, erro
 		}
 		out[name] = p
 	}
-	return out, nil
+	return out, ignored, nil
 }
 
 // resolve makes the relative paths of `prompts` relative to `dir`.

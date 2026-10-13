@@ -246,7 +246,7 @@ func statusLine(live Live, agent *InHerdr, now int64) line {
 		status := agent.Status
 		herdrStatus = &status
 	}
-	owesWork := live.Role == "lead" || live.Role == "worker"
+	owesWork := live.Role == "lead" || live.Role == "worker" && live.Parent != watchSender
 	flags := []string{}
 	switch {
 	case herdrStatus == nil:

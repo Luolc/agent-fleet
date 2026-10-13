@@ -27,11 +27,6 @@ type Watch struct {
 	// Reminders are when the people are reminded of a thread's pending
 	// questions, counted from the oldest, in increasing order.
 	Reminders []time.Duration
-	// ParentStale is how long a parent issue of the scope's jobs stays
-	// unchanged before watch starts an agent to look at it; ParentAgents
-	// bounds those starts in one run.
-	ParentStale  time.Duration
-	ParentAgents int
 }
 
 // DefaultWatch is what an absent key means.
@@ -42,8 +37,6 @@ var DefaultWatch = Watch{
 	ThreadQuiet:    30 * time.Minute,
 	ThreadQuestion: 72 * time.Hour,
 	Reminders:      []time.Duration{30 * time.Minute, 3 * time.Hour, 24 * time.Hour},
-	ParentStale:    72 * time.Hour,
-	ParentAgents:   1,
 }
 
 // jobWatchFile is the `watch` section of a repo's config, as written:
@@ -54,6 +47,8 @@ type jobWatchFile struct {
 }
 
 // scopeWatchFile is the `watch` section of a scope's settings.
+// ParentStale and ParentAgents are read only to be ignored: the parent
+// rule left fleet, and refusing them would stop `inbox`.
 type scopeWatchFile struct {
 	jobWatchFile
 	ThreadIdle     *string   `json:"thread_idle"`
@@ -102,7 +97,7 @@ func (f *scopeWatchFile) apply(w *Watch) error {
 		value *string
 		into  *time.Duration
 	}{{"thread_idle", f.ThreadIdle, &w.ThreadIdle}, {"thread_quiet", f.ThreadQuiet, &w.ThreadQuiet},
-		{"thread_question", f.ThreadQuestion, &w.ThreadQuestion}, {"parent_stale", f.ParentStale, &w.ParentStale}} {
+		{"thread_question", f.ThreadQuestion, &w.ThreadQuestion}} {
 		if s.value == nil {
 			continue
 		}
@@ -125,11 +120,17 @@ func (f *scopeWatchFile) apply(w *Watch) error {
 			w.Reminders = append(w.Reminders, d)
 		}
 	}
-	if f.ParentAgents != nil {
-		if *f.ParentAgents <= 0 {
-			return errors.New("watch.parent_agents: must be a positive number")
-		}
-		w.ParentAgents = *f.ParentAgents
-	}
 	return nil
+}
+
+// ignored are the keys of the section that are read only to be ignored.
+func (f *scopeWatchFile) ignored() []string {
+	var keys []string
+	if f != nil && f.ParentStale != nil {
+		keys = append(keys, "watch.parent_stale")
+	}
+	if f != nil && f.ParentAgents != nil {
+		keys = append(keys, "watch.parent_agents")
+	}
+	return keys
 }

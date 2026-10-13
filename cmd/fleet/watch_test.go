@@ -1090,7 +1090,10 @@ func TestWatchRunsOnceAtATimeAndChecksItsClock(t *testing.T) {
 	}
 }
 
-func TestWatchAsksARevisitAgentsQuestionInTheLatestJobsThreadAndSkipsParentsWhenLinearIsDown(t *testing.T) {
+// A revisit agent live at the upgrade is closed as a watch worker is, its
+// question read where it wrote it and asked in the home thread of the
+// latest job on its issue that has one; fleet asks Linear nothing.
+func TestWatchClosesARevisitAgentOfBeforeAndAsksItsQuestion(t *testing.T) {
 	w := watchThreadWorld(t)
 	w.exec("INSERT INTO threads (thread, slug, created_at) VALUES ('C3/3.0', 'c3-3-0', 0)",
 		"INSERT INTO agents (name, role, thread, pane_id, state, started_at) VALUES ('thread-c3', 'thread', 'C3/3.0', 'p3', 'active', 0)",
@@ -1112,16 +1115,9 @@ func TestWatchAsksARevisitAgentsQuestionInTheLatestJobsThreadAndSkipsParentsWhen
 	if err := os.WriteFile(filepath.Join(dir, "revisit-ex-5-question.md"), []byte("Close EX-5? 0xQUESTION\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(w.dir, "atb-down"), nil, 0o644); err != nil {
-		t.Fatal(err)
-	}
 
-	out := w.watchAt(time.Minute, 5)
-	if !strings.Contains(out.stderr, "the parent issues are skipped this run, Linear could not be read") {
-		t.Errorf("%s", out.stderr)
-	}
-	// Only the parents of jobs that are not open are asked for.
-	if got := w.log("atb.log"); !strings.Contains(got, `id: {in: ["EX-5"]}`) || strings.Contains(got, "EX-7") {
+	w.watchAt(time.Minute, 0)
+	if got := w.log("atb.log"); got != "" {
 		t.Errorf("atb: %s", got)
 	}
 	// The other rules still ran: the worker gone from herdr went to its lead.
@@ -1129,10 +1125,8 @@ func TestWatchAsksARevisitAgentsQuestionInTheLatestJobsThreadAndSkipsParentsWhen
 	if len(prompts) != 2 || prompts[0][0] != "o-lead" || !strings.Contains(prompts[0][1], "o-w") {
 		t.Fatalf("%q", prompts)
 	}
-	// The finished revisit agent is closed, its question posted to the
-	// latest job's thread that has one, and given to that thread's agent.
-	if got := w.log("fednet.log"); !strings.Contains(got, "post -socket /run/example/fednet.sock -thread C3/3.0 -- revisit-ex-5 "+
-		"looked at the parent issue EX-5, which has not changed for a while and has no job open on it, and asks: | | Close EX-5? 0xQUESTION") {
+	if got := w.log("fednet.log"); !strings.Contains(got, "post -socket /run/example/fednet.sock -thread C3/3.0 -- revisit-ex-5, "+
+		"the worker of fleet watch `revisit` for subject `EX-5`, asks: | | Close EX-5? 0xQUESTION") {
 		t.Errorf("fednet: %s", got)
 	}
 	if got := w.query("SELECT job || '|' || thread || '|' || asked_by || '|' || state FROM questions"); got != "|C3/3.0|revisit-ex-5|pending" {
@@ -1141,8 +1135,7 @@ func TestWatchAsksARevisitAgentsQuestionInTheLatestJobsThreadAndSkipsParentsWhen
 	if prompts[1][0] != "thread-c3" {
 		t.Fatalf("%q", prompts)
 	}
-	for _, want := range []string{"[FROM: watch]\n", "rule `parent issue unchanged`: revisit-ex-5 asked the people in thread C3/3.0 about the parent issue EX-5",
-		"0xQUESTION", "when they answer, carry out what they decide"} {
+	for _, want := range []string{"[FROM: revisit-ex-5]\n", "already posted there by fleet. Nothing to pass on", "0xQUESTION"} {
 		if !strings.Contains(prompts[1][1], want) {
 			t.Errorf("%q missing:\n%s", want, prompts[1][1])
 		}
@@ -1159,9 +1152,6 @@ func TestWatchAsksARevisitAgentsQuestionInTheLatestJobsThreadAndSkipsParentsWhen
 
 	// Days later the question still waits: reminded of, never timed out,
 	// and the thread agent's session is not reclaimed for it.
-	if err := os.Remove(filepath.Join(w.dir, "atb-down")); err != nil {
-		t.Fatal(err)
-	}
 	w.lastMessage("C3/3.0", t0+100*3600)
 	w.watchAt(100*time.Hour, 0)
 	if got := w.query("SELECT state || ' ' || reminders FROM questions"); got != "pending 3" {

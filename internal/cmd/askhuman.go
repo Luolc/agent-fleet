@@ -50,7 +50,7 @@ const (
 		"A thread agent asking records the question on its own thread and fleet posts it " +
 		"there; nothing is delivered.\n\n" +
 		"Exit: 0 when the question is posted and the thread agent has it (a thread agent's " +
-		"own: once it is posted); 1 with --approval, when the caller is a worker or a screen helper, the file " +
+		"own: once it is posted); 1 with --approval, when the caller is a worker, the file " +
 		"is unreadable or empty, the job is not open, a cross-repo job has no home thread (it " +
 		"was started by a caller without FLEET_THREAD), fleet knows neither channel to open " +
 		"a single-repo job's home thread in, or the scope has no fednet socket; " +
@@ -78,11 +78,12 @@ func AskHuman(h *herdr.Herdr, args AskHumanArgs) (exit.Code, error) {
 	if args.Approval {
 		return 0, exit.Refusedf("approval cards are not supported yet; ask in plain text (\"reply yes to go ahead\") without --approval")
 	}
+	if me.Role == identity.Worker && me.Parent == watchSender {
+		return 0, exit.Refusedf("a worker does not ask people; fleet's watch started you, so write your question " +
+			"to the question file your task names and end your turn")
+	}
 	if me.Role == identity.Worker {
 		return 0, exit.Refusedf("a worker does not ask people; tell your lead with `fleet send %s`", me.Parent)
-	}
-	if me.Role == identity.Unblock || me.Role == identity.Revisit {
-		return 0, exit.Refusedf("an agent fleet's watch started does not ask people itself; ask the way your task says")
 	}
 	data, err := os.ReadFile(args.File)
 	if err != nil {

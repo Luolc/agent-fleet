@@ -8,7 +8,7 @@
 # one variable passed) tells a subject to an agent, to a job's lead and to
 # a thread's agent; `nag` (per_run 1, again 1h, max 1) tells one subject a
 # run, then asks the people once instead; `bad` fails while
-# <dir>/bad-fail exists.
+# <dir>/bad-fail exists. Two `worker` watches join later (below).
 need_repo
 CS=(herdr --session fleet-cfgw)
 herdr --session fleet-cfgw server >/home/agent/server-fleet-cfgw.log 2>&1 &
@@ -128,5 +128,54 @@ check "watches: x and y are asked about once each, and not told again" "1 1 1 1"
   "$(grep -c -- "-- fleet watch, watch \`nag\`: subject \`x\`" "$CD/fednet.log") $(grep -c -- "-- fleet watch, watch \`nag\`: subject \`y\`" "$CD/fednet.log") $(count "$(creceived cw-lead)" "0xCFGWX") $(count "$(creceived cw-lead)" "0xCFGWY")"
 check "watches: the questions wait for the people" "watch|pending watch|pending " \
   "$(cledger "SELECT asked_by || '|' || state FROM questions ORDER BY id")"
+
+# Two `worker` watches join: `fix` (again 1h, a prompt file) starts a
+# worker per subject, one at a time; its question goes to the subject's
+# thread, and once the people answer, the next run starts a new worker
+# with their answer, whatever `again` says. `tick` has no source: a timer
+# whose one subject is itself.
+jq --arg src "$CB/source" '.watches += {"fix": {"source": {"command": [$src, "fix"]}, "do": "worker", "again": "1h",
+  "prompt": "cfgw-fix.md"}, "tick": {"do": "worker", "every": "24h"}}' "/home/agent/.config/$T/cfgw.json" > "$CD/cfgw.json"
+cp "$CD/cfgw.json" "/home/agent/.config/$T/cfgw.json"
+printf 'Rebase {{key}}; ask in {{question_file}}. 0xFIXPROMPT\n' > "/home/agent/.config/$T/cfgw-fix.md"
+echo '{"key": "p1", "text": "PR 9 needs a rebase. 0xFIX", "job": "cw"}' > "$CD/fix.jsonl"
+WD=/home/agent/.local/state/$T/cfgw-watch
+cwatch 140 0
+"${CS[@]}" agent wait watch-fix-p1 --until idle --until done --timeout 20000 >/dev/null
+"${CS[@]}" agent wait watch-tick-tick --until idle --until done --timeout 20000 >/dev/null
+check "watches: a worker watch's worker is a worker with no job, its parent watch, its subject on its row" \
+  "worker||watch|fix p1 cw " \
+  "$(cledger "SELECT role || '|' || job || '|' || parent || '|' || json_extract(task, '$.watch') || ' ' || json_extract(task, '$.key') || ' ' || json_extract(task, '$.job') FROM agents WHERE name = 'watch-fix-p1' AND state != 'ended'")"
+fix1=$(creceived watch-fix-p1)
+has "watches: its first message is the worker text, then the subject and the prompt" "$fix1" "[FROM: watch]" \
+  "You are a worker run by fleet: watch-fix-p1, one task for fleet's \`watch\`" "FLEET_PARENT=watch" \
+  "## Your task" "fleet watch, watch \`fix\`, subject \`p1\`; your question file is $WD/watch-fix-p1-question.md" \
+  "PR 9 needs a rebase. 0xFIX" "Rebase p1; ask in $WD/watch-fix-p1-question.md. 0xFIXPROMPT"
+has "watches: a watch without a source starts a worker for itself" "$(creceived watch-tick-tick)" \
+  "fleet watch, watch \`tick\`, subject \`tick\`" "The timer of the watch \`tick\`, run at"
+hcwd=$(readlink "/proc/$("${CS[@]}" pane process-info --pane "$(cfield watch-fix-p1 pane_id)" | jq -r '.result.process_info.foreground_processes[0].pid')/cwd")
+check "watches: the worker runs in the scope's watch directory" "$WD" "$hcwd"
+
+printf 'Rebase onto main or close PR 9? 0xQUESTION\n' > "$WD/watch-fix-p1-question.md"
+cwatch 141 0
+check "watches: the workers that finished their turn are closed" "ended ended" \
+  "$(cledger "SELECT group_concat(state, ' ') FROM agents WHERE name IN ('watch-fix-p1', 'watch-tick-tick')" | sed 's/ $//')"
+has "watches: the worker's question is asked in the thread of its subject's job" "$(cat "$CD/fednet.log")" \
+  "client post -socket $CD/fednet.sock -thread $CK -- watch-fix-p1, the worker of fleet watch \`fix\` for subject \`p1\`, asks:"
+check "watches: the question waits for the people, from the worker" "cw|pending " \
+  "$(cledger "SELECT job || '|' || state FROM questions WHERE asked_by = 'watch-fix-p1'")"
+has "watches: the thread's agent is told there is nothing to pass on" "$(creceived "$CA")" \
+  "Question from watch-fix-p1" "Nothing to pass on" "0xQUESTION"
+cwatch 142 0
+check "watches: no new worker while the question waits" agent_not_found "$(cfield watch-fix-p1 name)"
+
+sqlite3 "$CDB" >/dev/null <<SQL
+UPDATE questions SET state = 'answered', answered_at = $(date +%s) WHERE asked_by = 'watch-fix-p1';
+UPDATE threads SET last_text = 'rebase it 0xANSWER', last_user = 'U0ABC', last_ts = '1700000300.000' WHERE thread = '$CK';
+SQL
+cwatch 143 0
+check "watches: once the people answer, a new worker before again has passed" "2 watch-fix-p1" \
+  "$(cledger "SELECT count(*) FROM agents WHERE name = 'watch-fix-p1'" | tr -d ' ') $(cfield watch-fix-p1 name)"
+has "watches: it gets the question and the answer" "$(creceived watch-fix-p1)" "## Earlier" "0xQUESTION" "0xANSWER"
 
 "${CS[@]}" server stop >/dev/null

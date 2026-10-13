@@ -33,55 +33,49 @@ const nowEnv = "FLEET_WATCH_NOW"
 const watchSender = "watch"
 
 // runBudget is how long a run may start new actions; what is left waits
-// for the next run, so a run ends within a minute.
-const runBudget = 45 * time.Second
+// for the next run, so a run ends within a minute. A variable so the
+// tests can run out of it.
+var runBudget = 45 * time.Second
 
 // WatchAbout and WatchLongAbout are the help texts of `watch`.
 const (
-	WatchAbout     = "Timer check of a scope: stuck workers, stopped agents, unchanged parent issues, quiet threads, idle sessions, unanswered questions, configured watches"
-	WatchLongAbout = "Timer check of a scope: stuck workers, stopped agents, unchanged parent issues, quiet threads, idle " +
+	WatchAbout     = "Timer check of a scope: stuck workers, stopped agents, quiet threads, idle sessions, unanswered questions, configured watches"
+	WatchLongAbout = "Timer check of a scope: stuck workers, stopped agents, quiet threads, idle " +
 		"sessions, unanswered questions, configured watches.\n\n" +
 		"Meant for a timer every 5 minutes, with --scope; one run at a time per scope (a lock " +
 		"file next to the ledger; a second run is refused). Each run first reads everything it " +
 		"needs: the ledger, `herdr agent list`, the visible screen of every live lead and worker, " +
 		"the config files, with a fednet socket configured the newest message of every " +
 		"thread that has a live thread agent, an open job reporting to it or a pending question " +
-		"(`fednet client read-thread`), and the parent issues of the scope's jobs from Linear " +
-		"(`atb linear query`). A failed read is exit 5 with nothing done, except a " +
+		"(`fednet client read-thread`); a key of the config it no longer uses is named on stderr. A " +
+		"failed read is exit 5 with nothing done, except a " +
 		"thread fednet answers it cannot give (its exit 1 or 2): that thread's rules are skipped, " +
-		"saying so, and the exit is 5; and Linear: the parent issues are skipped, saying so, and " +
-		"the exit is 5. Then it acts; " +
+		"saying so, and the exit is 5. Then it acts; " +
 		"whatever it sends an agent goes through the same path as `fleet send`, headed `[FROM: " +
 		"watch]`, naming the rule and its evidence. It never calls a model, and sends keys only " +
 		"as Screens says.\n\n" +
-		"Jobs: a lead's or worker's status, `state_change_seq` and screen hash (the screen with the " +
+		"Jobs: a lead's or a job worker's status, `state_change_seq` and screen hash (the screen with the " +
 		"spinner line, the input box and the footer stripped) are recorded; an agent is a suspect " +
 		"when all three have been unchanged for `worker_stale` (10m), or when it is gone from " +
 		"herdr (a `starting` row 10 minutes after its start); an agent blocked at a prompt is not. Each lead is told when the set of suspects " +
 		"among its workers changes (the watch `stale-workers`); a lead blocked or gone is told again next run. A lead's own " +
 		"state goes into the quiet-thread notice below.\n\n" +
+		"Workers: the workers watch started (`watch-<watch>-<key>`, in the `threads` workspace, with " +
+		"no job and the parent `watch`) that finished their turn, or worked for 30 minutes, are " +
+		"closed; the question one wrote in its question file is asked in the thread of its " +
+		"subject, or printed on stderr without one.\n\n" +
 		"Screens: then every live agent stopped at a screen (herdr status blocked, or a start " +
 		"left at a screen for 10 minutes), thread agents included. The folder-trust dialog for " +
 		"the agent's own directory is answered as a start answers it, and nobody is told. A usage " +
 		"limit, a model switch, a usage reset or a purchase is never pressed: the people in the " +
-		"agent's home thread are asked, once. Any other screen gets a helper agent " +
-		"(`unblock-<row id>`, in the `threads` workspace), one at a time and at most 3 per agent, " +
+		"agent's home thread are asked, once. Any other screen gets a worker of the watch `unblock` " +
+		"(`watch-unblock-<row id>`), one at a time and at most 3 per agent, " +
 		"which presses keys as fleet's guidance says or writes a question that the next run asks " +
-		"the people; no helper is started while that question waits for an answer. Questions about " +
+		"the people; no worker is started while that question waits for an answer. Questions about " +
 		"a screen are reminded of like the others, but never time out; one is closed when the " +
 		"stopped agent's job ends. A worker's lead " +
-		"is told when a helper starts or the people are asked, and so is the starter of a lead or " +
-		"worker whose start stopped at the screen. Helpers that finished their turn, or worked for " +
-		"30 minutes, are closed.\n\n" +
-		"Parent issues: a parent issue of the scope's jobs, none of them open, that is in a " +
-		"started state, has sub-issues and has not changed in Linear for `parent_stale` (72h) " +
-		"gets a revisit agent (`revisit-<issue>`, in the `threads` workspace), at most " +
-		"`parent_agents` (1) a run, the longest unchanged first. Given the issue, its sub-issues, " +
-		"fleet's jobs on it and its project's instructions, it leaves the issue alone, closes it, " +
-		"opens a sub-issue to continue it, or asks the people: in the home thread of the latest " +
-		"job on it, whose thread agent then carries out their answer, else on the issue with the " +
-		"`needs-user` label. None is started while one is live for the issue or its question " +
-		"waits, nor within `parent_stale` of the last one started for it.\n\n" +
+		"is told when a worker starts for it or the people are asked, and so is the starter of a lead or " +
+		"worker whose start stopped at the screen.\n\n" +
 		"Threads (only with a fednet socket): a live thread agent gone from herdr has its session " +
 		"ended as abnormal (its ticket released without --done, a closing line saying the session " +
 		"broke off). A thread with no message for `thread_idle` (72h) has its live session " +
@@ -103,20 +97,23 @@ const (
 		"pending when its job ended otherwise (`job end`, or `job end --force`) is the thread's from " +
 		"then on: reminded of as before, counted from when it was asked; the live thread agent, if " +
 		"any, is told once; it is closed after `thread_question` without the session being reclaimed.\n\n" +
-		"Watches: the two rules named above are the defaults of `watches` in the scope's settings; an entry " +
+		"Watches: the three rules named above are the defaults of `watches` in the scope's settings; an entry " +
 		"of the same name sets only their `every` (the least time between two runs), `prompt` (a file in place " +
-		"of the instructions the notice ends with, slots {{key}} and {{text}}) or `off`. Any other entry has a " +
-		"command source, `\"source\": {\"command\": [...]}`, with `\"do\": \"tell\"`. Its program runs with a 30 s " +
+		"of the instructions the notice or the worker's task ends with, slots {{key}} and {{text}}, and " +
+		"{{question_file}} for `unblock`) or `off`. Any other entry has a " +
+		"command source, `\"source\": {\"command\": [...]}`, with `\"do\": \"tell\"` or `\"do\": \"worker\"` (`worker` " +
+		"also without a source: a timer whose one subject is the watch itself). Its program runs with a 30 s " +
 		"deadline and, beyond a fixed list, only the variables `env` names; it reads one JSON object on stdin " +
 		"(`version`, `scope`, `now`, `jobs`) and prints one JSON object per line, one per subject: `key`, `text`, " +
 		"and the `agent`, `job` or `thread` it concerns. `tell` sends the text and the prompt to that agent, the " +
 		"job's live lead or the thread's agent (started for it when none is live): at most `per_run` (1) " +
 		"subjects a run, a subject again only when its text changed or, with `again`, once that long has " +
 		"passed; at its `max`-th act the people in its thread are asked once instead, and nothing more is done " +
-		"while the source gives it. A tell that did not land is tried again next run; a source that fails " +
-		"skips its watch, saying so, and the exit is 5.\n\n" +
-		"The limits are durations such as `10m` or `72h` under `watch` in the scope's settings " +
-		"(`parent_agents` a number); " +
+		"while the source gives it. `worker` starts a worker for the subject (`model` and `effort` the entry's), " +
+		"its task the text and the prompt: none while it is live or its question waits, and one with the " +
+		"people's answer once they answered, whatever `again` says. A tell that did not land is tried again " +
+		"next run; a source that fails skips its watch, saying so, and the exit is 5.\n\n" +
+		"The limits are durations such as `10m` or `72h` under `watch` in the scope's settings; " +
 		"`worker_stale` and `lead_question` of a single-repo job come from its repo's " +
 		"`.fleet/config.json`. FLEET_WATCH_NOW (seconds since the epoch) sets the run's clock.\n\n" +
 		"Exit: 0 when every rule that fired was carried out; 1 when the scope is not a scope name, " +
@@ -156,6 +153,9 @@ type watchRun struct {
 	start time.Time
 	code  exit.Code
 	late  bool
+	// workers are the agents watch starts, once the run closed those
+	// that were done.
+	workers *workers
 }
 
 // failed records a failed action: printed, its code kept, the run goes on.
@@ -228,18 +228,20 @@ func Watch(h *herdr.Herdr) (exit.Code, error) {
 	if err != nil {
 		return 0, err
 	}
-	parents, linearErr, err := readParents(conn)
-	if err != nil {
-		return 0, err
+	for _, key := range cfg.Ignored {
+		fmt.Fprintf(os.Stderr, "note: %s in the scope's config is no longer used and is ignored\n", key)
 	}
 	r := &watchRun{h: h, conn: conn, cfg: cfg, scope: scope, now: now, start: start}
 	if err := r.jobs(all); err != nil {
 		return 0, err
 	}
-	if err := r.unblock(inHerdr); err != nil {
+	if r.workers, err = r.newWorkers(inHerdr); err != nil {
 		return 0, err
 	}
-	if err := r.revisit(inHerdr, parents, linearErr); err != nil {
+	if err := r.workers.close(); err != nil {
+		return 0, err
+	}
+	if err := r.workers.unblock(); err != nil {
 		return 0, err
 	}
 	if !on {
@@ -437,9 +439,10 @@ func (r *watchRun) tellLead(lead string, workers []watched, before []string, pro
 	return nil
 }
 
-// watchRead reads every live lead and worker from herdr and compares it with
-// the ledger, with the stale limit of its job (the scope's for a job the
-// ledger has no open row for).
+// watchRead reads every live lead and worker of a job from herdr and
+// compares it with the ledger, with the stale limit of its job (the
+// scope's for a job the ledger has no open row for). The workers watch
+// starts are its own to close.
 func watchRead(h *herdr.Herdr, conn *sql.DB, inHerdr map[string]InHerdr, now int64, scope config.Watch,
 	limits map[string]config.Watch) ([]watched, error) {
 	rows, err := LiveRows(conn, nil)
@@ -448,7 +451,7 @@ func watchRead(h *herdr.Herdr, conn *sql.DB, inHerdr map[string]InHerdr, now int
 	}
 	var all []watched
 	for _, live := range rows {
-		if live.Role != "lead" && live.Role != "worker" {
+		if live.Role != "lead" && live.Role != "worker" || live.Parent == watchSender {
 			continue
 		}
 		var r *reading

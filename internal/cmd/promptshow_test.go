@@ -112,18 +112,17 @@ func TestTheOverviewNotesAConfigTheUserCanWrite(t *testing.T) {
 }
 
 func TestEveryTextThatCannotBeUsedIsListedAndExits1(t *testing.T) {
-	promptConfig(t, `{"prompts": {"worker": {"append": "w.md"}, "lead": {"append": "l.md"}, "revisit": {"replace": "missing.md"}}}`,
+	promptConfig(t, `{"prompts": {"worker": {"append": "w.md"}, "lead": {"append": "l.md"}, "common": {"replace": "missing.md"}}}`,
 		map[string]string{"w.md": "Read {{repo}}.\n", "l.md": " \n"})
 	got := show(PromptShowArgs{})
-	if exitCode(got.err) != 1 || !strings.Contains(got.err.Error(), "3 of the texts cannot be used") {
+	if exitCode(got.err) != 1 || !strings.Contains(got.err.Error(), "4 of the texts cannot be used") {
 		t.Fatalf("err %v", got.err)
 	}
 	for _, line := range []string{
-		"common: built-in\n",
-		"thread: built-in + built-in common\n",
+		"common: error: prompts.common.replace (~/.config/fleet/missing.md): cannot read the file",
+		"thread: error: prompts.common.replace (~/.config/fleet/missing.md): cannot read the file",
 		"lead: error: prompts.lead.append (~/.config/fleet/l.md): the file is empty\n",
 		"worker: error: prompts.worker.append (~/.config/fleet/w.md:1:6): unknown slot {{repo}}",
-		"revisit: error: prompts.revisit.replace (~/.config/fleet/missing.md): cannot read the file",
 	} {
 		if !strings.Contains(got.stdout, line) {
 			t.Errorf("no %q in\n%s", line, got.stdout)

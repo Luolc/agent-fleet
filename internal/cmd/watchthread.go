@@ -49,8 +49,8 @@ type question struct {
 }
 
 // byHelper is whether watch or an agent it started asked the question: a
-// screen helper about an agent stopped at a screen, a revisit agent about
-// a parent issue, or watch about a subject past its watch's `max`. It is
+// watch worker (or a screen helper or revisit agent of before), or watch
+// about a subject past its watch's `max`. It is
 // reminded of, but never times out, since what waits for a person there
 // is not a job or session gone stale.
 func (q question) byHelper() bool {

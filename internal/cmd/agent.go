@@ -885,7 +885,8 @@ func roleSlots(sc *config.Scope, id *identity.Identity, cwd, repo, leadCwd strin
 			"of %s/<R>/AGENTS.md of every repo R the job touches, and follow them.", filepath.Join(root, "AGENTS.md"), checkouts)
 	}
 	slots := map[string]string{"job": id.Job, "scope": id.Scope, "agent": id.Agent, "parent": id.Parent,
-		"lead": id.Parent, "cwd": cwd, "repo_line": repoLine, "issue": issue.Identifier, "issue_note": issueNote,
+		"lead": id.Parent, "one_task": fmt.Sprintf("one task in the job %s (scope %s), for your lead %s", id.Job, id.Scope,
+			id.Parent), "cwd": cwd, "repo_line": repoLine, "issue": issue.Identifier, "issue_note": issueNote,
 		"linear": linear, "agents_md": agentsMD, "cap": strconv.Itoa(cap),
 		"scratch": sc.Tilde(jobScratch(sc, repo, leadCwd))}
 	maps.Copy(slots, modelValues(sc))
