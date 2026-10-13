@@ -2,21 +2,25 @@ package identity
 
 import "testing"
 
-func TestTheWorkOrderAndScopeTravelInTheEnvironment(t *testing.T) {
+func TestTheWorkOrderScopeAndScratchTravelInTheEnvironment(t *testing.T) {
 	t.Setenv("FLEET_AGENT", "item-1-a")
 	t.Setenv("FLEET_ROLE", "worker")
+	t.Setenv("FLEET_PARENT", "item-1-lead")
+	t.Setenv("FLEET_JOB", "item-1")
 	t.Setenv("FLEET_ISSUE", "EX-7")
 	t.Setenv("FLEET_SCOPE", "example")
+	t.Setenv("FLEET_SCRATCH", "/home/u/scratch/example-dataset")
 	id, err := FromEnv()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if id.Issue != "EX-7" || id.Scope != "example" {
-		t.Errorf("Issue = %q, Scope = %q", id.Issue, id.Scope)
+	if id.Issue != "EX-7" || id.Scope != "example" || id.Scratch != "/home/u/scratch/example-dataset" {
+		t.Errorf("Issue = %q, Scope = %q, Scratch = %q", id.Issue, id.Scope, id.Scratch)
 	}
 	pairs := id.EnvPairs()
-	if last := pairs[len(pairs)-1]; last != [2]string{"FLEET_ISSUE", "EX-7"} {
-		t.Errorf("last pair = %q, want FLEET_ISSUE=EX-7", last)
+	if got := pairs[len(pairs)-2:]; got[0] != [2]string{"FLEET_ISSUE", "EX-7"} ||
+		got[1] != [2]string{"FLEET_SCRATCH", "/home/u/scratch/example-dataset"} {
+		t.Errorf("last pairs = %q, want FLEET_ISSUE=EX-7, FLEET_SCRATCH", got)
 	}
 	if pairs[3] != [2]string{"FLEET_SCOPE", "example"} {
 		t.Errorf("scope pair = %q", pairs[3])

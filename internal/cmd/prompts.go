@@ -55,7 +55,7 @@ func specOf(name string) promptSpec {
 		return promptSpec{commonPrompt, nil}
 	case "thread":
 		return promptSpec{threadPrompt, append([]string{"scope", "agent", "mapping", "cwd", "rules", "xrepo", "checkouts",
-			"ticket", "ticket_note", "post", "progress"}, modelSlots...)}
+			"scratch", "ticket", "ticket_note", "post", "progress"}, modelSlots...)}
 	case "lead":
 		return promptSpec{leadPrompt, role}
 	case "worker":

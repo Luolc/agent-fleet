@@ -87,6 +87,9 @@ lacks "revisit: not for a parent with a job open on it" "$query" '"EX-6"'
 lacks "revisit: not for an issue no job had" "$query" '"EX-8"'
 check "revisit: the agent's row" "revisit||EX-1 " \
   "$(ledger "SELECT role, job, parent_issue FROM agents WHERE name = 'revisit-ex-1' AND state != 'ended'")"
+rcwd=$(readlink "/proc/$("${S[@]}" pane process-info --pane "$(agent_field revisit-ex-1 pane_id)" | jq -r '.result.process_info.foreground_processes[0].pid')/cwd")
+check "revisit: the agent's scratch variable is the directory it runs in" "${P}SCRATCH=$rcwd" \
+  "$(proc_env revisit-ex-1 | grep -o "${P}SCRATCH=[^ ]*")"
 received revisit-ex-1 > "$PD/first.txt"
 has "revisit: its first message: the issue, its sub-issue, the jobs, the instructions and where to ask" \
   "$(cat "$PD/first.txt")" "[FROM: watch]" "You are revisit-ex-1" "EX-1: Parent EX-1" "- EX-90: a try" \

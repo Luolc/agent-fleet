@@ -55,7 +55,7 @@ const (
 		"a thread whose agent is live gets the message as `fleet send` would, headed `[FROM: " +
 		"inbox]`. Otherwise a thread agent is started: `thread-<slug>` (the slug is the key, " +
 		"lower-cased, [a-z0-9-]) in a tab of the herdr workspace `threads`, in the thread's " +
-		"directory, with FLEET_ROLE=thread, FLEET_THREAD, FLEET_SCOPE and FLEET_ISSUE. Its row is reserved first (one live agent " +
+		"directory, with FLEET_ROLE=thread, FLEET_THREAD, FLEET_SCOPE, FLEET_ISSUE and FLEET_SCRATCH. Its row is reserved first (one live agent " +
 		"per thread), so a rerun after a kill cannot start a second one. With a Linear team, a " +
 		"new thread gets a thread ticket (label `thread`, no project, description with the " +
 		"channel, thread and first message) claimed for the agent; a known thread gets its " +

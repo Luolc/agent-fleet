@@ -290,6 +290,7 @@ func TestInboxStartsAThreadAgentForANewThreadWithItsTicket(t *testing.T) {
 	argv := w.file("tab-argv")
 	for _, want := range []string{"--workspace\nw7\n--label\nc0123-1700000000-123\n", "--cwd\n" + cwd + "\n", "--env\nFLEET_AGENT=thread-c0123-1700000000-123\n",
 		"--env\nFLEET_ROLE=thread\n", "--env\nFLEET_SCOPE=main\n", "--env\nFLEET_ISSUE=TH-5\n",
+		"--env\nFLEET_SCRATCH=" + filepath.Join(w.dir, "home", "scratch", "example-dataset") + "\n",
 		"--env\nFLEET_THREAD=" + threadKey + "\n"} {
 		if !strings.Contains(argv, want) {
 			t.Errorf("tab create argv = %q, want %q in it", argv, want)
@@ -1699,9 +1700,9 @@ func TestInboxRecordsThePersonsLatestMessageAndJobStartHandsItToTheLead(t *testi
 	}
 	argv := w.file("argv")
 	for _, want := range []string{"agent\nprompt\nitem-7-lead\n[FROM: thread-c0123-1700000000-123]\nYou are a lead run by fleet: you run the job item-7 (scope main)",
-		"FLEET_ISSUE= (empty: this job has no Linear work orders). Linear is off for this job:",
+		"FLEET_ISSUE= (empty: this job has no Linear work orders), FLEET_SCRATCH=~/scratch/example-dataset. Linear is off for this job:",
 		"The job's cap is 16 live agents, you included.",
-		"write your report to ~/scratch/example-dataset/ (",
+		"write your report to $FLEET_SCRATCH (",
 		"\n## Latest message from a person in the home thread\n\nThe one JSON object on the next line is fleet's record of it (user, ts, text as written):\n" +
 			`{"user":"U0ABC","ts":"1700000001.000","text":"And the B table, not the C table"}` + "\n\n## Your task\n\nImport the A table\n\n--wait\n"} {
 		if !strings.Contains(argv, want) {

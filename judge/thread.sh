@@ -99,7 +99,7 @@ check "inbox: workspace labelled threads" threads "$("${S[@]}" workspace get "$t
 check "inbox: tab labelled after the thread" c0123-1700000000-123 \
   "$("${S[@]}" tab get "$(agent_field "$A" tab_id)" | jq -r .result.tab.label)"
 check "inbox: identity variables in its process, the thread included" \
-  "${P}AGENT=$A ${P}ISSUE=TH-5 ${P}JOB= ${P}PARENT= ${P}ROLE=thread ${P}SCOPE=main ${P}THREAD=$K " \
+  "${P}AGENT=$A ${P}ISSUE=TH-5 ${P}JOB= ${P}PARENT= ${P}ROLE=thread ${P}SCOPE=main ${P}SCRATCH=/home/agent/scratch/$R ${P}THREAD=$K " \
   "$(proc_env "$A")"
 # The fake Claude shows the last 20 lines; the prompt's head is above them.
 # The prompt ends with common's last item, whose start no wrapping splits.

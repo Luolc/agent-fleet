@@ -66,15 +66,17 @@ const DefaultScope = "main"
 // agent; `Issue`, the agent's Linear work order (a thread agent's thread
 // ticket), is empty when it has none; `Scope` names the fleet (ledger,
 // config and herdr session) and is never empty; `Thread` is the thread key
-// of a thread agent, empty for the other roles.
+// of a thread agent, empty for the other roles; `Scratch` is the absolute
+// directory for the agent's reports and other files.
 type Identity struct {
-	Agent  string
-	Role   Role
-	Parent string
-	Scope  string
-	Job    string
-	Issue  string
-	Thread string
+	Agent   string
+	Role    Role
+	Parent  string
+	Scope   string
+	Job     string
+	Issue   string
+	Thread  string
+	Scratch string
 }
 
 const hint = "this pane was not started by fleet; agents get these variables from `fleet inbox`, `fleet job start`, `fleet spawn` or `fleet watch`"
@@ -135,13 +137,14 @@ func FromEnv() (*Identity, error) {
 		return nil, err
 	}
 	return &Identity{
-		Agent:  agent,
-		Role:   role,
-		Parent: os.Getenv("FLEET_PARENT"),
-		Scope:  scope,
-		Job:    os.Getenv("FLEET_JOB"),
-		Issue:  os.Getenv("FLEET_ISSUE"),
-		Thread: os.Getenv("FLEET_THREAD"),
+		Agent:   agent,
+		Role:    role,
+		Parent:  os.Getenv("FLEET_PARENT"),
+		Scope:   scope,
+		Job:     os.Getenv("FLEET_JOB"),
+		Issue:   os.Getenv("FLEET_ISSUE"),
+		Thread:  os.Getenv("FLEET_THREAD"),
+		Scratch: os.Getenv("FLEET_SCRATCH"),
 	}, nil
 }
 
@@ -157,6 +160,7 @@ func (id *Identity) EnvPairs() [][2]string {
 		{"FLEET_SCOPE", id.Scope},
 		{"FLEET_JOB", id.Job},
 		{"FLEET_ISSUE", id.Issue},
+		{"FLEET_SCRATCH", id.Scratch},
 	}
 	if id.Role == Thread {
 		pairs = append(pairs, [2]string{"FLEET_THREAD", id.Thread})

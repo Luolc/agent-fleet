@@ -242,7 +242,8 @@ func TestSpawnCreatesAndClaimsTheWorkOrderBeforeAnythingElse(t *testing.T) {
 	tabArgv, _ := os.ReadFile(filepath.Join(w.dir, "tab-argv"))
 	for _, want := range []string{"--workspace\nw1\n", "--label\na\n", "--cwd\n" + cwd + "\n",
 		"--env\nFLEET_AGENT=item-1-a\n", "--env\nFLEET_ROLE=worker\n", "--env\nFLEET_PARENT=item-1-lead\n",
-		"--env\nFLEET_SCOPE=" + scope + "\n", "--env\nFLEET_JOB=item-1\n", "--env\nFLEET_ISSUE=EX-12\n"} {
+		"--env\nFLEET_SCOPE=" + scope + "\n", "--env\nFLEET_JOB=item-1\n", "--env\nFLEET_ISSUE=EX-12\n",
+		"--env\nFLEET_SCRATCH=" + filepath.Join(w.dir, "home", "scratch", "example-dataset") + "\n"} {
 		if !strings.Contains(string(tabArgv), want) {
 			t.Errorf("tab create argv = %q, want %q in it", tabArgv, want)
 		}
@@ -394,7 +395,8 @@ func TestJobStartCreatesTheParentClaimsItAndMakesTheWorkOrderFirst(t *testing.T)
 	wsArgv, _ := os.ReadFile(filepath.Join(w.dir, "workspace-argv"))
 	for _, want := range []string{"--label\nitem-2\n", "--cwd\n" + checkout + "\n",
 		"--env\nFLEET_AGENT=item-2-lead\n", "--env\nFLEET_ROLE=lead\n", "--env\nFLEET_PARENT=thread-1\n",
-		"--env\nFLEET_SCOPE=" + scope + "\n", "--env\nFLEET_JOB=item-2\n", "--env\nFLEET_ISSUE=EX-12\n"} {
+		"--env\nFLEET_SCOPE=" + scope + "\n", "--env\nFLEET_JOB=item-2\n", "--env\nFLEET_ISSUE=EX-12\n",
+		"--env\nFLEET_SCRATCH=" + filepath.Join(w.dir, "home", "scratch", "example-dataset") + "\n"} {
 		if !strings.Contains(string(wsArgv), want) {
 			t.Errorf("workspace create argv = %q, want %q in it", wsArgv, want)
 		}
@@ -405,7 +407,8 @@ func TestJobStartCreatesTheParentClaimsItAndMakesTheWorkOrderFirst(t *testing.T)
 	// the work order's URL.
 	for _, want := range []string{"agent\nprompt\nitem-2-lead\n[FROM: thread-1]\nYou are a lead run by fleet: you run the job item-2 " +
 		"(scope " + scope + ") for the people in its home thread. The job is single-repo: its repo is example-dataset",
-		"FLEET_ISSUE=EX-12 (your work order, https://linear.example.test/EX-12). The job's parent issue is EX-11;",
+		"FLEET_ISSUE=EX-12 (your work order, https://linear.example.test/EX-12), FLEET_SCRATCH=~/scratch/example-dataset. " +
+			"The job's parent issue is EX-11;",
 		// The checkout is no git repository here, so fleet could not update it.
 		"\n## Note from fleet\n\nThe checkout " + checkout + " was not updated from origin before you started: " +
 			"`git fetch origin` failed (exit 128).",

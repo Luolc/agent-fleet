@@ -224,6 +224,7 @@ func Spawn(h *herdr.Herdr, args SpawnArgs) (exit.Code, error) {
 		return startFailed(c.id.Agent, err, 0, created, hint)
 	}
 	c.id.Issue = issue.Identifier
+	c.id.Scratch = jobScratch(c.sc, c.job.Repo, c.job.LeadCwd)
 	place, err := CreateTab(h, c.workspace, args.Name, c.cwd, c.id)
 	if err != nil {
 		return startFailed(c.id.Agent, err, 0, created, hint)
