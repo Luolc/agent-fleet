@@ -320,6 +320,28 @@ func TestSpawnStopsWhenAnAtbStepFails(t *testing.T) {
 	}
 }
 
+// A herdr step that fails after the work order keeps the row `starting`:
+// herdr may have made the tab before it failed.
+func TestSpawnKeepsTheRowWhenAHerdrStepFails(t *testing.T) {
+	w := newWorld(t)
+	w.configure(withLinear)
+	openJobWithLead(w, "EX-10")
+	script := strings.Replace(startHerdr, `  "tab create")`, `  "tab create") echo "fake herdr: tab create failing" >&2; exit 2 ;;
+  "tab never")`, 1)
+	if err := os.WriteFile(filepath.Join(w.dir, "fake-herdr", "herdr"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	w.fakeAtbCreating("")
+	out := w.spawnWorker("--task-file", task(w, "task.md", "import\n"), "--cwd", dir(w, "wt"))
+	if out.code != 5 || !strings.Contains(out.stderr, "ledger row item-1-a (state starting)") ||
+		!strings.Contains(out.stderr, "`fleet job end item-1 --force`") {
+		t.Errorf("%+v", out)
+	}
+	if got := row(w, "item-1-a"); got != "EX-12 EX-10 starting "+dir(w, "wt") {
+		t.Errorf("row = %s", got)
+	}
+}
+
 // A spawn stopped by a failed work order leaves no live row: the name can
 // be spawned again, and the lead's `job end` is not held up by a worker
 // that never started.
