@@ -595,7 +595,8 @@ func TestJobEndStopsWhenAnAtbStepFails(t *testing.T) {
 	w.jobEndHerdr()
 	w.fakeAtb("release EX-10")
 	out := w.endJob("--report-file", report)
-	if out.code != 5 || !strings.Contains(out.stderr, "atb linear release EX-10 failed") {
+	if out.code != 5 || !strings.Contains(out.stderr, "atb linear release EX-10 failed (exit status: 4)\n"+
+		"atb linear release EX-10 printed on stderr (credentials redacted):\n  error: refused: no holder, key [redacted]\n") {
 		t.Errorf("%+v", out)
 	}
 	if strings.Contains(out.stderr, "lin_api") || strings.Contains(out.stdout, "lin_api") {

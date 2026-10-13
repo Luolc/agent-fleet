@@ -262,6 +262,26 @@ check "job list: the cross-repo job" "wire	QT-10	-	-	wire-lead	-" "$(thr job lis
 out=$(thr job start wire-2 --parent-issue QT-10 --task-file "$(task wire2 'again')" 2>&1); rc=$?
 check "job start: a second job on a parent with a live lead refused with exit 1, without Linear" 1 "$rc"
 has "job start: the refusal names the lead to talk to" "$out" "wire-lead is live on parent issue QT-10"
+# A spawn whose work order cannot be created: exit 5 with atb's stderr,
+# its key redacted, and the worker's row ended, so the job's end below is
+# not held up by a worker that never started.
+cp /home/agent/fake-atb/atb /home/agent/fake-atb/atb.ok
+cat > /home/agent/fake-atb/atb <<'ATB'
+#!/bin/sh
+case "$2" in
+  query) echo '{"issue":{"team":{"key":"QT"},"project":{"name":"Queried project"}}}' ;;
+  create) echo "error: project not found, key lin_api_judge0xK3Y" >&2; exit 1 ;;
+esac
+ATB
+settled wire-lead
+out=$(PATH=/home/agent/fake-atb:$PATH as wire-lead lead thread-1 wire -- spawn b --cwd /home/agent/x-repo/general/wire --task-file "$(task wireb 'wire worker b')" 2>&1); rc=$?
+mv /home/agent/fake-atb/atb.ok /home/agent/fake-atb/atb
+check "spawn: exit 5 when the work order cannot be created" 5 "$rc"
+has "spawn: atb's stderr shown with the key redacted, the row ended" "$out" \
+  "atb linear create failed (exit status: 1)" "atb linear create printed on stderr (credentials redacted):" \
+  "  error: project not found, key [redacted]" "ledger row wire-b, now ended: nothing was started and the name is free"
+check "spawn: the key is not shown" no "$(case "$out" in *judge0xK3Y*) echo yes ;; *) echo no ;; esac)"
+check "spawn: the worker's row is ended" "ended " "$(ledger "SELECT state FROM agents WHERE name = 'wire-b'")"
 # A worker of the cross-repo job gets its work order where the parent says.
 : > /home/agent/atb.log
 settled wire-lead
@@ -309,7 +329,7 @@ check "job end cross-repo: the conclusion written to the parent" \
 rm /home/agent/atb-fail
 has "job end cross-repo: the conclusion printed" "$out" "Job wire ended: abandoned."
 check "job end cross-repo: directory removed" no "$([ -e /home/agent/x-repo/general/wire ] && echo yes || echo no)"
-check "job end cross-repo: job ended as abandoned with its rows" "ended|abandoned ended ended " \
+check "job end cross-repo: job ended as abandoned with its rows" "ended|abandoned ended ended ended " \
   "$(ledger "SELECT state, outcome FROM jobs WHERE job = 'wire'")$(ledger "SELECT state FROM agents WHERE job = 'wire' ORDER BY id")"
 check "job end cross-repo: workspace and agents gone" "0 0" \
   "$("${S[@]}" workspace list | jq '[.result.workspaces[] | select(.label == "wire")] | length') $("${S[@]}" agent list | jq '[.result.agents[] | select(.name | startswith("wire-"))] | length')"

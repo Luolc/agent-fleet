@@ -7,10 +7,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"regexp"
 	"strings"
+	"unicode"
 
 	"github.com/Luolc/agent-fleet/internal/exit"
 	"github.com/Luolc/agent-fleet/internal/herdr"
@@ -176,7 +178,8 @@ func Release(issue, agent string, abandon bool) error {
 // Failure is atb not succeeding, for a caller an exit 5 like any other
 // (it unwraps to the *exit.Failure), with what a person needs later to
 // find out why kept apart from the message: atb's exit code and its
-// stderr, redacted. Neither goes into an error message or a thread.
+// stderr, redacted. Neither goes into an error message or a thread; only
+// WriteStderr shows the redacted stderr, on fleet's own stderr.
 type Failure struct {
 	*exit.Failure
 	// Op names the step, as the message does.
@@ -228,6 +231,27 @@ func redact(stderr string) string {
 	return stderr
 }
 
+// WriteStderr writes to `w` the redacted stderr of the atb failure behind
+// `err`, under a line naming the step, without control characters but
+// newlines and tabs, which a terminal could act on; nothing when `err` is
+// not atb failing or atb printed nothing on stderr.
+func WriteStderr(w io.Writer, err error) {
+	var failure *Failure
+	if !errors.As(err, &failure) || failure.Stderr == "" {
+		return
+	}
+	text := strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) && r != '\n' && r != '\t' {
+			return -1
+		}
+		return r
+	}, failure.Stderr)
+	fmt.Fprintf(w, "%s printed on stderr (credentials redacted):\n", failure.Op)
+	for _, line := range strings.Split(text, "\n") {
+		fmt.Fprintf(w, "  %s\n", line)
+	}
+}
+
 // run runs atb with `argv`; `op` names the step in errors. Any failure is
 // a *Failure, exit 5, naming the step and atb's status. Its stdout is
 // returned for the caller to pick from; neither stdout nor stderr ever
@@ -245,8 +269,7 @@ func run(op string, argv ...string) ([]byte, error) {
 	}
 	if err != nil {
 		f := &Failure{Op: op, ExitCode: -1, Class: "killed by a signal", Stderr: redact(string(stderr)),
-			Failure: exit.Environmentf("%s failed (%s); its output is not shown, run it yourself to see why",
-				op, herdr.Status(err))}
+			Failure: exit.Environmentf("%s failed (%s)", op, herdr.Status(err))}
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) && exitErr.ExitCode() >= 0 {
 			f.ExitCode = exitErr.ExitCode()
