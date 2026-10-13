@@ -34,8 +34,12 @@ var (
 // watchSlots are the slots of a watch's prompt.
 var watchSlots = []string{"key", "text"}
 
-// sourceTimeout bounds one run of a command source.
-const sourceTimeout = 30 * time.Second
+// sourceTimeout bounds one run of a command source, sourceLimit what it
+// may print.
+const (
+	sourceTimeout = 30 * time.Second
+	sourceLimit   = 4 << 20
+)
 
 // builtinWatch is the entry of the default that has the built-in source.
 func (r *watchRun) builtinWatch(source string) config.Entry {
@@ -68,9 +72,10 @@ func (r *watchRun) due(e config.Entry) (bool, error) {
 	return r.now-last >= secs(e.Every), nil
 }
 
-// ran records this run of the watch.
+// ran records this run of the watch, unless the run is out of time: then
+// the watch may have been cut short, and the next run takes it up again.
 func (r *watchRun) ran(e config.Entry) error {
-	if e.Every == 0 {
+	if e.Every == 0 || r.late {
 		return nil
 	}
 	_, err := r.conn.Exec("INSERT INTO steps (key, step, done_at) VALUES (?1, 'ran', ?2) "+
@@ -161,14 +166,14 @@ func (r *watchRun) sourceInput() ([]byte, error) {
 // reads its subjects: one JSON object per line, each with a key of its
 // own and a text, and for `tell` the agent, job or thread it concerns.
 // What the source printed on stderr is shown only in its first line, the
-// values of the variables it was given taken out.
+// values of the variables it was given taken out before the line is cut.
 func runSource(e config.Entry, input []byte) ([]subject, error) {
-	out, errOut, err := herdr.ExecInput("the source of watch "+e.Name, e.Env, sourceTimeout, input, e.Command[0],
+	out, errOut, err := herdr.ExecInput("its source", e.Env, sourceTimeout, sourceLimit, input, e.Command[0],
 		e.Command[1:]...)
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
 		return nil, exit.Environmentf("its source exited %d: %s", exitErr.ExitCode(),
-			redactEnv(firstLine(string(errOut)), e.Env))
+			firstLine(redactEnv(string(errOut), e.Env)))
 	}
 	if err != nil {
 		return nil, err

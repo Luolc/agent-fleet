@@ -181,6 +181,12 @@ func TestAWatchWhoseSourceFailsIsSkippedAndTheOthersRun(t *testing.T) {
 	if got := strings.Join(w.told(0), " "); got != "j-lead:g" {
 		t.Errorf("told %s", got)
 	}
+	// A value across the 200 bytes kept of the line is taken out first.
+	w.file("source-fail", strings.Repeat("x", 190)+" with tok-example-secret\n")
+	out = w.watchAt(30*time.Second, 5, "EXAMPLE_TOKEN=tok-example-secret")
+	if !strings.Contains(out.stderr, strings.Repeat("x", 190)+" with [re") || strings.Contains(out.stderr, "tok-") {
+		t.Errorf("stderr: %s", out.stderr)
+	}
 	// Output that is not one subject per line fails it the same way.
 	w.file("source-fail", "")
 	w.subjects(`{"key": "a", "text": "no target"}`)
@@ -222,5 +228,19 @@ func TestADefaultWatchCanBeTurnedOffOrGivenAPrompt(t *testing.T) {
 	}
 	if !strings.Contains(prompts[0][1], "rule `thread quiet, jobs open`") || !strings.HasSuffix(prompts[0][1], "\n\nPost a line in C1/1.0.") {
 		t.Errorf("%s", prompts[0][1])
+	}
+}
+
+func TestADefaultWatchWithABrokenPromptIsTakenUpAgainNextRun(t *testing.T) {
+	w := sourceWorld(t, `{"stale-workers": {"every": "1h", "prompt": "stale.md"}, "quiet-threads": {"off": true}}`, nil)
+	w.insert(watchRow{name: "j-w", role: "worker", job: "j", parent: "j-lead"})
+	out := w.watchAt(0, 1)
+	if !strings.Contains(out.stderr, "watches.stale-workers.prompt (") || len(w.prompts()) != 0 {
+		t.Fatalf("%+v %q", out, w.prompts())
+	}
+	w.file("home/.config/fleet/stale.md", "Look at {{key}}'s workers.\n")
+	w.watchAt(5*time.Minute, 0)
+	if prompts := w.prompts(); len(prompts) != 1 || prompts[0][0] != "j-lead" || !strings.HasSuffix(prompts[0][1], "Look at j-lead's workers.") {
+		t.Errorf("%q", prompts)
 	}
 }

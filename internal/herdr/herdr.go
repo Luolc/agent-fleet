@@ -105,12 +105,13 @@ func (h *Herdr) run(args ...string) (stdout, stderr []byte, err error) {
 // not be run or hit the deadline, an *exec.ExitError when it exited
 // non-zero.
 func Exec(op string, more []string, program string, argv ...string) (stdout, stderr []byte, err error) {
-	return ExecInput(op, more, callTimeout, nil, program, argv...)
+	return ExecInput(op, more, callTimeout, 0, nil, program, argv...)
 }
 
-// ExecInput is Exec with its own deadline and `stdin` on the program's
-// standard input.
-func ExecInput(op string, more []string, timeout time.Duration, stdin []byte, program string, argv ...string) (
+// ExecInput is Exec with its own deadline, `stdin` on the program's
+// standard input and, when `limit` is positive, a failure when it prints
+// more than `limit` bytes on stdout or stderr.
+func ExecInput(op string, more []string, timeout time.Duration, limit int, stdin []byte, program string, argv ...string) (
 	stdout, stderr []byte, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -124,9 +125,9 @@ func ExecInput(op string, more []string, timeout time.Duration, stdin []byte, pr
 		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	}
 	cmd.WaitDelay = waitDelay
-	var out, errOut bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &errOut
+	out, errOut := &capped{limit: limit}, &capped{limit: limit}
+	cmd.Stdout = out
+	cmd.Stderr = errOut
 	err = cmd.Run()
 	// Whatever the program left behind in its process group (a descendant
 	// holding the pipes past WaitDelay, or everything after the deadline)
@@ -138,6 +139,9 @@ func ExecInput(op string, more []string, timeout time.Duration, stdin []byte, pr
 	if ctx.Err() != nil {
 		return nil, nil, exit.Environmentf("%s timed out after %v", op, timeout)
 	}
+	if out.over || errOut.over {
+		return nil, nil, exit.Environmentf("%s printed more than %d bytes", op, limit)
+	}
 	// The program itself has exited and what it printed is in hand; the
 	// descendant that kept the pipes open was just killed.
 	if errors.Is(err, exec.ErrWaitDelay) {
@@ -147,7 +151,25 @@ func ExecInput(op string, more []string, timeout time.Duration, stdin []byte, pr
 	if err != nil && !errors.As(err, &exitErr) {
 		return nil, nil, exit.Environmentf("cannot run %s: %v", program, err)
 	}
-	return out.Bytes(), errOut.Bytes(), err
+	return out.buf.Bytes(), errOut.buf.Bytes(), err
+}
+
+// capped keeps what is written up to `limit` bytes (all of it when
+// `limit` is 0) and whether more came; it takes everything, so the
+// program is not stopped by a broken pipe.
+type capped struct {
+	buf   bytes.Buffer
+	limit int
+	over  bool
+}
+
+func (c *capped) Write(p []byte) (int, error) {
+	if c.limit > 0 && c.buf.Len()+len(p) > c.limit {
+		c.over = true
+		c.buf.Write(p[:c.limit-c.buf.Len()])
+		return len(p), nil
+	}
+	return c.buf.Write(p)
 }
 
 // Call runs a herdr command and parses its JSON reply. A reply that is not

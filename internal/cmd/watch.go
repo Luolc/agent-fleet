@@ -281,8 +281,8 @@ func (r *watchRun) jobs(all []watched) error {
 	if due, err := r.due(e); err != nil || !due {
 		return err
 	}
-	told, err := r.tellLeads(all, e)
-	if err != nil {
+	told, cut, err := r.tellLeads(all, e)
+	if err != nil || cut {
 		return err
 	}
 	if !told {
@@ -368,11 +368,11 @@ func workersByLead(all []watched) (leads []string, byLead map[string][]watched) 
 // tellLeads tells each lead whose set of suspect workers changed, as the
 // watch `e` says, and saves the verdicts of the workers whose lead was
 // told (or may have been: exit 2); told is whether any lead's set changed.
-// A broken prompt tells no lead this run.
-func (r *watchRun) tellLeads(all []watched, e config.Entry) (bool, error) {
+// A broken prompt tells no lead this run, and is `cut`: the watch did not
+// get through.
+func (r *watchRun) tellLeads(all []watched, e config.Entry) (told, cut bool, err error) {
 	leads, byLead := workersByLead(all)
 	prompt, promptErr := watchPrompt(r.cfg, e)
-	told := false
 	for _, lead := range leads {
 		if r.outOfTime() {
 			break
@@ -386,20 +386,20 @@ func (r *watchRun) tellLeads(all []watched, e config.Entry) (bool, error) {
 		if promptErr != nil {
 			job, err := openJob(r.conn, workers[0].live.Job)
 			if err != nil {
-				return told, err
+				return told, true, err
 			}
 			thread := ""
 			if job != nil {
 				thread = job.HomeThread
 			}
 			r.failed(r.promptBroken(promptErr, thread, "tell "+lead+" about its suspect workers"))
-			break
+			return told, true, nil
 		}
 		if err := r.tellLead(lead, workers, before, prompt); err != nil {
-			return told, err
+			return told, true, err
 		}
 	}
-	return told, nil
+	return told, false, nil
 }
 
 // suspectSets are the names of the suspects among `workers` at the last
