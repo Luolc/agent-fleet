@@ -48,8 +48,8 @@ const (
 		"with the FLEET_* variables set, and Claude Code (the only supported agent) is started " +
 		"with `herdr agent start --kind claude` and fixed arguments (permission prompts " +
 		"skipped, AskUserQuestion disallowed, Remote Control off, plus --model and --effort " +
-		"when given); the pane is renamed after the worker. Its folder-trust prompt is " +
-		"accepted; any other screen that is not the input box stops the spawn. Finally the task " +
+		"when given or set in the scope's `models.worker`); the pane is renamed after the worker. " +
+		"Its folder-trust prompt is accepted; any other screen that is not the input box stops the spawn. Finally the task " +
 		"is delivered as `fleet send` would, and the row becomes active.\n\n" +
 		"There is no rollback and no retry. When a step fails after something was created, the " +
 		"output lists what exists; the worker's row stays `starting`, and the cleanup is the " +
@@ -68,9 +68,11 @@ type SpawnArgs struct {
 	TaskFile string
 	// Cwd is the directory the worker runs in; it must exist.
 	Cwd string
-	// Model is passed to the agent as --model. Default: the agent's own.
+	// Model is passed to the agent as --model. Default: the scope's
+	// `models.worker.model`, else the agent's own.
 	Model *string
-	// Effort is passed to the agent as --effort. Default: the agent's own.
+	// Effort is passed to the agent as --effort. Default: the scope's
+	// `models.worker.effort`, else the agent's own.
 	Effort *string
 }
 
@@ -230,7 +232,8 @@ func Spawn(h *herdr.Herdr, args SpawnArgs) (exit.Code, error) {
 	body := c.prompt.fill(roleSlots(c.sc, c.id, c.cwd, c.job.Repo, c.job.LeadCwd, c.cfg.MaxAgentsPerJob, issue,
 		c.job.ParentIssue)) +
 		taskSection(issue.URL, c.body)
-	code, err := startAndDeliver(h, conn, c.id, place, c.cwd, args.Model, args.Effort, c.me.Agent, body, &created)
+	code, err := startAndDeliver(h, conn, c.id, place, c.cwd, orDefault(args.Model, c.sc.Models.Worker.Model),
+		orDefault(args.Effort, c.sc.Models.Worker.Effort), c.me.Agent, body, &created)
 	if err != nil || code != exit.Ok {
 		return startFailed(c.id.Agent, err, code, created, hint)
 	}

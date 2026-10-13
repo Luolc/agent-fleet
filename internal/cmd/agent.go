@@ -850,7 +850,7 @@ var workerPrompt string
 
 // roleSlots are the values of a lead's or a worker's prompt slots: the
 // agent's identity, where it runs, what Linear holds for it, where its
-// files go, and the models the scope names. `cap` is the job's agent cap;
+// files go, and the model slots a replacement may still use. `cap` is the job's agent cap;
 // `issue` the agent's work order (zero without Linear); `parentIssue` the
 // job's parent issue; `leadCwd` where the job's lead runs: the checkout
 // of a single-repo job, whose repo is `repo`, or `<job>/` in the
@@ -864,7 +864,10 @@ func roleSlots(sc *config.Scope, id *identity.Identity, cwd, repo, leadCwd strin
 	linear := "Linear is off for this job: no work orders, no parent issue; task files and reports are still files."
 	if issue.Identifier != "" {
 		linear = fmt.Sprintf("The job's parent issue is %s; fleet creates, claims and releases it, your work order "+
-			"and the workers' work orders.", parentIssue)
+			"and the workers' work orders, and `fleet job end` writes your report and the conclusion to Linear. "+
+			"Add `--close-parent done` to it only when everything the parent asks for is done, `--close-parent "+
+			"abandoned` only when all of it is given up; otherwise fleet gives back its claim and the parent returns "+
+			"to the state it had before this job.", parentIssue)
 	}
 	checkouts, scratch := sc.Tilde(sc.Paths.Checkouts), sc.Tilde(sc.Paths.Scratch)
 	var repoLine, agentsMD string
@@ -888,6 +891,16 @@ func roleSlots(sc *config.Scope, id *identity.Identity, cwd, repo, leadCwd strin
 		"linear": linear, "agents_md": agentsMD, "cap": strconv.Itoa(cap), "scratch": scratch}
 	maps.Copy(slots, modelValues(sc))
 	return slots
+}
+
+// orDefault is the --model or --effort a start passes: the command's
+// `flag`, else the scope's `value` for it; nil when neither is given, so
+// the agent runtime's own default holds.
+func orDefault(flag *string, value string) *string {
+	if flag != nil || value == "" {
+		return flag
+	}
+	return &value
 }
 
 // taskSection is the last part of a first message, `## Your task`: the

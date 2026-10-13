@@ -106,7 +106,7 @@ func TestTheOverviewNotesAConfigTheUserCanWrite(t *testing.T) {
 		t.Cleanup(func() { _ = os.Chmod(filepath.Join(dir, path), 0o755) })
 	}
 	got := show(PromptShowArgs{})
-	if got.err != nil || strings.Contains(got.stdout, "note:") || !strings.Contains(got.stdout, "worker: built-in + prompts.worker.append") {
+	if got.err != nil || strings.Contains(got.stdout, "note:") || !strings.Contains(got.stdout, "worker: built-in + built-in common + prompts.worker.append") {
 		t.Errorf("read-only: %v\n%s", got.err, got.stdout)
 	}
 }
@@ -119,7 +119,8 @@ func TestEveryTextThatCannotBeUsedIsListedAndExits1(t *testing.T) {
 		t.Fatalf("err %v", got.err)
 	}
 	for _, line := range []string{
-		"thread: built-in\n",
+		"common: built-in\n",
+		"thread: built-in + built-in common\n",
 		"lead: error: prompts.lead.append (~/.config/fleet/l.md): the file is empty\n",
 		"worker: error: prompts.worker.append (~/.config/fleet/w.md:1:6): unknown slot {{repo}}",
 		"revisit: error: prompts.revisit.replace (~/.config/fleet/missing.md): cannot read the file",
@@ -141,11 +142,20 @@ func TestOneTextShowsEachPartUnderItsSourceWithOnlyTheModelSlotsFilled(t *testin
 	thread := "thread"
 	got := show(PromptShowArgs{Name: &thread})
 	want := "==> prompts.thread.replace (~/.config/fleet/t.md) <==\nStart leads with example-large at low in {{cwd}}.\n\n" +
+		"==> built-in common <==\n" + commonPrompt + "\n" +
 		"==> prompts.thread.append (~/.config/fleet/a.md) <==\nOne more rule for {{agent}}.\n"
 	if got.err != nil || got.stdout != want {
 		t.Errorf("err %v, stdout:\n%s", got.err, got.stdout)
 	}
-	if !strings.Contains(got.stderr, "note: the replacement does not use {{agent}} {{checkouts}}") {
-		t.Errorf("stderr: %s", got.stderr)
+	for _, note := range []string{"note: {{lead_model}} {{lead_effort}} only keeps a file written for an older fleet",
+		"note: the replacement does not use {{agent}} {{checkouts}}"} {
+		if !strings.Contains(got.stderr, note) {
+			t.Errorf("no %q in stderr: %s", note, got.stderr)
+		}
+	}
+	// The built-in texts use no model slot, so nothing is noted.
+	lead := "lead"
+	if got := show(PromptShowArgs{Name: &lead}); got.err != nil || got.stderr != "" {
+		t.Errorf("built-in lead: err %v, stderr %q", got.err, got.stderr)
 	}
 }

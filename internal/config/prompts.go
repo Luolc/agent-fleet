@@ -8,8 +8,9 @@ import (
 )
 
 // PromptNames are fleet's built-in texts a scope's config can change: the
-// prompts of the five roles and the screen helpers' guidance.
-var PromptNames = []string{"thread", "lead", "worker", "revisit", "unblock", "screen_guidance"}
+// text the thread agents, leads and workers share, the prompts of the five
+// roles and the screen helpers' guidance.
+var PromptNames = []string{"common", "thread", "lead", "worker", "revisit", "unblock", "screen_guidance"}
 
 // Prompt is how a scope changes one built-in text: the files that replace
 // it, follow it, and record the built-in text the replacement started
@@ -21,23 +22,19 @@ type Prompt struct {
 	Base    string
 }
 
-// Model is the model and effort a prompt names for the agents its agent
-// starts.
+// Model is the model and effort a start passes when its command gives
+// none; empty is none passed.
 type Model struct {
 	Model  string
 	Effort string
 }
 
-// Models are the model and effort the thread prompt names for leads, and
-// the lead prompt for workers.
+// Models are the defaults of `job start` (for leads) and `spawn` (for
+// workers).
 type Models struct {
 	Lead   Model
 	Worker Model
 }
-
-// DefaultModels are what the built-in prompts named before they could be
-// configured.
-var DefaultModels = Models{Lead: Model{Model: "opus", Effort: "high"}, Worker: Model{Model: "opus", Effort: "high"}}
 
 // promptFile is one `prompts.<name>` as written.
 type promptFile struct {

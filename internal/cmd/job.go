@@ -117,7 +117,8 @@ type JobStartArgs struct {
 	Repo *string
 	// Key, when set, is the job's dedup key.
 	Key *string
-	// Model and Effort are passed to the agent. Default: the agent's own.
+	// Model and Effort are passed to the agent. Default: the scope's
+	// `models.lead`, else the agent's own.
 	Model  *string
 	Effort *string
 }
@@ -563,7 +564,8 @@ func JobStart(h *herdr.Herdr, args JobStartArgs) (exit.Code, error) {
 	}
 	body := c.prompt.fill(roleSlots(c.sc, c.id, c.cwd, c.repo, c.cwd, c.cfg.MaxAgentsPerJob, issue, c.parent)) +
 		note + section + taskSection(issue.URL, c.body)
-	code, err := startAndDeliver(h, conn, c.id, place, c.cwd, args.Model, args.Effort, c.me.Agent, body, &created)
+	code, err := startAndDeliver(h, conn, c.id, place, c.cwd, orDefault(args.Model, c.sc.Models.Lead.Model),
+		orDefault(args.Effort, c.sc.Models.Lead.Effort), c.me.Agent, body, &created)
 	if err != nil || code != exit.Ok {
 		return startFailed(c.id.Agent, err, code, created, hint)
 	}

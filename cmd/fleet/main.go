@@ -202,8 +202,10 @@ Options:
                           it the job is cross-repo and the lead runs in <job>/ of the initiative's
                           checkout (~/x-repo/<I>/<job>/ by default). Required without FLEET_ROLE
       --key <KEY>         Dedup key: refused when an open job of the scope has the same key
-      --model <MODEL>     Model passed to the agent as --model. Default: the agent's own
-      --effort <EFFORT>   Effort passed to the agent as --effort. Default: the agent's own
+      --model <MODEL>     Model passed to the agent as --model. Default: the scope's models.lead,
+                          else the agent's own
+      --effort <EFFORT>   Effort passed to the agent as --effort. Default: the scope's models.lead,
+                          else the agent's own
       --scope <NAME>      ` + scopeHelp + `
   -h, --help              Print help
 `
@@ -249,8 +251,10 @@ Arguments:
 Options:
       --task-file <PATH>  File with the task, delivered as the worker's first message (with the header)
       --cwd <DIR>         Directory the worker runs in; must exist (typically a path from ` + "`fleet worktree`" + `)
-      --model <MODEL>     Model passed to the agent as --model. Default: the agent's own
-      --effort <EFFORT>   Effort passed to the agent as --effort. Default: the agent's own
+      --model <MODEL>     Model passed to the agent as --model. Default: the scope's models.worker,
+                          else the agent's own
+      --effort <EFFORT>   Effort passed to the agent as --effort. Default: the scope's models.worker,
+                          else the agent's own
       --scope <NAME>      ` + scopeHelp + `
   -h, --help              Print help
 `
@@ -328,7 +332,7 @@ const promptShowUsage = "Usage: fleet prompt show [OPTIONS] [NAME]"
 var promptShowHelp = cmd.PromptShowLongAbout + "\n\n" + promptShowUsage + `
 
 Arguments:
-  [NAME]  One of thread, lead, worker, revisit, unblock, screen_guidance; without it, all of them
+  [NAME]  One of common, thread, lead, worker, revisit, unblock, screen_guidance; without it, all of them
 
 Options:
       --builtin         Only fleet's built-in text of NAME, byte for byte

@@ -36,7 +36,8 @@ type Scope struct {
 	// Prompts are the built-in texts the scope changes, by name (one of
 	// PromptNames).
 	Prompts map[string]Prompt
-	// Models fill the prompts' model and effort slots.
+	// Models are the --model and --effort `job start` and `spawn` pass
+	// when the command gives none.
 	Models Models
 	// home is what `~/` stands for, in Paths and in Tilde.
 	home string
@@ -185,8 +186,7 @@ func ParseScope(data []byte, home string) (*Scope, error) {
 	if err := refuseNulls(data, ""); err != nil {
 		return nil, err
 	}
-	t := &Scope{Paths: DefaultPaths, Channels: DefaultChannels, Watch: DefaultWatch, Models: DefaultModels,
-		home: filepath.Clean(home)}
+	t := &Scope{Paths: DefaultPaths, Channels: DefaultChannels, Watch: DefaultWatch, home: filepath.Clean(home)}
 	if err := f.sections(t); err != nil {
 		return nil, err
 	}
