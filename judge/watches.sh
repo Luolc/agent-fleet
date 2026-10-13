@@ -26,6 +26,15 @@ cat > "/home/agent/.config/$T/cfgw.json" <<JSON
    "bad": {"source": {"command": ["$CB/source", "bad"]}, "do": "tell", "env": ["CFGW_TOKEN"]}}}
 JSON
 printf 'Look at {{key}} first. 0xCFGWPROMPT\n' > "/home/agent/.config/$T/cfgw-ci.md"
+out=$("$T" prompt show --scope cfgw 2>&1); rc=$?
+check "watches: prompt show: exit 0" 0 "$rc"
+has "watches: prompt show lists each watch and where its prompt comes from" "$out" "watch:bad: no prompt" \
+  "watch:ci: watches.ci.prompt (~/.config/$T/cfgw-ci.md)" "watch:quiet-threads: off" "watch:stale-workers: built-in" \
+  "watch:unblock: built-in"
+out=$("$T" prompt show --scope cfgw watch:ci 2>&1); rc=$?
+check "watches: prompt show watch:ci: exit 0" 0 "$rc"
+has "watches: prompt show watch:ci: the file under its source, its slots as written" "$(printf '%s\n' "$out" | tr '\n' '|')" \
+  "==> watches.ci.prompt (~/.config/$T/cfgw-ci.md) <==|Look at {{key}} first. 0xCFGWPROMPT|"
 cat > "$CB/source" <<'SOURCE'
 #!/bin/sh
 d=/home/agent/cfgw

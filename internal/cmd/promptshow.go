@@ -1,6 +1,7 @@
-// `fleet prompt show`: the texts fleet starts agents with, as the scope's
-// config makes them, where each part comes from, and whether a replacement
-// is behind the built-in text it started from.
+// `fleet prompt show`: the texts fleet starts agents with and the prompts
+// of the watches, as the scope's config makes them, where each part comes
+// from, and whether a replacement is behind the built-in text it started
+// from.
 
 package cmd
 
@@ -32,7 +33,9 @@ const (
 		"replacement, whether its " +
 		"`base` still is the built-in text. When it is not, the replacement is behind, and two commands " +
 		"follow: one shows what changed in the built-in text, the other records the new base once the " +
-		"replacement has taken the change in. A replacement without a base cannot be checked. A note " +
+		"replacement has taken the change in. A replacement without a base cannot be checked. Then, for " +
+		"each of the scope's watches (the defaults and those of `watches`), a line `watch:<name>`: its " +
+		"prompt's source (the built-in text, the file `watches.<name>.prompt` names, or none), or `off`. A note " +
 		"follows when you can write the config file, its directory, a file it names or that file's " +
 		"directory: so can an agent running as you. No note does not make them safe from such an agent: " +
 		"a directory can still be renamed away by whoever can write its parent, and another put in its " +
@@ -45,15 +48,24 @@ const (
 		"written ({{job}}, say), since its value is known only when an agent starts. Notes go to stderr: " +
 		"the model slots the files use, the built-in text's slots a replacement does not use, and whether " +
 		"it is behind.\n\n" +
+		"With NAME watch:<name>: that watch's prompt under its `==> <source> <==` line, its slots as " +
+		"written ({{key}}, {{text}}, {{question_file}}), since they are filled for each subject; on stderr, " +
+		"a note when the watch is off or has no prompt.\n\n" +
 		"With NAME and --builtin: fleet's built-in text alone, byte for byte, and nothing else on " +
-		"stdout, so it can be redirected to a base file. The config is not read.\n\n" +
+		"stdout, so it can be redirected to a base file; for watch:<name>, a default watch's. The config " +
+		"is not read.\n\n" +
 		"Exit: 0; 1 for an unknown NAME, an invalid config, or a text that cannot be used (a file " +
 		"missing, unreadable or empty, or with a slot its text does not have), each listed."
 )
 
+// watchPrefix starts the NAME of a watch's prompt, `watch:<name>`, as the
+// ledger keys the watch's runs; no name of config.PromptNames has it.
+const watchPrefix = "watch:"
+
 // PromptShowArgs are the arguments of `prompt show`.
 type PromptShowArgs struct {
-	// Name is the text to show, one of config.PromptNames; nil for all.
+	// Name is the text to show, one of config.PromptNames or a watch's
+	// `watch:<name>`; nil for all.
 	Name *string
 	// Builtin asks for the built-in text alone.
 	Builtin bool
@@ -62,14 +74,27 @@ type PromptShowArgs struct {
 // PromptShow runs `prompt show`, writing the text or the overview to
 // stdout and the notes on one text to stderr.
 func PromptShow(stdout, stderr io.Writer, args PromptShowArgs) (exit.Code, error) {
-	if args.Name != nil && !slices.Contains(config.PromptNames, *args.Name) {
-		return 0, exit.Refusedf("no prompt %q; the names are %s", *args.Name, strings.Join(config.PromptNames, ", "))
+	watch, isWatch := "", false
+	if args.Name != nil {
+		watch, isWatch = strings.CutPrefix(*args.Name, watchPrefix)
+		if !isWatch && !slices.Contains(config.PromptNames, *args.Name) {
+			return 0, exit.Refusedf("no prompt %q; the names are %s, and watch:<name> for a watch's", *args.Name,
+				strings.Join(config.PromptNames, ", "))
+		}
 	}
 	if args.Builtin {
 		if args.Name == nil {
 			return 0, exit.Refusedf("--builtin needs a NAME")
 		}
-		_, err := io.WriteString(stdout, specOf(*args.Name).builtin)
+		if !isWatch {
+			_, err := io.WriteString(stdout, specOf(*args.Name).builtin)
+			return exit.Ok, err
+		}
+		text, err := builtinWatch(watch)
+		if err != nil {
+			return 0, err
+		}
+		_, err = io.WriteString(stdout, text)
 		return exit.Ok, err
 	}
 	scope, err := identity.Scope()
@@ -79,6 +104,9 @@ func PromptShow(stdout, stderr io.Writer, args PromptShowArgs) (exit.Code, error
 	sc, err := config.LoadScope(scope)
 	if err != nil {
 		return 0, err
+	}
+	if isWatch {
+		return showWatch(stdout, stderr, sc, watch)
 	}
 	if args.Name != nil {
 		return showOne(stdout, stderr, sc, *args.Name)
@@ -123,9 +151,51 @@ func showOne(stdout, stderr io.Writer, sc *config.Scope, name string) (exit.Code
 	return exit.Ok, nil
 }
 
+// builtinWatch is the built-in prompt of the default watch `name`.
+func builtinWatch(name string) (string, error) {
+	var defaults []string
+	for _, e := range config.DefaultWatches() {
+		if e.Name == name {
+			return builtinWatchPrompt(e.Source), nil
+		}
+		defaults = append(defaults, watchPrefix+e.Name)
+	}
+	return "", exit.Refusedf("%s%s has no built-in prompt; the default watches' are %s", watchPrefix, name,
+		strings.Join(defaults, ", "))
+}
+
+// showWatch writes the prompt of the scope's watch `name` under its
+// source, its slots as written, noting on stderr a watch that is off or
+// has no prompt.
+func showWatch(stdout, stderr io.Writer, sc *config.Scope, name string) (exit.Code, error) {
+	i := slices.IndexFunc(sc.Watches, func(e config.Entry) bool { return e.Name == name })
+	if i < 0 {
+		names := make([]string, len(sc.Watches))
+		for i, e := range sc.Watches {
+			names[i] = watchPrefix + e.Name
+		}
+		return 0, exit.Refusedf("no watch %q in the scope; its watches are %s", name, strings.Join(names, ", "))
+	}
+	e := sc.Watches[i]
+	p, err := watchPrompt(sc, e)
+	if err != nil {
+		return 0, err
+	}
+	if e.Off {
+		fmt.Fprintln(stderr, "note: the watch is off: `watch` does not run it")
+	}
+	if p == nil {
+		fmt.Fprintln(stderr, "note: the watch has no prompt: its messages carry the subject's text without one")
+		return exit.Ok, nil
+	}
+	_, err = fmt.Fprintf(stdout, "==> %s <==\n%s", partLabel(sc, p.Parts[0]), p.Parts[0].Text)
+	return exit.Ok, err
+}
+
 // showAll writes, for each text, its parts and whether it is behind, then
-// a note when the config can be written; with a text that cannot be used,
-// it lists each and exits 1.
+// for each watch where its prompt comes from, then a note when the config
+// can be written; with a text that cannot be used, it lists each and
+// exits 1.
 func showAll(stdout io.Writer, sc *config.Scope, path string) (exit.Code, error) {
 	var out strings.Builder
 	fmt.Fprintf(&out, "config: %s", sc.Tilde(path))
@@ -154,6 +224,25 @@ func showAll(stdout io.Writer, sc *config.Scope, path string) (exit.Code, error)
 			out.WriteString("  " + strings.ReplaceAll(baseState(sc, name, conf.Base), "\n  ", "\n    "))
 		}
 	}
+	for _, e := range sc.Watches {
+		line := "off"
+		if !e.Off {
+			p, err := watchPrompt(sc, e)
+			var bad *promptError
+			switch {
+			case errors.As(err, &bad):
+				broken++
+				line = "error: " + bad.Error()
+			case err != nil:
+				return 0, err
+			case p == nil:
+				line = "no prompt"
+			default:
+				line = partLabel(sc, p.Parts[0])
+			}
+		}
+		fmt.Fprintf(&out, "%s%s: %s\n", watchPrefix, e.Name, line)
+	}
 	if writable := writableBy(path, sc); len(writable) > 0 {
 		fmt.Fprintf(&out, "note: you can write %s: so can an agent running as you, and change the rules of every agent started after it\n",
 			strings.Join(writable, ", "))
@@ -162,7 +251,8 @@ func showAll(stdout io.Writer, sc *config.Scope, path string) (exit.Code, error)
 		return 0, err
 	}
 	if broken > 0 {
-		return 0, exit.Refusedf("%d of the texts cannot be used, listed above: an agent that needs one is not started", broken)
+		return 0, exit.Refusedf("%d of the texts cannot be used, listed above: an agent that needs one is not started, "+
+			"a watch that needs one is skipped", broken)
 	}
 	return exit.Ok, nil
 }
@@ -242,12 +332,16 @@ func usedModelSlots(p *promptText) []string {
 }
 
 // writableBy lists, as the prompts show them, the config file, the prompt
-// files it names and their directories that the current user can write.
+// files it names (the watches' too) and their directories that the
+// current user can write.
 func writableBy(path string, sc *config.Scope) []string {
 	paths := []string{path}
 	for _, name := range config.PromptNames {
 		conf := sc.Prompts[name]
 		paths = append(paths, conf.Replace, conf.Append, conf.Base)
+	}
+	for _, e := range sc.Watches {
+		paths = append(paths, e.Prompt)
 	}
 	var seen, writable []string
 	for _, p := range paths {

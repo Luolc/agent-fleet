@@ -93,13 +93,19 @@ func (r *watchRun) ran(e config.Entry) error {
 	return dbErr(err)
 }
 
+// builtinWatchPrompt is the built-in prompt of the default with the
+// built-in source `source`; "" for a command source.
+func builtinWatchPrompt(source string) string {
+	return map[string]string{config.StaleAgents: staleWorkersPrompt, config.QuietThreads: quietThreadsPrompt,
+		config.BlockedScreens: unblockPrompt + "\n" + screenGuidance}[source]
+}
+
 // watchPrompt is the prompt of the watch: the file its entry names, else
 // a default's built-in text; nil for a command source without one.
 func watchPrompt(sc *config.Scope, e config.Entry) (*promptText, error) {
 	key := "watches." + e.Name + ".prompt"
 	if e.Prompt == "" {
-		text := map[string]string{config.StaleAgents: staleWorkersPrompt, config.QuietThreads: quietThreadsPrompt,
-			config.BlockedScreens: unblockPrompt + "\n" + screenGuidance}[e.Source]
+		text := builtinWatchPrompt(e.Source)
 		if text == "" {
 			return nil, nil
 		}
