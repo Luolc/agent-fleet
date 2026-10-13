@@ -10,8 +10,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/Luolc/agent-fleet/internal/db"
 )
 
 // sourceWorld is a thread watch world whose scope config has `watches`,
@@ -301,7 +299,7 @@ func TestWatchClosesAScreenHelperOfBeforeAndWaitsForItsQuestion(t *testing.T) {
 func TestAWatchWorkersQuestionNeverTimesOutAndItIsNoSuspect(t *testing.T) {
 	w := sourceWorld(t, `{"quiet-threads": {"off": true}}`, nil)
 	w.exec(fmt.Sprintf("INSERT INTO questions (job, thread, asked_by, text, state, asked_at) VALUES "+
-		"('', 'C1/1.0', 'watch-fix-p1', 'Rebase or close?', 'pending', %d)", db.Now()),
+		"('', 'C1/1.0', 'watch-fix-p1', 'Rebase or close?', 'pending', %d)", t0),
 		"INSERT INTO agents (name, role, parent, task, pane_id, state, started_at) VALUES "+
 			"('watch-fix-p2', 'worker', 'watch', '{\"watch\": \"fix\", \"key\": \"p2\"}', 'p8', 'active', 0)")
 	w.lastMessage("C1/1.0", t0+100*3600)
