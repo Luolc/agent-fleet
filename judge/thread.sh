@@ -102,7 +102,8 @@ check "inbox: identity variables in its process, the thread included" \
   "${P}AGENT=$A ${P}ISSUE=TH-5 ${P}JOB= ${P}PARENT= ${P}ROLE=thread ${P}SCOPE=main ${P}THREAD=$K " \
   "$(proc_env "$A")"
 # The fake Claude shows the last 20 lines; the prompt's head is above them.
-has "inbox: prompt end, context and message on screen" "$(screen "$A")" "fleet thread progress --done" "## Channel context" "0xCTX" "## The message" "0xMSG1"
+# The prompt ends with common's last item, whose start no wrapping splits.
+has "inbox: prompt end, context and message on screen" "$(screen "$A")" "- Money, machines, risk controls" "## Channel context" "0xCTX" "## The message" "0xMSG1"
 check "inbox: agent row active with the thread and ticket" "thread||$K|TH-5|active " \
   "$(tledger "SELECT role, job, thread, issue, state FROM agents WHERE name = '$A'")"
 check "inbox: thread row with its ticket and one session" "c0123-1700000000-123|C0123|TH-5|1 " \
@@ -215,7 +216,7 @@ out=$(inbox /home/agent/events/m3b.json 2>&1); rc=$?
 check "inbox: retry of the killed run, exit 0" 0 "$rc"
 [ "$rc" = 0 ] || printf '%s\n' "$out"
 has "inbox: retry says it finished the earlier start" "$out" "still starting from an earlier run"
-has "inbox: retry delivered the full first message" "$(screen "$A")" "fleet thread progress --done" "Earlier sessions" "0xSUM1" "## The message" "0xMSG3B"
+has "inbox: retry delivered the full first message" "$(screen "$A")" "- Money, machines, risk controls" "Earlier sessions" "0xSUM1" "## The message" "0xMSG3B"
 check "inbox: retry left the row active, the message delivered, three sessions" "active delivered 3 " \
   "$(tledger "SELECT state FROM agents WHERE name = '$A' AND state != 'ended'")$(tledger "SELECT state FROM inbox WHERE msg_id = 'm3b'")$(tledger "SELECT sessions FROM threads WHERE thread = '$K'")"
 check "inbox: retry started no second agent" "1 " \

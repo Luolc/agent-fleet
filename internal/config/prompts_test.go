@@ -40,19 +40,19 @@ func TestPromptsAndModelsAreReadWithTheirPathsResolved(t *testing.T) {
 	if !reflect.DeepEqual(got.Prompts, want) {
 		t.Errorf("prompts:\n%+v\nwant\n%+v", got.Prompts, want)
 	}
-	// What a model or effort leaves out keeps the built-in value.
-	if want := (Models{Lead: Model{"example-large", "medium"}, Worker: Model{"opus", "low"}}); got.Models != want {
+	// What a model or effort leaves out stays empty: none is passed.
+	if want := (Models{Lead: Model{"example-large", "medium"}, Worker: Model{"", "low"}}); got.Models != want {
 		t.Errorf("models: %+v", got.Models)
 	}
 	empty, err := ParseScope([]byte(`{}`), "/home/u")
-	if err != nil || len(empty.Prompts) != 0 || empty.Models != DefaultModels {
+	if err != nil || len(empty.Prompts) != 0 || empty.Models != (Models{}) {
 		t.Errorf("no keys: %+v %+v, %v", empty.Prompts, empty.Models, err)
 	}
 }
 
 func TestPromptsAndModelsRefuseWhatCannotWork(t *testing.T) {
 	for body, says := range map[string]string{
-		`{"prompts": {"screen-guidance": {"append": "a.md"}}}`:      "prompts.screen-guidance: unknown name; the names are thread, lead, worker, revisit, unblock, screen_guidance",
+		`{"prompts": {"screen-guidance": {"append": "a.md"}}}`:      "prompts.screen-guidance: unknown name; the names are common, thread, lead, worker, revisit, unblock, screen_guidance",
 		`{"prompts": {"lead": {}}}`:                                 "prompts.lead: must have replace or append",
 		`{"prompts": {"lead": {"append": "a.md", "base": "b.md"}}}`: "prompts.lead.base: only goes with replace",
 		`{"prompts": {"lead": {"append": ""}}}`:                     "prompts.lead.append: must not be empty",

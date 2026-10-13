@@ -1,12 +1,15 @@
 // fleet's built-in texts as the scope's config changes them
 // (docs/design.md): each text is the built-in one or the file replacing
-// it, then the file following it; its slots are filled when the agent
-// starts.
+// it, then the file following it; a thread agent's, a lead's or a
+// worker's has `common` and its addition between the two. Slots are
+// filled when the agent starts.
 
 package cmd
 
 import (
+	"cmp"
 	"crypto/sha256"
+	_ "embed"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -25,9 +28,16 @@ import (
 // braces. Anything else in braces is text.
 var slotPattern = regexp.MustCompile(`\{\{([a-z_]+)\}\}`)
 
-// modelSlots are the slots of the models the thread prompt names for
-// leads and the lead prompt for workers; the three prompts all have them.
+// modelSlots are the slots of the models the thread and lead prompts
+// named before `models` became the starts' defaults. The built-in texts
+// no longer use them; a replacement still may, so it renders as before.
 var modelSlots = []string{"lead_model", "lead_effort", "worker_model", "worker_effort"}
+
+//go:embed common_prompt.md
+var commonPrompt string
+
+// sharing are the texts `common` goes into.
+var sharing = []string{"thread", "lead", "worker"}
 
 // promptSpec is what fleet knows of one text: the built-in text and its
 // slots.
@@ -41,6 +51,8 @@ func specOf(name string) promptSpec {
 	role := append([]string{"job", "scope", "agent", "parent", "lead", "cwd", "repo_line", "issue", "issue_note",
 		"linear", "agents_md", "cap", "scratch"}, modelSlots...)
 	switch name {
+	case "common":
+		return promptSpec{commonPrompt, nil}
 	case "thread":
 		return promptSpec{threadPrompt, append([]string{"scope", "agent", "mapping", "cwd", "rules", "xrepo", "checkouts",
 			"ticket", "ticket_note", "post", "progress"}, modelSlots...)}
@@ -114,10 +126,29 @@ func brokenPrompt(key, path, content, format string, args ...any) *promptError {
 }
 
 // loadPrompt puts the text `name` together from fleet's built-in text and
-// the files the scope's config names for it: a file that is missing,
-// unreadable or empty, or has a slot the text does not have, is a
-// promptError. The base is only read, to refuse it the same way.
+// the files the scope's config names for it, with `common` (as the config
+// makes it) after the text of a role that shares it and before the role's
+// addition: a file that is missing, unreadable or empty, or has a slot its
+// text does not have, is a promptError. The base is only read, to refuse
+// it the same way.
 func loadPrompt(sc *config.Scope, name string) (*promptText, error) {
+	p, err := loadOwn(sc, name)
+	if err != nil || !slices.Contains(sharing, name) {
+		return p, err
+	}
+	common, err := loadOwn(sc, "common")
+	if err != nil {
+		return nil, err
+	}
+	if common.Parts[0].Source == "built-in" {
+		common.Parts[0].Source = "built-in common"
+	}
+	p.Parts = slices.Concat(p.Parts[:1], common.Parts, p.Parts[1:])
+	return p, nil
+}
+
+// loadOwn is the text `name` without `common`.
+func loadOwn(sc *config.Scope, name string) (*promptText, error) {
 	conf := sc.Prompts[name]
 	p := builtinText(name)
 	replace, err := readPromptFile(sc, name, "replace", conf.Replace, true)
@@ -192,8 +223,10 @@ func checkSlots(part *promptPart, shown, name string, slots []string) error {
 	return nil
 }
 
-// modelValues fill the model slots from the scope's config.
+// modelValues fill the model slots from the scope's `models`, a value it
+// does not give with what the built-in texts named before (`opus`, `high`).
 func modelValues(sc *config.Scope) map[string]string {
-	return map[string]string{"lead_model": sc.Models.Lead.Model, "lead_effort": sc.Models.Lead.Effort,
-		"worker_model": sc.Models.Worker.Model, "worker_effort": sc.Models.Worker.Effort}
+	return map[string]string{"lead_model": cmp.Or(sc.Models.Lead.Model, "opus"),
+		"lead_effort": cmp.Or(sc.Models.Lead.Effort, "high"), "worker_model": cmp.Or(sc.Models.Worker.Model, "opus"),
+		"worker_effort": cmp.Or(sc.Models.Worker.Effort, "high")}
 }

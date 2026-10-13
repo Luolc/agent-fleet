@@ -175,26 +175,37 @@ func TestAReplacementMayUseEverySlotOfItsTextAndAllAreFilled(t *testing.T) {
 }
 
 func TestATextIsTheReplacementThenTheAddition(t *testing.T) {
-	files := map[string]string{"r.md": "Replaced, {{agent}}.\n", "a.md": "Added, {{job}}.", "base.md": "the old built-in\n"}
+	files := map[string]string{"r.md": "Replaced, {{agent}}.\n", "a.md": "Added, {{job}}.", "base.md": "the old built-in\n",
+		"c.md": "Shared.\n", "ca.md": "Shared too.\n"}
 	cases := []struct {
-		name   string
-		fields map[string]string
-		want   string
+		prompts map[string]map[string]string
+		name    string
+		want    string
 	}{
-		{"lead", map[string]string{"append": "a.md"}, golden(t, "lead") + "\nAdded, wire.\n"},
-		{"lead", map[string]string{"replace": "r.md", "base": "base.md"}, "Replaced, wire-lead.\n"},
-		{"lead", map[string]string{"replace": "r.md", "append": "a.md"}, "Replaced, wire-lead.\n\nAdded, wire.\n"},
-		{"worker", map[string]string{"replace": "r.md"}, "Replaced, wire-a.\n"},
+		{map[string]map[string]string{"lead": {"append": "a.md"}}, "lead", golden(t, "lead") + "\nAdded, wire.\n"},
+		{map[string]map[string]string{"lead": {"replace": "r.md", "base": "base.md"}}, "lead",
+			"Replaced, wire-lead.\n\n" + commonPrompt},
+		{map[string]map[string]string{"lead": {"replace": "r.md", "append": "a.md"}}, "lead",
+			"Replaced, wire-lead.\n\n" + commonPrompt + "\nAdded, wire.\n"},
+		{map[string]map[string]string{"worker": {"replace": "r.md"}}, "worker", "Replaced, wire-a.\n\n" + commonPrompt},
+		// common's own parts sit between the role's text and its addition.
+		{map[string]map[string]string{"common": {"replace": "c.md", "append": "ca.md"}, "worker": {"replace": "r.md", "append": "a.md"}},
+			"worker", "Replaced, wire-a.\n\nShared.\n\nShared too.\n\nAdded, wire.\n"},
+		{map[string]map[string]string{"common": {"replace": "c.md"}}, "lead",
+			strings.Replace(golden(t, "lead"), commonPrompt, "Shared.\n", 1)},
 	}
 	for _, c := range cases {
-		sc := promptScope(t, map[string]map[string]string{c.name: c.fields}, "", files)
-		if got := renders(t, sc)[c.name]; got != c.want {
-			t.Errorf("%s %v:\n%q\nwant\n%q", c.name, c.fields, got, c.want)
+		if got := renders(t, promptScope(t, c.prompts, "", files))[c.name]; got != c.want {
+			t.Errorf("%s %v:\n%q\nwant\n%q", c.name, c.prompts, got, c.want)
 		}
 	}
 	got := renders(t, promptScope(t, map[string]map[string]string{"thread": {"replace": "r.md"}}, "", files))["thread"]
-	if !strings.HasPrefix(got, "Replaced, thread-c1-1-0.\n\n## The message\n") {
-		t.Errorf("thread: fleet's sections do not follow the replacement: %q", got)
+	if !strings.HasPrefix(got, "Replaced, thread-c1-1-0.\n\n"+commonPrompt+"\n## The message\n") {
+		t.Errorf("thread: common and fleet's sections do not follow the replacement: %q", got)
+	}
+	got = renders(t, promptScope(t, map[string]map[string]string{"common": {"append": "ca.md"}}, "", files))["revisit"]
+	if got != golden(t, "revisit") {
+		t.Errorf("common reached the revisit agent: %q", got)
 	}
 }
 
@@ -285,9 +296,10 @@ func TestTheSameMistakeHasOneDigestAndAnotherAnother(t *testing.T) {
 
 // The control arms of the golden files: with no prompts or models the
 // first messages are the golden files; the same contexts with an addition
-// or other models are the golden text plus the addition, or the golden
-// text with only the model sentences changed. So the golden files tell a
-// start that read the config from one that did not.
+// are the golden text plus the addition. So the golden files tell a start
+// that read the config from one that did not. The models change no
+// built-in text; they fill only the model slots a replacement still uses,
+// with the old values where they give none.
 func TestAnAdditionOrAModelChangesOnlyWhatItSays(t *testing.T) {
 	for name, got := range renders(t, promptScope(t, nil, "", nil)) {
 		if got != golden(t, name) {
@@ -299,20 +311,16 @@ func TestAnAdditionOrAModelChangesOnlyWhatItSays(t *testing.T) {
 	if added["worker"] != golden(t, "worker")+"\nList every file you changed.\n" {
 		t.Errorf("worker with an addition:\n%q", added["worker"])
 	}
-	other := renders(t, promptScope(t, nil, `{"lead": {"model": "example-large"}, "worker": {"effort": "low"}}`, nil))
-	for name, sentences := range map[string][2]string{
-		"lead":   {"Both run `--model opus --effort high`. Research gets one read-only worker (`opus`, `high`)", "Both run `--model opus --effort low`. Research gets one read-only worker (`opus`, `low`)"},
-		"thread": {"--model opus --effort high` starts a job: its lead, on `opus` at `high` effort", "--model example-large --effort high` starts a job: its lead, on `example-large` at `high` effort"},
-	} {
-		if !strings.Contains(golden(t, name), sentences[0]) {
-			t.Errorf("%s: the golden file lacks %q", name, sentences[0])
-		}
-		if want := strings.Replace(golden(t, name), sentences[0], sentences[1], 1); other[name] != want {
-			t.Errorf("%s with other models differs elsewhere:\n%q", name, other[name])
+	models := `{"lead": {"model": "example-large"}, "worker": {"effort": "low"}}`
+	for name, got := range renders(t, promptScope(t, nil, models, nil)) {
+		if got != golden(t, name) {
+			t.Errorf("%s: the models changed the built-in text", name)
 		}
 	}
-	if other["worker"] != golden(t, "worker") {
-		t.Error("the models changed the worker prompt, which names none")
+	replaced := renders(t, promptScope(t, map[string]map[string]string{"thread": {"replace": "t.md"}}, models,
+		map[string]string{"t.md": "{{lead_model}} {{lead_effort}} {{worker_model}} {{worker_effort}}\n"}))
+	if want := "example-large high opus low\n\n"; !strings.HasPrefix(replaced["thread"], want) {
+		t.Errorf("model slots: %q, want it to start with %q", replaced["thread"], want)
 	}
 }
 

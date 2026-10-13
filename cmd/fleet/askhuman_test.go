@@ -132,11 +132,10 @@ func TestAskHumanStartsAThreadAgentWhenTheHomeThreadHasNone(t *testing.T) {
 	prompt := w.file("argv")
 	for _, want := range []string{"[FROM: item-1-lead]\nYou are a thread agent", "## Earlier sessions on this thread",
 		"## The message\n\nQuestion from item-1-lead for the people in thread " + threadKey, "Which month?\n",
-		"A lead's question waits for a person only when the rules require a person's yes for it.",
+		"A lead's question waits for a person only when the rules the lead works under need a person's yes for it;",
 		"tell the lead with `fleet send` to decide it itself, naming the rule",
-		"The question stays pending until a person next writes in the thread",
-		"tell the lead of each job started from this thread that is still open what changed, with `fleet send`",
-		"they are the leads `fleet status` lists with PARENT thread-c0123-1700000000-123,"} {
+		"the question stays pending until a person next writes here",
+		"tell each open lead `fleet status` lists with PARENT thread-c0123-1700000000-123 what changed."} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt = %q, want %q in it", prompt, want)
 		}

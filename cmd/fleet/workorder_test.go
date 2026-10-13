@@ -20,8 +20,8 @@ import (
 // labelled item-1, plus one labelled wire once <dir>/wire-workspace
 // exists (none for any other label), an agent that
 // starts at its input box, and a prompt that is delivered. `workspace
-// create`, `tab create` and `agent prompt` keep their argv in
-// <dir>/workspace-argv, <dir>/tab-argv and <dir>/argv.
+// create`, `tab create`, `agent start` and `agent prompt` keep their argv
+// in <dir>/workspace-argv, <dir>/tab-argv, <dir>/start-argv and <dir>/argv.
 const startHerdr = `#!/bin/sh
 if [ "$1" = --session ]; then shift 2; fi
 dir="$(dirname "$0")/.."
@@ -40,7 +40,10 @@ case "$1 $2" in
   "tab create")
     printf '%s\n' "$@" > "$dir/tab-argv"
     echo '{"result":{"root_pane":{"workspace_id":"w1","tab_id":"t1","pane_id":"p1"}}}' ;;
-  "tab rename"|"agent start"|"pane rename") echo '{"result":{}}' ;;
+  "agent start")
+    printf '%s\n' "$@" > "$dir/start-argv"
+    echo '{"result":{}}' ;;
+  "tab rename"|"pane rename") echo '{"result":{}}' ;;
   "agent read") printf '%s\n' "────────────" "❯ " "────────────" ;;
   "agent get") echo '{"result":{"agent":{"agent_status":"idle"}}}' ;;
   "agent prompt")
@@ -156,6 +159,50 @@ func (w *world) startJob(args ...string) result {
 	w.t.Helper()
 	return w.run("", append([]string{"job", "start"}, args...),
 		"FLEET_AGENT=thread-1", "FLEET_ROLE=thread", "FLEET_SCOPE="+scope, linearKey)
+}
+
+// The scope's `models` are what a start passes when its command gives no
+// --model or --effort; without them it passes neither.
+func TestStartsPassTheScopesModelsWhenTheCommandGivesNone(t *testing.T) {
+	w := newWorld(t)
+	w.configure(`{"resource_check": false}`)
+	openJobWithLead(w, "")
+	w.useStartHerdr()
+	cwd := dir(w, "wt")
+	taskFile := task(w, "task.md", "import\n")
+	claude := func(out result) string {
+		t.Helper()
+		if out.code != 0 {
+			t.Fatalf("%+v", out)
+		}
+		argv, err := os.ReadFile(filepath.Join(w.dir, "start-argv"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, after, _ := strings.Cut(string(argv), "\n--\n")
+		return strings.ReplaceAll(strings.TrimSpace(after), "\n", " ")
+	}
+	spawn := func(name string, flags ...string) string {
+		return claude(w.run("", append([]string{"spawn", name, "--task-file", taskFile, "--cwd", cwd}, flags...),
+			"FLEET_AGENT=item-1-lead", "FLEET_ROLE=lead", "FLEET_PARENT=thread-1", "FLEET_SCOPE="+scope, "FLEET_JOB=item-1"))
+	}
+	fixed := `--dangerously-skip-permissions --disallowedTools AskUserQuestion --settings {"remoteControlAtStartup":false}`
+	if got := spawn("a"); got != fixed {
+		t.Errorf("no models: %s", got)
+	}
+	if err := os.WriteFile(filepath.Join(dir(w, filepath.Join("home", ".config", "fleet")), scope+".json"),
+		[]byte(`{"models": {"lead": {"model": "example-large"}, "worker": {"model": "example-small", "effort": "low"}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := spawn("b"); got != fixed+" --model example-small --effort low" {
+		t.Errorf("models.worker: %s", got)
+	}
+	if got := spawn("c", "--effort", "max"); got != fixed+" --model example-small --effort max" {
+		t.Errorf("models.worker and --effort: %s", got)
+	}
+	if got := claude(w.asThread("job", "start", "item-2", "--repo", "example-dataset", "--task-file", taskFile)); got != fixed+" --model example-large" {
+		t.Errorf("models.lead: %s", got)
+	}
 }
 
 func TestSpawnCreatesAndClaimsTheWorkOrderBeforeAnythingElse(t *testing.T) {

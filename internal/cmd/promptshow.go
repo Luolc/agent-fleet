@@ -27,7 +27,7 @@ const (
 	PromptAbout         = "Show the prompts fleet starts agents with (read-only)"
 	PromptShowAbout     = "Show the prompts as the scope's config makes them, one or all (read-only)"
 	PromptShowLongAbout = "Show the prompts fleet starts agents with, as the scope's config makes them (read-only).\n\n" +
-		"Without NAME: for each of thread, lead, worker, revisit, unblock and screen_guidance, its " +
+		"Without NAME: for each of common, thread, lead, worker, revisit, unblock and screen_guidance, its " +
 		"parts (the built-in text or the file replacing it, and the file following it) and, for a " +
 		"replacement, whether its " +
 		"`base` still is the built-in text. When it is not, the replacement is behind, and two commands " +
@@ -38,10 +38,13 @@ const (
 		"a directory can still be renamed away by whoever can write its parent, and another put in its " +
 		"place. Run it after every change to the config and after " +
 		"every upgrade of fleet.\n\n" +
-		"With NAME: that text put together, each part under a line `==> <source> <==`. The model slots " +
-		"are filled from the config's `models`; every other slot stays as written ({{job}}, say), since " +
-		"its value is known only when an agent starts. Notes go to stderr: the built-in text's slots a " +
-		"replacement does not use, and whether it is behind.\n\n" +
+		"With NAME: that text put together, each part under a line `==> <source> <==`; the texts of thread " +
+		"agents, leads and workers have `common` and its addition between their own text and its addition. " +
+		"The model slots ({{lead_model}}, say), which only files written for an older fleet use, are filled " +
+		"from the config's `models` (`opus` and `high` where it gives none); every other slot stays as " +
+		"written ({{job}}, say), since its value is known only when an agent starts. Notes go to stderr: " +
+		"the model slots the files use, the built-in text's slots a replacement does not use, and whether " +
+		"it is behind.\n\n" +
 		"With NAME and --builtin: fleet's built-in text alone, byte for byte, and nothing else on " +
 		"stdout, so it can be redirected to a base file. The config is not read.\n\n" +
 		"Exit: 0; 1 for an unknown NAME, an invalid config, or a text that cannot be used (a file " +
@@ -104,6 +107,10 @@ func showOne(stdout, stderr io.Writer, sc *config.Scope, name string) (exit.Code
 	if _, err := io.WriteString(stdout, out.String()); err != nil {
 		return 0, err
 	}
+	if used := usedModelSlots(p); len(used) > 0 {
+		fmt.Fprintf(stderr, "note: {{%s}} only keeps a file written for an older fleet rendering as before; "+
+			"`job start` and `spawn` pass `models` as their default --model and --effort\n", strings.Join(used, "}} {{"))
+	}
 	conf := sc.Prompts[name]
 	if conf.Replace == "" {
 		return exit.Ok, nil
@@ -160,11 +167,11 @@ func showAll(stdout io.Writer, sc *config.Scope, path string) (exit.Code, error)
 	return exit.Ok, nil
 }
 
-// partLabel says where a part comes from: `built-in`, or its config key
-// and file.
+// partLabel says where a part comes from: `built-in` (`built-in common`
+// for the shared text in a role's), or its config key and file.
 func partLabel(sc *config.Scope, part promptPart) string {
-	if part.Source == "built-in" {
-		return "built-in"
+	if part.Path == "" {
+		return part.Source
 	}
 	return fmt.Sprintf("%s (%s)", part.Source, sc.Tilde(part.Path))
 }
@@ -217,6 +224,21 @@ func unusedSlots(p *promptText) []string {
 	}
 	slices.Sort(unused)
 	return unused
+}
+
+// usedModelSlots are the model slots the config's files for `p` use, in
+// the order of modelSlots.
+func usedModelSlots(p *promptText) []string {
+	var used []string
+	for _, slot := range modelSlots {
+		for _, part := range p.Parts {
+			if part.Path != "" && strings.Contains(part.Text, "{{"+slot+"}}") {
+				used = append(used, slot)
+				break
+			}
+		}
+	}
+	return used
 }
 
 // writableBy lists, as the prompts show them, the config file, the prompt

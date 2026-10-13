@@ -50,7 +50,7 @@ check "job start: Claude's fixed arguments" \
 # screen, the whole of it in the fake's log, read once the turn is over.
 has "job start: task on screen" "$(screen item-1-lead)" "## Your task" "0xLEAD1"
 check "job start: the first message is the header, then the lead prompt" \
-  "[FROM: thread-1]|You are a lead run by fleet: you run the job item-1 (scope $SCOPE) for the people in its home thread. The job is single-repo: its repo is $R, main checkout ~/dev/$R; \`<repo>\` below is $R. You run in $DEV and only read there: you change no repo yourself. You split the work, start workers, merge what they make, and end the job.|" \
+  "[FROM: thread-1]|You are a lead run by fleet: you run the job item-1 (scope $SCOPE) for the people in its home thread. The job is single-repo: its repo is $R, main checkout ~/dev/$R; \`<repo>\` below is $R. You run in $DEV and only read there: you change no repo yourself. You split the work, start workers, decide on what they report, and end the job.|" \
   "$(received item-1-lead | head -2 | tr '\n' '|')"
 has "job start: the lead prompt names its identity, cap and ending, then the thread's latest message, then the task" "$(received item-1-lead)" \
   "FLEET_AGENT=item-1-lead, FLEET_ROLE=lead, FLEET_JOB=item-1, FLEET_PARENT=thread-1" "FLEET_ISSUE= (empty: this job has no Linear work orders)" \
@@ -339,11 +339,11 @@ out=$(as item-4-lead lead thread-1 item-4 -- spawn p --cwd "$DEV" --task-file "$
 check "spawn with a prompt addition: exit 0" 0 "$rc"
 [ "$rc" = 0 ] || printf '%s\n' "$out"
 has "spawn with a prompt addition: it follows the worker prompt, before the task" "$(received item-4-p | tr '\n' '|')" \
-  "and never publish a release.||Then list every file you changed. 0xAPPEND||## Your task||worker p 0xWORKP"
+  "leave the issues fleet claims to fleet.||Then list every file you changed. 0xAPPEND||## Your task||worker p 0xWORKP"
 out=$(as item-4-lead lead thread-1 item-4 -- prompt show worker 2>&1); rc=$?
 check "prompt show worker: exit 0" 0 "$rc"
-has "prompt show worker: the addition under its source, after the built-in text" "$(printf '%s\n' "$out" | tr '\n' '|')" \
-  "==> built-in <==|" "and never publish a release.||==> prompts.worker.append (~/.config/$T/prompts/worker.append.md) <==|Then list every file you changed. 0xAPPEND|"
+has "prompt show worker: the addition under its source, after the built-in text and common" "$(printf '%s\n' "$out" | tr '\n' '|')" \
+  "==> built-in <==|" "==> built-in common <==|" "leave the issues fleet claims to fleet.||==> prompts.worker.append (~/.config/$T/prompts/worker.append.md) <==|Then list every file you changed. 0xAPPEND|"
 printf 'Before anything else,\nread {{repo}}.\n' > "/home/agent/.config/$T/prompts/worker.append.md"
 tabs=$("${S[@]}" tab list --workspace "$(agent_field item-4-lead workspace_id)" | jq '.result.tabs | length')
 out=$(as item-4-lead lead thread-1 item-4 -- spawn q --cwd "$DEV" --task-file "$(task q 'worker q')" 2>&1); rc=$?

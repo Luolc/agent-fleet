@@ -72,7 +72,7 @@ const (
 		"checkout is fetched from origin and fast-forwarded when it is on origin/HEAD's " +
 		"branch, clean and only behind; otherwise it is left and the first message says why. " +
 		"The agent's first " +
-		"message is the built-in thread prompt, the channel context, the summaries, fleet's " +
+		"message is the thread prompt and `common` (as `fleet prompt show thread` shows them), the channel context, the summaries, fleet's " +
 		"notes and the message. A run killed after the agent started leaves its row `starting`: the retry " +
 		"finds the agent, gets it to its input box and delivers that first message in full. " +
 		"A live row whose agent is gone from herdr is ended (the session ended abnormally) " +
