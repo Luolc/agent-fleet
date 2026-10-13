@@ -39,6 +39,9 @@ type Scope struct {
 	// Models are the --model and --effort `job start` and `spawn` pass
 	// when the command gives none.
 	Models Models
+	// Watches are the policy watches of `fleet watch`, the defaults
+	// included, in name order.
+	Watches []Entry
 	// home is what `~/` stands for, in Paths and in Tilde.
 	home string
 }
@@ -104,6 +107,7 @@ type scopeFile struct {
 	Watch   *scopeWatchFile        `json:"watch"`
 	Prompts map[string]*promptFile `json:"prompts"`
 	Models  *modelsFile            `json:"models"`
+	Watches map[string]*watchFile  `json:"watches"`
 }
 
 // setting is one key of the `paths` or `channels` section: nil when the
@@ -166,6 +170,7 @@ func LoadScope(scope string) (*Scope, error) {
 		return nil, exit.Refusedf("%s: %v", path, err)
 	}
 	resolve(t.Prompts, filepath.Dir(path))
+	resolveWatches(t.Watches, filepath.Dir(path))
 	return t, nil
 }
 
@@ -220,6 +225,9 @@ func ParseScope(data []byte, home string) (*Scope, error) {
 	}
 	var err error
 	if t.Prompts, err = prompts(f.Prompts, home); err != nil {
+		return nil, err
+	}
+	if t.Watches, err = watches(f.Watches, home); err != nil {
 		return nil, err
 	}
 	return t, nil

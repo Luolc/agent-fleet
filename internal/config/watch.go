@@ -66,11 +66,7 @@ type scopeWatchFile struct {
 
 // duration parses one positive duration, naming the key on an error.
 func duration(key, text string) (time.Duration, error) {
-	d, err := time.ParseDuration(text)
-	if err != nil || d <= 0 {
-		return 0, errors.New("watch." + key + ": must be a positive duration such as 10m or 72h")
-	}
-	return d, nil
+	return positive("watch."+key, text)
 }
 
 // apply sets each key given in f onto w.

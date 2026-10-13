@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -168,6 +169,59 @@ func TestWatchLimitsAreReadAndCheckedInBothFiles(t *testing.T) {
 		`{"watch": {"stale": "1h"}}`:              `"stale"`,
 		`{"watch": {"parent_agents": 0}}`:         "watch.parent_agents: must be a positive number",
 		`{"watch": {"parent_agents": "2"}}`:       "watch.parent_agents",
+	} {
+		if _, err := ParseScope([]byte(body), "/home/u"); err == nil || !strings.Contains(err.Error(), says) {
+			t.Errorf("%s: %v, want it to name %s", body, err, says)
+		}
+	}
+}
+
+func TestWatchesKeepTheDefaultsAndReadEachEntry(t *testing.T) {
+	s, err := ParseScope([]byte(`{}`), "/home/u")
+	if err != nil || !slices.EqualFunc(s.Watches, DefaultWatches(), func(a, b Entry) bool { return a.Name == b.Name }) {
+		t.Fatalf("%+v, %v", s, err)
+	}
+	s, err = ParseScope([]byte(`{"watches": {"stale-workers": {"every": "15m", "prompt": "~/stale.md"},
+		"quiet-threads": {"source": "quiet-threads", "off": true},
+		"ci": {"source": {"command": ["/bin/ci-red", "--all"]}, "do": "tell", "env": ["EXAMPLE_TOKEN"], "per_run": 3,
+			"again": "2h", "max": 4}}}`), "/home/u")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Entry{
+		{Name: "ci", Command: []string{"/bin/ci-red", "--all"}, Do: "tell", Env: []string{"EXAMPLE_TOKEN"}, PerRun: 3,
+			Again: 2 * time.Hour, Max: 4},
+		{Name: "quiet-threads", Source: QuietThreads, Do: "tell", Off: true},
+		{Name: "stale-workers", Source: StaleAgents, Do: "tell", Every: 15 * time.Minute, Prompt: "/home/u/stale.md"},
+	}
+	if fmt.Sprint(s.Watches) != fmt.Sprint(want) {
+		t.Errorf("\n got %+v\nwant %+v", s.Watches, want)
+	}
+	if s, err = ParseScope([]byte(`{"watches": {"ci": {"source": {"command": ["c"]}, "do": "tell"}}}`), "/home/u"); err != nil ||
+		s.Watches[0].PerRun != 1 || s.Watches[0].Again != 0 || s.Watches[0].Max != 0 {
+		t.Errorf("%+v, %v", s, err)
+	}
+	command := `"source": {"command": ["c"]}, "do": "tell"`
+	for body, says := range map[string]string{
+		`{"watches": {"CI": {` + command + `}}}`:                              "watches.CI: a name is made of [a-z0-9-]",
+		`{"watches": {"ci": {"do": "tell"}}}`:                                 "watches.ci.source: must be given",
+		`{"watches": {"ci": {"source": {"command": ["c"]}}}}`:                 "watches.ci.do: must be given",
+		`{"watches": {"ci": {"source": {"command": []}, "do": "tell"}}}`:      "watches.ci.source.command: must name a program",
+		`{"watches": {"ci": {"source": {"cmd": ["c"]}, "do": "tell"}}}`:       `watches.ci.source: must be a built-in source's name or {"command": [...]}`,
+		`{"watches": {"ci": {"source": "stale-agents", "do": "tell"}}}`:       "watches.ci.source: stale-agents is the source of the default stale-workers",
+		`{"watches": {"ci": {"source": "blocked-screens", "do": "worker"}}}`:  "watches.ci.source: blocked-screens is not supported yet",
+		`{"watches": {"ci": {"source": "lint", "do": "tell"}}}`:               `watches.ci.source: unknown source "lint"`,
+		`{"watches": {"ci": {"source": {"command": ["c"]}, "do": "worker"}}}`: "watches.ci.do: worker is not supported yet",
+		`{"watches": {"ci": {` + command + `, "env": ["A-B"]}}}`:              `watches.ci.env: "A-B" is not a variable's name`,
+		`{"watches": {"ci": {` + command + `, "per_run": 0}}}`:                "watches.ci.per_run: must be a positive number",
+		`{"watches": {"ci": {` + command + `, "again": "soon"}}}`:             "watches.ci.again: must be a positive duration",
+		`{"watches": {"ci": {` + command + `, "model": "opus"}}}`:             `unknown field "model"`,
+		`{"watches": {"ci": {` + command + `, "prompt": ""}}}`:                "watches.ci.prompt: must not be empty",
+		`{"watches": {"ci": null}}`:                                           "watches.ci: must not be null",
+		`{"watches": {"stale-workers": {"every": "0s"}}}`:                     "watches.stale-workers.every: must be a positive duration",
+		`{"watches": {"stale-workers": {"max": 2}}}`:                          "watches.stale-workers.max: a built-in source takes only every, prompt and off",
+		`{"watches": {"quiet-threads": {"source": {"command": ["c"]}}}}`:      "watches.quiet-threads.source: the default quiet-threads keeps its source quiet-threads",
+		`{"watches": {"quiet-threads": {"source": "stale-agents"}}}`:          "watches.quiet-threads.source: stale-agents is the source of the default stale-workers",
 	} {
 		if _, err := ParseScope([]byte(body), "/home/u"); err == nil || !strings.Contains(err.Error(), says) {
 			t.Errorf("%s: %v, want it to name %s", body, err, says)

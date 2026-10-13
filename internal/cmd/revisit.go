@@ -190,7 +190,7 @@ func (u *unblocking) startRevisit(p atb.Parent, name string) error {
 		if threadErr != nil {
 			return errors.Join(err, threadErr)
 		}
-		return u.promptBroken(err, thread, "the revisit agent "+name+" for "+p.Identifier)
+		return u.promptBroken(err, thread, "start the revisit agent "+name+" for "+p.Identifier)
 	}
 	body, err := u.revisitMessage(text, p, name)
 	if err != nil {

@@ -1,0 +1,226 @@
+// `fleet watch`'s configured watches: command sources and `tell`, against
+// the fakes of watch_test.go.
+package main
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+// sourceWorld is a thread watch world whose scope config has `watches`,
+// with a command source at <dir>/source: it copies its stdin to
+// <dir>/source-in.json, the names of its environment to <dir>/source-env
+// and prints <dir>/subjects; with <dir>/source-fail it prints that file
+// on stderr and exits 3. The ledger has the thread C1/1.0 with its live
+// agent thread-c1, and the open job j reporting to it with its live lead
+// j-lead.
+func sourceWorld(t *testing.T, watches string, prompts map[string]string) *watchWorld {
+	t.Helper()
+	w := watchThreadWorld(t)
+	source := `#!/bin/sh
+dir='` + w.dir + `'
+cat > "$dir/source-in.json"
+env | sed 's/=.*//' | sort > "$dir/source-env"
+if [ -f "$dir/source-fail" ]; then cat "$dir/source-fail" >&2; exit 3; fi
+cat "$dir/subjects" 2>/dev/null
+exit 0
+`
+	config := filepath.Join(w.dir, "home", ".config", "fleet")
+	files := map[string]string{filepath.Join(w.dir, "source"): source,
+		filepath.Join(config, scope+".json"): `{"fednet": {"socket": "/run/example/fednet.sock"}, "watches": ` +
+			strings.ReplaceAll(watches, "SOURCE", filepath.Join(w.dir, "source")) + `}`}
+	for name, body := range prompts {
+		files[filepath.Join(config, name)] = body
+	}
+	for path, body := range files {
+		if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w.exec("INSERT INTO threads (thread, slug, created_at) VALUES ('C1/1.0', 'c1-1-0', 0)",
+		"INSERT INTO agents (name, role, thread, pane_id, state, started_at) VALUES ('thread-c1', 'thread', 'C1/1.0', 'p1', 'active', 0)",
+		"INSERT INTO jobs (job, lead_cwd, home_thread, state, started_at) VALUES ('j', '/c', 'C1/1.0', 'open', 5)")
+	w.insert(watchRow{name: "j-lead", role: "lead", job: "j", parent: "thread-c1"})
+	w.herdrList("thread-c1 idle 1", "j-lead idle 1")
+	w.screen("j-lead", claude("⏺ Waiting", "1s", "2hr 59m"))
+	w.lastMessage("C1/1.0", t0)
+	return w
+}
+
+// subjects sets what the source prints.
+func (w *watchWorld) subjects(lines ...string) {
+	w.t.Helper()
+	w.file("subjects", strings.Join(lines, "\n")+"\n")
+}
+
+// told is the targets of the prompts from `from` on, each with the
+// subject keys named in its text.
+func (w *watchWorld) told(from int) []string {
+	var got []string
+	for _, p := range w.prompts()[from:] {
+		_, rest, _ := strings.Cut(p[1], ", subject `")
+		key, _, _ := strings.Cut(rest, "`")
+		got = append(got, p[0]+":"+key)
+	}
+	return got
+}
+
+func TestACommandWatchTellsTheAgentEachSubjectConcerns(t *testing.T) {
+	w := sourceWorld(t, `{"ci": {"source": {"command": ["SOURCE", "--all"]}, "do": "tell", "prompt": "ci.md",
+		"env": ["EXAMPLE_TOKEN"], "per_run": 3}}`, map[string]string{"ci.md": "Look at {{key}} first.\n"})
+	w.subjects(`{"key": "a", "text": "PR 1 is red", "agent": "thread-c1"}`,
+		`{"key": "b", "text": "PR 2 waits", "job": "j"}`,
+		`{"key": "c", "text": "the thread has news", "thread": "C1/1.0"}`)
+
+	w.watchAt(0, 0, "EXAMPLE_TOKEN=tok-example", "EXAMPLE_OTHER=x")
+	if got := strings.Join(w.told(0), " "); got != "thread-c1:a j-lead:b thread-c1:c" {
+		t.Fatalf("told %s: %q", got, w.prompts())
+	}
+	want := "[FROM: watch]\nfleet watch, watch `ci`, subject `b`:\n\nPR 2 waits\n\nLook at b first."
+	if got := w.prompts()[1][1]; got != want {
+		t.Errorf("message:\n%s\nwant:\n%s", got, want)
+	}
+	var input struct {
+		Version int    `json:"version"`
+		Scope   string `json:"scope"`
+		Now     int64  `json:"now"`
+		Jobs    []struct {
+			Job, State, HomeThread string
+			EndedAt                *int64 `json:"ended_at"`
+		} `json:"jobs"`
+	}
+	data, _ := os.ReadFile(filepath.Join(w.dir, "source-in.json"))
+	if err := json.Unmarshal(data, &input); err != nil {
+		t.Fatalf("%v: %s", err, data)
+	}
+	if input.Version != 1 || input.Scope != scope || input.Now != t0 || len(input.Jobs) != 1 || input.Jobs[0].Job != "j" ||
+		input.Jobs[0].State != "open" || input.Jobs[0].EndedAt != nil {
+		t.Errorf("stdin %s", data)
+	}
+	env, _ := os.ReadFile(filepath.Join(w.dir, "source-env"))
+	if !strings.Contains(string(env), "EXAMPLE_TOKEN\n") || strings.Contains(string(env), "EXAMPLE_OTHER") {
+		t.Errorf("the source's environment:\n%s", env)
+	}
+	if got := w.query("SELECT group_concat(key || ':' || acts, ' ') FROM watch_subjects WHERE watch = 'ci'"); got != "a:1 b:1 c:1" {
+		t.Errorf("subjects %s", got)
+	}
+
+	// The same texts: nobody is told again; a changed text is told again.
+	w.watchAt(5*time.Minute, 0)
+	if got := len(w.prompts()); got != 3 {
+		t.Fatalf("told again: %q", w.told(3))
+	}
+	w.subjects(`{"key": "b", "text": "PR 2 still waits, now with a conflict", "job": "j"}`,
+		`{"key": "c", "text": "the thread has news", "thread": "C1/1.0"}`)
+	w.watchAt(10*time.Minute, 0)
+	if got := strings.Join(w.told(3), " "); got != "j-lead:b" {
+		t.Errorf("told %s", got)
+	}
+	// The subject its source no longer gives is dropped.
+	if got := w.query("SELECT group_concat(key || ':' || acts, ' ') FROM watch_subjects WHERE watch = 'ci'"); got != "b:2 c:1" {
+		t.Errorf("subjects %s", got)
+	}
+}
+
+func TestACommandWatchKeepsItsLimitsAndAsksThePeopleOnce(t *testing.T) {
+	w := sourceWorld(t, `{"nag": {"source": {"command": ["SOURCE"]}, "do": "tell", "every": "5m", "again": "1h", "max": 2},
+		"quiet-threads": {"off": true}}`, nil)
+	w.subjects(`{"key": "x", "text": "x is late", "agent": "j-lead"}`, `{"key": "y", "text": "y is late", "agent": "j-lead"}`)
+	for _, step := range []struct {
+		at   time.Duration
+		told string
+	}{
+		{0, "j-lead:x"},       // one a run
+		{4 * time.Minute, ""}, // `every` has not passed
+		{5 * time.Minute, "j-lead:y"},
+		{30 * time.Minute, ""}, // `again` has not passed for either
+		{time.Hour, "j-lead:x"},
+		{time.Hour + 5*time.Minute, "j-lead:y"},
+	} {
+		before := len(w.prompts())
+		w.watchAt(step.at, 0)
+		if got := strings.Join(w.told(before), " "); got != step.told {
+			t.Fatalf("at +%v told [%s], want [%s]: %q", step.at, got, step.told, w.prompts()[before:])
+		}
+	}
+	// Two acts each: the people are asked once instead, one a run.
+	before := len(w.prompts())
+	w.watchAt(2*time.Hour+5*time.Minute, 0)
+	w.watchAt(2*time.Hour+10*time.Minute, 0)
+	w.watchAt(4*time.Hour, 0)
+	if got := w.query("SELECT group_concat(asked_by || ' ' || job || ' ' || thread || ' ' || state, ', ') FROM questions"); got != "watch  C1/1.0 pending, watch  C1/1.0 pending" {
+		t.Errorf("questions %s", got)
+	}
+	if !strings.Contains(w.log("fednet.log"), "-thread C1/1.0 -- fleet watch, watch `nag`: subject `x` has had the watch's max of 2 act(s)") {
+		t.Errorf("fednet: %s", w.log("fednet.log"))
+	}
+	prompts := w.prompts()[before:]
+	if len(prompts) != 2 || prompts[0][0] != "thread-c1" || !strings.Contains(prompts[0][1], "Nothing to pass on") {
+		t.Errorf("%q", prompts)
+	}
+	// The questions are reminded of but never time out.
+	w.watchAt(80*time.Hour, 0)
+	if got := w.query("SELECT group_concat(state, ' ') FROM questions"); got != "pending pending" {
+		t.Errorf("questions %s", got)
+	}
+}
+
+func TestAWatchWhoseSourceFailsIsSkippedAndTheOthersRun(t *testing.T) {
+	w := sourceWorld(t, `{"bad": {"source": {"command": ["SOURCE"]}, "do": "tell", "env": ["EXAMPLE_TOKEN"]},
+		"good": {"source": {"command": ["sh", "-c", "echo '{\"key\": \"g\", \"text\": \"fine\", \"agent\": \"j-lead\"}'"]}, "do": "tell"}}`, nil)
+	w.file("source-fail", "cannot log in with tok-example-secret\n")
+	out := w.watchAt(0, 5, "EXAMPLE_TOKEN=tok-example-secret")
+	if !strings.Contains(out.stderr, "fleet watch: watch bad skipped: its source exited 3: cannot log in with [redacted EXAMPLE_TOKEN]") ||
+		strings.Contains(out.stderr, "tok-example-secret") {
+		t.Errorf("stderr: %s", out.stderr)
+	}
+	if got := strings.Join(w.told(0), " "); got != "j-lead:g" {
+		t.Errorf("told %s", got)
+	}
+	// Output that is not one subject per line fails it the same way.
+	w.file("source-fail", "")
+	w.subjects(`{"key": "a", "text": "no target"}`)
+	out = w.watchAt(time.Minute, 5)
+	if !strings.Contains(out.stderr, "watch bad skipped: its source's line 1 names no agent, job or thread to tell") {
+		t.Errorf("stderr: %s", out.stderr)
+	}
+	w.subjects(`{"key": "a", "text": "PR 1", "agent": "j-lead", "url": "https://example.test"}`)
+	out = w.watchAt(2*time.Minute, 5)
+	if !strings.Contains(out.stderr, `its source's line 1 is not a subject: json: unknown field "url"`) {
+		t.Errorf("stderr: %s", out.stderr)
+	}
+	if got := w.query("SELECT count(*) FROM watch_subjects WHERE watch = 'bad'"); got != "0" {
+		t.Errorf("subjects of the failed source: %s", got)
+	}
+	// A tell that did not land is tried again next run.
+	w.subjects(`{"key": "a", "text": "PR 1", "agent": "j-lead"}`)
+	w.reply(`{"error":{"code":"agent_not_found","message":"gone"}}`)
+	w.watchAt(3*time.Minute, 4)
+	w.reply(`{"result":{"type":"agent_prompted"}}`)
+	before := len(w.prompts())
+	w.watchAt(4*time.Minute, 0)
+	if got := strings.Join(w.told(before), " "); got != "j-lead:a" {
+		t.Errorf("told %s", got)
+	}
+}
+
+func TestADefaultWatchCanBeTurnedOffOrGivenAPrompt(t *testing.T) {
+	w := sourceWorld(t, `{"stale-workers": {"off": true}, "quiet-threads": {"prompt": "quiet.md"}}`,
+		map[string]string{"quiet.md": "Post a line in {{key}}.\n"})
+	w.insert(watchRow{name: "j-w", role: "worker", job: "j", parent: "j-lead"})
+	out := w.watchAt(30*time.Minute, 0)
+	if !strings.Contains(out.stdout, "suspect: j-w (worker, job j, parent j-lead): gone from herdr") {
+		t.Errorf("stdout: %s", out.stdout)
+	}
+	prompts := w.prompts()
+	if len(prompts) != 1 || prompts[0][0] != "thread-c1" {
+		t.Fatalf("%q", prompts)
+	}
+	if !strings.Contains(prompts[0][1], "rule `thread quiet, jobs open`") || !strings.HasSuffix(prompts[0][1], "\n\nPost a line in C1/1.0.") {
+		t.Errorf("%s", prompts[0][1])
+	}
+}

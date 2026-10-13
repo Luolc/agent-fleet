@@ -448,10 +448,12 @@ func (w *watchWorld) log(name string) string {
 	return strings.Join(fields, " ")
 }
 
-// watchAt runs watch with the clock at t0 + offset, expecting `code`.
-func (w *watchWorld) watchAt(offset time.Duration, code int) result {
+// watchAt runs watch with the clock at t0 + offset, expecting `code`;
+// extra are more `NAME=value` pairs.
+func (w *watchWorld) watchAt(offset time.Duration, code int, extra ...string) result {
 	w.t.Helper()
-	out := w.run("", []string{"watch", "--scope", scope}, fmt.Sprintf("FLEET_WATCH_NOW=%d", t0+int64(offset/time.Second)))
+	out := w.run("", []string{"watch", "--scope", scope},
+		append([]string{fmt.Sprintf("FLEET_WATCH_NOW=%d", t0+int64(offset/time.Second))}, extra...)...)
 	if out.code != code {
 		w.t.Fatalf("watch at t0+%v: %+v", offset, out)
 	}
@@ -751,7 +753,7 @@ func TestWatchAsksAboutAQuietThreadOncePerSpell(t *testing.T) {
 	if len(prompts) != 4 || prompts[3][0] != "thread-c2" {
 		t.Fatalf("%q", prompts)
 	}
-	for _, want := range []string{"rule `thread quiet, nothing open`", "when nothing is left to do, end it", "no message for 3d00h"} {
+	for _, want := range []string{"rule `thread quiet, nothing open`", "when nothing is left to do, end the session", "no message for 3d00h"} {
 		if !strings.Contains(prompts[3][1], want) {
 			t.Errorf("%q missing:\n%s", want, prompts[3][1])
 		}

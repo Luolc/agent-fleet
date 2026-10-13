@@ -105,10 +105,20 @@ func (h *Herdr) run(args ...string) (stdout, stderr []byte, err error) {
 // not be run or hit the deadline, an *exec.ExitError when it exited
 // non-zero.
 func Exec(op string, more []string, program string, argv ...string) (stdout, stderr []byte, err error) {
-	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
+	return ExecInput(op, more, callTimeout, nil, program, argv...)
+}
+
+// ExecInput is Exec with its own deadline and `stdin` on the program's
+// standard input.
+func ExecInput(op string, more []string, timeout time.Duration, stdin []byte, program string, argv ...string) (
+	stdout, stderr []byte, err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, program, argv...)
 	cmd.Env = env(more)
+	if stdin != nil {
+		cmd.Stdin = bytes.NewReader(stdin)
+	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
 		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
@@ -126,7 +136,7 @@ func Exec(op string, more []string, program string, argv ...string) (stdout, std
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	}
 	if ctx.Err() != nil {
-		return nil, nil, exit.Environmentf("%s timed out after %v", op, callTimeout)
+		return nil, nil, exit.Environmentf("%s timed out after %v", op, timeout)
 	}
 	// The program itself has exited and what it printed is in hand; the
 	// descendant that kept the pipes open was just killed.

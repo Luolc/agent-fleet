@@ -48,12 +48,13 @@ type question struct {
 	moved, dropped     bool
 }
 
-// byHelper is whether an agent watch started asked the question: a
-// screen helper about an agent stopped at a screen, or a revisit agent
-// about a parent issue. It is reminded of, but never times out, since
-// what waits for a person there is not a job or session gone stale.
+// byHelper is whether watch or an agent it started asked the question: a
+// screen helper about an agent stopped at a screen, a revisit agent about
+// a parent issue, or watch about a subject past its watch's `max`. It is
+// reminded of, but never times out, since what waits for a person there
+// is not a job or session gone stale.
 func (q question) byHelper() bool {
-	return helperNamed(q.askedBy)
+	return helperNamed(q.askedBy) || q.askedBy == watchSender
 }
 
 // session is a thread's live thread agent.
@@ -215,6 +216,15 @@ func (r *watchRun) threads(threads []*watchedThread, all []watched) error {
 		fmt.Fprintf(os.Stdout, "closed %d pending question(s) of ended jobs: a screen's, or the job ended after its lead "+
 			"was told a question expired\n", len(dropped))
 	}
+	e := r.builtinWatch(config.QuietThreads)
+	due, err := r.due(e)
+	if err != nil {
+		return err
+	}
+	quiet := &quietWatch{due: due}
+	if due {
+		quiet.prompt, quiet.err = watchPrompt(r.cfg, e)
+	}
 	for _, t := range threads {
 		if r.outOfTime() {
 			break
@@ -223,17 +233,30 @@ func (r *watchRun) threads(threads []*watchedThread, all []watched) error {
 			r.failed(fmt.Errorf("thread %s skipped: %w", t.key, t.unread))
 			continue
 		}
-		if err := r.thread(t, all); err != nil {
+		if err := r.thread(t, all, quiet); err != nil {
 			r.failed(fmt.Errorf("thread %s: %w", t.key, err))
 		}
 	}
-	return nil
+	if !due || quiet.err != nil {
+		return nil
+	}
+	return r.ran(e)
+}
+
+// quietWatch is the quiet-threads watch in this run: whether it is due,
+// and its prompt or why there is none.
+type quietWatch struct {
+	due    bool
+	prompt *promptText
+	err    error
 }
 
 // thread runs the rules on one thread, in order: the session that broke
 // off or is due to be closed, the questions, the idle session, the quiet
-// thread. The first failure stops the thread's rules for this run.
-func (r *watchRun) thread(t *watchedThread, all []watched) error {
+// thread. The first failure stops the thread's rules for this run. A
+// broken prompt of the quiet watch is said in the first thread it would
+// ask, and stops that watch for this run.
+func (r *watchRun) thread(t *watchedThread, all []watched, quiet *quietWatch) error {
 	w := r.cfg.Watch
 	if a := t.agent; a != nil && !a.inHerdr {
 		if err := r.endBroken(t); err != nil {
@@ -257,17 +280,18 @@ func (r *watchRun) thread(t *watchedThread, all []watched) error {
 			return err
 		}
 	}
-	if len(t.questions) > 0 || t.lastTS == t.quietAsked || silent < secs(w.ThreadQuiet) ||
-		t.agent != nil && t.agent.reclaimAt.Valid {
+	if !quiet.due || len(t.questions) > 0 || t.lastTS == t.quietAsked || silent < secs(w.ThreadQuiet) ||
+		t.agent != nil && t.agent.reclaimAt.Valid || len(t.jobs) == 0 && t.agent == nil {
 		return nil
 	}
+	if quiet.err != nil {
+		quiet.due = false
+		return r.promptBroken(quiet.err, t.key, "ask about the quiet in thread "+t.key)
+	}
 	if len(t.jobs) > 0 {
-		return r.askProgress(t, all)
+		return r.askProgress(t, all, quiet.prompt)
 	}
-	if t.agent != nil {
-		return r.askWhyLive(t)
-	}
-	return nil
+	return r.askWhyLive(t, quiet.prompt)
 }
 
 // questions runs the question rules: a thread agent's question or a
@@ -620,16 +644,16 @@ func (r *watchRun) askToEnd(t *watchedThread, rule, why string) error {
 
 // askProgress asks the thread agent, started for it when none is live,
 // whether the thread's open jobs have progress to report.
-func (r *watchRun) askProgress(t *watchedThread, all []watched) error {
+func (r *watchRun) askProgress(t *watchedThread, all []watched, prompt *promptText) error {
 	var text strings.Builder
 	fmt.Fprintf(&text, "fleet watch, rule `thread quiet, jobs open`: thread %s has had no new message for %s (the last "+
-		"at %s). watch asks once per quiet spell; a new message in the thread starts the count again. %s; at the "+
-		"least, post the progress of the jobs below to the thread when there is some.\n\nJobs reporting to this "+
-		"thread:\n", t.key, Duration(r.now-t.lastAt), at(t.lastAt), seePrompt)
+		"at %s). watch asks once per quiet spell; a new message in the thread starts the count again.\n\nJobs "+
+		"reporting to this thread:\n", t.key, Duration(r.now-t.lastAt), at(t.lastAt))
 	for _, j := range t.jobs {
 		text.WriteString(jobState(j, all, r.now))
 	}
-	code, err := toThread(r.h, r.conn, r.scope, r.cfg, inboundMessage{Thread: t.key, Text: text.String(), Watch: true})
+	body := watchMessage(prompt, t.key, text.String())
+	code, err := toThread(r.h, r.conn, r.scope, r.cfg, inboundMessage{Thread: t.key, Text: body, Watch: true})
 	if err != nil {
 		return err
 	}
@@ -638,14 +662,12 @@ func (r *watchRun) askProgress(t *watchedThread, all []watched) error {
 
 // askWhyLive asks a live thread agent with nothing open why it has not
 // ended its session.
-func (r *watchRun) askWhyLive(t *watchedThread) error {
+func (r *watchRun) askWhyLive(t *watchedThread, prompt *promptText) error {
 	text := fmt.Sprintf("fleet watch, rule `thread quiet, nothing open`: thread %s has had no new message for %s "+
 		"(the last at %s), no question in it waits for a person and no job reports to it, yet this session is "+
 		"live. watch does not ask again in this quiet spell, and reclaims a session whose thread has had no "+
-		"message for %s. %s; at the least, when nothing is left to do, end it with `fleet thread end "+
-		"--summary-file <file>`.\n", t.key, Duration(r.now-t.lastAt), at(t.lastAt),
-		Duration(secs(r.cfg.Watch.ThreadIdle)), seePrompt)
-	text, err := WithHeader(watchSender, text)
+		"message for %s.\n", t.key, Duration(r.now-t.lastAt), at(t.lastAt), Duration(secs(r.cfg.Watch.ThreadIdle)))
+	text, err := WithHeader(watchSender, watchMessage(prompt, t.key, text))
 	if err != nil {
 		return err
 	}
