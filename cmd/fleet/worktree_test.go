@@ -368,7 +368,7 @@ func TestJobEndForceRemovesTheJobsRecordedWorktreesWithTheSameChecks(t *testing.
 		}
 	}
 
-	// Uncommitted changes make `git worktree remove` refuse.
+	// Uncommitted changes refuse the removal.
 	w.closeHerdr("")
 	dirty := filepath.Join(wt, "item-1-b", "notes.txt")
 	if err := os.WriteFile(dirty, []byte("draft\n"), 0o644); err != nil {
@@ -406,5 +406,68 @@ func TestJobEndForceRemovesTheJobsRecordedWorktreesWithTheSameChecks(t *testing.
 	}
 	if got := w.worktreeRows(); strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Errorf("rows = %q, want %q", got, want)
+	}
+}
+
+func TestJobEndForceRemovesAWorktreeWithAnInitializedSubmodule(t *testing.T) {
+	w := newWorld(t)
+	checkout, seed := w.origin()
+	theme := filepath.Join(w.dir, "theme")
+	w.git("init", "-q", "-b", "main", theme)
+	w.git("-C", theme, "commit", "-q", "--allow-empty", "-m", "theme")
+	w.git("-C", seed, "-c", "protocol.file.allow=always", "submodule", "add", "-q", theme, "theme")
+	w.git("-C", seed, "commit", "-q", "-m", "add theme")
+	w.git("-C", seed, "push", "-q", "origin", "main")
+	if out := w.worktree("item-1", dataset); out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	wt := filepath.Join(w.dir, "home", "wt", dataset, "item-1")
+	w.git("-C", wt, "-c", "protocol.file.allow=always", "submodule", "update", "-q", "--init")
+	w.closeHerdr("")
+	close := func() result { return w.asThread("job", "end", "item-1", "--force") }
+
+	sub := filepath.Join(wt, "theme")
+	refused := func(what string) {
+		t.Helper()
+		if out := close(); out.code != 5 || !strings.Contains(out.stderr, "uncommitted changes in "+wt) {
+			t.Errorf("%s: %+v", what, out)
+		}
+	}
+
+	// A change inside the submodule is uncommitted too.
+	dirty := filepath.Join(sub, "notes.txt")
+	if err := os.WriteFile(dirty, []byte("draft\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	refused("a changed file")
+	if _, err := os.Stat(dirty); err != nil {
+		t.Error("uncommitted change lost")
+	}
+
+	// So is a stash, and a commit only on a local branch once the
+	// submodule is back on the recorded commit: both live in the
+	// submodule's repository under the worktree's git dir.
+	w.git("-C", sub, "stash", "push", "-q", "-u")
+	refused("a stash")
+	w.git("-C", sub, "stash", "drop", "-q")
+	w.git("-C", sub, "checkout", "-q", "-b", "fix")
+	w.git("-C", sub, "commit", "-q", "--allow-empty", "-m", "wip")
+	wip := w.git("-C", sub, "rev-parse", "HEAD")
+	w.git("-C", wt, "submodule", "update", "-q")
+	refused("a commit on a local branch")
+	w.git("-C", sub, "cat-file", "-e", wip)
+	w.git("-C", sub, "branch", "-q", "-D", "fix")
+
+	if out := close(); out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	if _, err := os.Stat(wt); err == nil {
+		t.Error("worktree not removed")
+	}
+	if got := w.git("-C", checkout, "worktree", "list", "--porcelain"); strings.Contains(got, wt) {
+		t.Errorf("worktree still listed: %s", got)
+	}
+	if _, err := os.Stat(filepath.Join(checkout, ".git", "worktrees", "item-1")); err == nil {
+		t.Error("the worktree's git dir, with its submodule clone, is left")
 	}
 }
