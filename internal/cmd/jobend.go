@@ -43,8 +43,9 @@ const (
 		"may have its cwd inside one of the job's directories (the worktrees `fleet worktree` " +
 		"recorded for it and, for a cross-repo job, its directory <I>/<job>/ under the scope's `paths.initiatives`); each worktree is " +
 		"removed with `git worktree remove --force` once `git status` finds no uncommitted " +
-		"changes in it, its submodules included, and its local branch deleted, and the cross-repo directory is removed unless a git checkout inside it " +
-		"has uncommitted changes. When something is left it is " +
+		"changes in it, its submodules included, and its local branch deleted, and the " +
+		"cross-repo directory is removed unless a git checkout inside it has uncommitted " +
+		"changes. When something is left it is " +
 		"listed and `job end` exits 5 without ending the job. Otherwise the job is marked ended " +
 		"with its outcome, your row ended, the worktrees removed, the conclusion is printed " +
 		"(the line the job's home thread will receive once threads exist), and last the " +
@@ -295,34 +296,20 @@ func removeDirs(h *herdr.Herdr, workspaces []string, dirs []jobDir, except strin
 // are removed whole (a cross-repo job's). The check is the one `git worktree
 // remove` runs without --force; it counts changes inside submodules.
 func dirtyCheckouts(dirs []jobDir) ([]string, error) {
-	var dirty []string
-	check := func(checkout string) error {
-		status, err := Git("-C", checkout, "status", "--porcelain", "--ignore-submodules=none")
-		if err != nil {
-			return err
-		}
-		if strings.TrimSpace(status) != "" {
-			dirty = append(dirty, "uncommitted changes in "+checkout)
-		}
-		return nil
-	}
+	var checkouts []string
 	for _, d := range dirs {
 		if !exists(d.path) {
 			continue
 		}
 		if d.worktree {
-			if err := check(d.path); err != nil {
-				return nil, err
-			}
+			checkouts = append(checkouts, d.path)
 			continue
 		}
 		err := filepath.WalkDir(d.path, func(path string, entry fs.DirEntry, err error) error {
 			if err != nil || entry.Name() != ".git" {
 				return err
 			}
-			if err := check(filepath.Dir(path)); err != nil {
-				return err
-			}
+			checkouts = append(checkouts, filepath.Dir(path))
 			if entry.IsDir() {
 				return filepath.SkipDir
 			}
@@ -330,6 +317,16 @@ func dirtyCheckouts(dirs []jobDir) ([]string, error) {
 		})
 		if err != nil {
 			return nil, err
+		}
+	}
+	var dirty []string
+	for _, checkout := range checkouts {
+		status, err := Git("-C", checkout, "status", "--porcelain", "--ignore-submodules=none")
+		if err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(status) != "" {
+			dirty = append(dirty, "uncommitted changes in "+checkout)
 		}
 	}
 	return dirty, nil
