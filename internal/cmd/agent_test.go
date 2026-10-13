@@ -15,6 +15,10 @@ import (
 
 const trust = "────────\n Accessing workspace:\n\n /w/x\n\n Quick safety check: Is this a project you created or one you trust?\n\n ❯ No, exit\n   Yes, I trust this folder\n\n Enter to confirm · Esc to cancel\n"
 
+// trustUnderShell is the dialog with the shell's command line still on the
+// screen above it, the shell's prompt a ❯ too.
+const trustUnderShell = "[oh-my-zsh] It's time to update! You can do that by running `omz update`\n❯ claude --model opus\n\n" + trust
+
 func onYes(screen string) string {
 	return strings.ReplaceAll(strings.ReplaceAll(screen, " ❯ No, exit", "   No, exit"), "   Yes, I trust", " ❯ Yes, I trust")
 }
@@ -32,6 +36,13 @@ func TestTrustDialogIsAnsweredOneKeyAtATimeFromTheCursorForTheAgentsOwnDirectory
 	}
 	if got := key(onYes(trust), "/w/x"); got != "enter" {
 		t.Errorf("yes highlighted: %q", got)
+	}
+	// The shell's prompt above the dialog is not its cursor.
+	if got := key(trustUnderShell, "/w/x"); got != "down" {
+		t.Errorf("under the shell's command line, cancel highlighted: %q", got)
+	}
+	if got := key(onYes(trustUnderShell), "/w/x"); got != "enter" {
+		t.Errorf("under the shell's command line, yes highlighted: %q", got)
 	}
 	if got := key(" ❯ 1. Dark mode\n   2. Light mode\n", "/w/x"); got != "" {
 		t.Errorf("menu: %q", got)
@@ -95,6 +106,13 @@ func TestReadyNeedsTheInputBoxAndHerdrOutOfBlocked(t *testing.T) {
 	}
 	if strings.Join(sent, ",") != "down,enter" {
 		t.Errorf("sent %q", sent)
+	}
+	sent = nil
+	if err := scripted([]string{trustUnderShell, onYes(trustUnderShell), idle}, []string{"blocked", "blocked", "idle"}, &sent); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(sent, ",") != "down,enter" {
+		t.Errorf("under the shell's command line: sent %q", sent)
 	}
 	// A lost press: the cursor has not moved, so down is pressed again,
 	// never enter on the cancel option.

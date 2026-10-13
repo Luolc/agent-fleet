@@ -360,9 +360,10 @@ func paneText(h *herdr.Herdr, paneID string) string {
 	return string(out)
 }
 
-// trustPrompt is a folder-trust dialog as Claude Code 2.1.292 draws it:
+// trustPrompt is a folder-trust dialog as Claude Code 2.1.296 draws it:
 // "Accessing workspace:", the directory, "Quick safety check", the cancel
-// option listed first, the cursor ❯ on one of them.
+// option listed first, the cursor ❯ on one of them. Above it the pane may
+// still show the shell's command line, its prompt a ❯ too.
 type trustPrompt struct {
 	// Dir is the directory the dialog names: the lines between the two
 	// headings joined, so a path wrapped over two lines reads whole.
@@ -375,14 +376,14 @@ type trustPrompt struct {
 // any other screen.
 func trustDialog(screen string) (p trustPrompt, ok bool) {
 	_, after, found := strings.Cut(screen, "Accessing workspace:")
-	between, _, found2 := strings.Cut(after, "Quick safety check")
+	between, options, found2 := strings.Cut(after, "Quick safety check")
 	if !found || !found2 {
 		return trustPrompt{}, false
 	}
 	for _, line := range lines(between) {
 		p.Dir += strings.TrimSpace(line)
 	}
-	for _, line := range lines(screen) {
+	for _, line := range lines(options) {
 		line = strings.TrimLeftFunc(line, unicode.IsSpace)
 		if rest, found := strings.CutPrefix(line, "❯"); found {
 			p.Highlighted = strings.TrimSpace(rest)
