@@ -52,12 +52,13 @@ fleet, name a Markdown file for it in the scope's settings file:
 
 The path is relative to the settings file, so this one is
 `~/.config/fleet/prompts/worker.append.md`; its text follows the built-in
-worker prompt for every worker started from then on. After each change, run
-`fleet prompt show`: it lists each prompt's parts, where each watch's prompt
-(below) comes from, and every file that would stop an agent from starting or
-a watch from running (`fleet prompt show worker` prints the whole text,
-`fleet prompt show watch:<name>` a watch's prompt). Run it again after upgrading fleet, to see whether a prompt you
-replaced is behind the new built-in one.
+worker prompt and `common` for every worker started from then on. After each
+change, run `fleet prompt show`: it lists each prompt's parts, where each
+watch's prompt (below) comes from, and every file that would stop an agent
+from starting or a watch from running (`fleet prompt show worker` prints the
+whole text, `fleet prompt show watch:<name>` a watch's prompt). Run it again
+after upgrading fleet, to see whether a prompt you replaced is behind the new
+built-in one.
 
 To replace a prompt, start from a copy of the built-in one:
 
@@ -83,7 +84,9 @@ Add your own under `watches.<name>`. Its source is a command that prints one
 JSON line per subject: a `key` of its own, a `text`, and the `agent`, `job`
 or `thread` it concerns. With `do: tell`, each new or changed subject's text
 is sent, followed by the watch's prompt, to that agent (a job's lead, a
-thread's agent); with `do: worker`, a worker is started for it.
+thread's agent); with `do: worker`, a worker is started for it. A
+`do: worker` watch without a source is a timer: each time it runs (see
+`every`), it starts a worker for itself, unless the last one is still live.
 
 ```json
 {"watches": {"open-prs": {"source": {"command": ["/usr/local/bin/open-prs"]},
