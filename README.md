@@ -40,8 +40,11 @@ in [docs/design.md](docs/design.md).
 
 ## Changing the prompts
 
-fleet starts each agent with a built-in prompt. To add to one without a new
-release of fleet, name a Markdown file for it in the scope's settings file:
+fleet starts each thread agent, lead and worker with the built-in prompt of
+its role, followed by `common`, the text the three roles share. Each of
+`common`, `thread`, `lead` and `worker` can be changed on its own; a change
+to `common` reaches all three roles. To add to one without a new release of
+fleet, name a Markdown file for it in the scope's settings file:
 
 ```json
 {"prompts": {"worker": {"append": "prompts/worker.append.md"}}}
@@ -50,9 +53,10 @@ release of fleet, name a Markdown file for it in the scope's settings file:
 The path is relative to the settings file, so this one is
 `~/.config/fleet/prompts/worker.append.md`; its text follows the built-in
 worker prompt for every worker started from then on. After each change, run
-`fleet prompt show`: it lists each prompt's parts and every file that would
-stop an agent from starting (`fleet prompt show worker` prints the whole
-text). Run it again after upgrading fleet, to see whether a prompt you
+`fleet prompt show`: it lists each prompt's parts, where each watch's prompt
+(below) comes from, and every file that would stop an agent from starting or
+a watch from running (`fleet prompt show worker` prints the whole text,
+`fleet prompt show watch:<name>` a watch's prompt). Run it again after upgrading fleet, to see whether a prompt you
 replaced is behind the new built-in one.
 
 To replace a prompt, start from a copy of the built-in one:
@@ -66,6 +70,31 @@ cp prompts/lead.base.md prompts/lead.md   # then edit prompts/lead.md
 and add it under `"prompts"`: `"lead": {"replace": "prompts/lead.md", "base":
 "prompts/lead.base.md"}`. The model settings and the rest are in
 [docs/design.md](docs/design.md).
+
+## Watches
+
+`fleet watch`, run from a timer, checks on the scope's agents and acts
+through its watches. Three are there by default: `stale-workers` tells a lead
+when its workers look stuck, `quiet-threads` asks a thread's agent about a
+thread gone quiet, and `unblock` starts a worker for an agent stopped at a
+screen. Each can be given its own `prompt`, an `every`, or turned `off`.
+
+Add your own under `watches.<name>`. Its source is a command that prints one
+JSON line per subject: a `key` of its own, a `text`, and the `agent`, `job`
+or `thread` it concerns. With `do: tell`, each new or changed subject's text
+is sent, followed by the watch's prompt, to that agent (a job's lead, a
+thread's agent); with `do: worker`, a worker is started for it.
+
+```json
+{"watches": {"open-prs": {"source": {"command": ["/usr/local/bin/open-prs"]},
+  "do": "tell", "every": "30m", "prompt": "watches/open-prs.md"}}}
+```
+
+Here `open-prs` might print
+`{"key": "pr-12", "text": "PR 12 has waited two days for review.", "job": "fix-login"}`,
+and the prompt file can use `{{key}}` and `{{text}}`. The other fields
+(`per_run`, `again`, `max`, `env`, `model`, `effort`) and what the command
+reads on stdin are in [docs/design.md](docs/design.md).
 
 The design is in [docs/design.md](docs/design.md).
 
