@@ -291,25 +291,91 @@ func TestSpawnStopsWhenAnAtbStepFails(t *testing.T) {
 		if !strings.Contains(out.stderr, failed) {
 			t.Errorf("%s: stderr %q does not say %q", step, out.stderr, failed)
 		}
+		// atb's stderr follows, its key redacted by shape and by value.
+		if shown := failed[:strings.Index(failed, " failed")] + " printed on stderr (credentials redacted):\n" +
+			"  error: refused: no holder, key [redacted]\n"; !strings.Contains(out.stderr, shown) {
+			t.Errorf("%s: stderr %q does not show %q", step, out.stderr, shown)
+		}
 		if strings.Contains(out.stderr+out.stdout, "fake0xK3Y") {
 			t.Errorf("%s: the key leaked: %+v", step, out)
 		}
 		if _, after, _ := strings.Cut(w.calls(), "atb linear "+step); strings.Contains(after, "herdr") {
 			t.Errorf("%s: herdr was called after atb: %q", step, w.calls())
 		}
-		// The reserved row stays for `job end --force`, keeping the work order
-		// once that was created.
-		want := " EX-10 starting " + dir(w, "wt")
+		// Nothing was started, so the reserved row is ended, keeping the work
+		// order once that was created.
+		want := " EX-10 ended " + dir(w, "wt")
+		hint := "find out why from the error above first\n"
 		if step == "claim" {
 			want = "EX-12" + want
+			hint = "find out why from the error above first; the work order is claimed by nobody, cancel it in Linear\n"
 		}
 		if got := row(w, "item-1-a"); got != want {
 			t.Errorf("%s: row = %s, want %s", step, got, want)
 		}
-		if !strings.Contains(out.stderr, "ledger row item-1-a (state starting)") || !strings.Contains(out.stderr, "find out why from the error above first; the cleanup is the lead's call, and `fleet job end item-1 --force`") {
-			t.Errorf("%s: the row and the cleanup are not listed: %q", step, out.stderr)
+		if !strings.Contains(out.stderr, "ledger row item-1-a, now ended: nothing was started and the name is free") ||
+			!strings.HasSuffix(out.stderr, hint) {
+			t.Errorf("%s: the ended row and the hint are not listed: %q", step, out.stderr)
 		}
 	}
+}
+
+// A herdr step that fails after the work order keeps the row `starting`:
+// herdr may have made the tab before it failed.
+func TestSpawnKeepsTheRowWhenAHerdrStepFails(t *testing.T) {
+	w := newWorld(t)
+	w.configure(withLinear)
+	openJobWithLead(w, "EX-10")
+	script := strings.Replace(startHerdr, `  "tab create")`, `  "tab create") echo "fake herdr: tab create failing" >&2; exit 2 ;;
+  "tab never")`, 1)
+	if err := os.WriteFile(filepath.Join(w.dir, "fake-herdr", "herdr"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	w.fakeAtbCreating("")
+	out := w.spawnWorker("--task-file", task(w, "task.md", "import\n"), "--cwd", dir(w, "wt"))
+	if out.code != 5 || !strings.Contains(out.stderr, "ledger row item-1-a (state starting)") ||
+		!strings.Contains(out.stderr, "`fleet job end item-1 --force`") {
+		t.Errorf("%+v", out)
+	}
+	if got := row(w, "item-1-a"); got != "EX-12 EX-10 starting "+dir(w, "wt") {
+		t.Errorf("row = %s", got)
+	}
+}
+
+// A spawn stopped by a failed work order leaves no live row: the name can
+// be spawned again, and the lead's `job end` is not held up by a worker
+// that never started.
+func TestASpawnStoppedAtItsWorkOrderHoldsNeitherTheNameNorJobEnd(t *testing.T) {
+	stopped := func(t *testing.T) *world {
+		w := newWorld(t)
+		w.configure(withLinear)
+		openJobWithLead(w, "EX-10")
+		w.useStartHerdr()
+		w.fakeAtbCreating("create")
+		if out := w.spawnWorker("--task-file", task(w, "task.md", "import\n"), "--cwd", dir(w, "wt")); out.code != 5 {
+			t.Fatalf("failing spawn: %+v", out)
+		}
+		return w
+	}
+	t.Run("spawn again", func(t *testing.T) {
+		w := stopped(t)
+		w.fakeAtbCreating("")
+		if out := w.spawnWorker("--task-file", task(w, "task.md", "import\n"), "--cwd", dir(w, "wt")); out.code != 0 {
+			t.Fatalf("spawn again: %+v", out)
+		}
+		if got := row(w, "item-1-a"); got != "EX-12 EX-10 active "+dir(w, "wt") {
+			t.Errorf("row after the second spawn = %s", got)
+		}
+	})
+	t.Run("job end", func(t *testing.T) {
+		w := stopped(t)
+		w.jobEndHerdr()
+		w.fakeAtb("")
+		if out := w.endJob("--report-file", task(w, "report.md", "what the job did\n")); out.code != 0 ||
+			!strings.Contains(out.stdout, "ended job item-1: done, 1 rows ended\n") {
+			t.Errorf("job end: %+v", out)
+		}
+	})
 }
 
 func TestSpawnChecksTheConfigAndTheParentIssueBeforeAnythingIsCreated(t *testing.T) {
@@ -636,8 +702,9 @@ func TestJobStartStopsWhenAnAtbStepFails(t *testing.T) {
 				t.Errorf("create: the claimed parent is not listed: %q", out.stderr)
 			}
 		}
-		if !strings.Contains(out.stderr, failed) {
-			t.Errorf("%s: stderr %q does not say %q", step, out.stderr, failed)
+		if !strings.Contains(out.stderr, failed) || !strings.Contains(out.stderr, "printed on stderr (credentials redacted):\n"+
+			"  error: refused: no holder, key [redacted]\n") {
+			t.Errorf("%s: stderr %q does not say %q and show atb's stderr", step, out.stderr, failed)
 		}
 		if strings.Contains(out.stderr+out.stdout, "fake0xK3Y") {
 			t.Errorf("%s: the key leaked: %+v", step, out)
