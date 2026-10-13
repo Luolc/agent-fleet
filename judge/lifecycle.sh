@@ -59,7 +59,7 @@ has "job start: the lead prompt names its identity, cap and ending, then the thr
 lacks "job start: no placeholder left in the lead's first message" "$(received item-1-lead)" "{{"
 lacks "job start: no work order line without Linear" "$(received item-1-lead)" "Work order:"
 check "job start: identity variables in its process" \
-  "${P}AGENT=item-1-lead ${P}ISSUE= ${P}JOB=item-1 ${P}PARENT=thread-1 ${P}ROLE=lead ${P}SCOPE=$SCOPE " \
+  "${P}AGENT=item-1-lead ${P}ISSUE= ${P}JOB=item-1 ${P}PARENT=thread-1 ${P}ROLE=lead ${P}SCOPE=$SCOPE ${P}SCRATCH=/home/agent/scratch/$R " \
   "$(proc_env item-1-lead)"
 check "job start: ledger row active with its places" \
   "lead|item-1|thread-1|thread-1|active|$DEV|/home/agent/tasks/lead.md|$(agent_field item-1-lead pane_id) " \
@@ -94,7 +94,7 @@ has "spawn worker: the worker prompt names its lead and done, then the task" "$(
 lacks "spawn worker: no placeholder left" "$(received item-1-a)" "{{"
 lacks "spawn worker: no lead prompt" "$(received item-1-a)" "You are a lead"
 check "spawn worker: identity variables in its process" \
-  "${P}AGENT=item-1-a ${P}ISSUE= ${P}JOB=item-1 ${P}PARENT=item-1-lead ${P}ROLE=worker ${P}SCOPE=$SCOPE " \
+  "${P}AGENT=item-1-a ${P}ISSUE= ${P}JOB=item-1 ${P}PARENT=item-1-lead ${P}ROLE=worker ${P}SCOPE=$SCOPE ${P}SCRATCH=/home/agent/scratch/$R " \
   "$(proc_env item-1-a)"
 check "spawn worker: ledger row active in the job with its cwd" "worker|item-1|item-1-lead|active|$WT/item-1 " \
   "$(ledger "SELECT role, job, parent, state, cwd FROM agents WHERE name = 'item-1-a'")"
@@ -247,13 +247,13 @@ check "job start cross-repo: the parent is read last, claimed, then the work ord
   "$(tr '\n' '|' < /home/agent/atb.log)"
 check "job start cross-repo: agent cwd is the cross-repo directory" /home/agent/x-repo/general/wire "$(agent_field wire-lead cwd)"
 check "job start cross-repo: identity variables carry the work order" \
-  "${P}AGENT=wire-lead ${P}ISSUE=QT-12 ${P}JOB=wire ${P}PARENT=thread-1 ${P}ROLE=lead ${P}SCOPE=$SCOPE " \
+  "${P}AGENT=wire-lead ${P}ISSUE=QT-12 ${P}JOB=wire ${P}PARENT=thread-1 ${P}ROLE=lead ${P}SCOPE=$SCOPE ${P}SCRATCH=/home/agent/scratch/x-repo-general " \
   "$(proc_env wire-lead)"
 has "job start cross-repo: the work order's URL heads the task" "$(screen wire-lead)" "Work order: https://linear.example.test/QT-12" "0xWIRE"
 has "job start cross-repo: the lead prompt names the initiative, its charter and the parent issue" "$(received wire-lead | tr '\n' '|')" \
   "The job is cross-repo: it runs inside the checkout of the initiative x-repo-general (/home/agent/x-repo/general)" \
   "read /home/agent/x-repo/general/AGENTS.md (the initiative's charter)" \
-  "FLEET_ISSUE=QT-12 (your work order, https://linear.example.test/QT-12). The job's parent issue is QT-10;" \
+  "FLEET_ISSUE=QT-12 (your work order, https://linear.example.test/QT-12), FLEET_SCRATCH=~/scratch/x-repo-general. The job's parent issue is QT-10;" \
   "## Your task||Work order: https://linear.example.test/QT-12||Wire the repos 0xWIRE"
 check "job start cross-repo: job row with the parent and no repo" "QT-10|||/home/agent/x-repo/general/wire|open| " "$(job_row wire)"
 check "job list: the cross-repo job" "wire	QT-10	-	-	wire-lead	-" "$(thr job list)"

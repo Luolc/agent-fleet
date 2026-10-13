@@ -318,7 +318,8 @@ func TestRolePromptsFillEveryPlaceholderForBothRolesAndBothJobKinds(t *testing.T
 		}
 	}
 	got := rolePrompt(sc, lead, "/home/u/dev/example-dataset", "example-dataset", "/home/u/dev/example-dataset", 4, issue, "QT-10")
-	for _, want := range []string{"FLEET_ISSUE=QT-12 (your work order, https://linear.example.test/QT-12). The job's parent issue is QT-10;",
+	for _, want := range []string{"FLEET_ISSUE=QT-12 (your work order, https://linear.example.test/QT-12), FLEET_SCRATCH=~/scratch/example-dataset. " +
+		"The job's parent issue is QT-10;",
 		"The job's cap is 4 live agents", "read the `## Fleet` section of ~/dev/example-dataset/AGENTS.md", "`wire-<name>`"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("lead single: %q not in the prompt", want)
@@ -337,13 +338,13 @@ func TestRolePromptsFillEveryPlaceholderForBothRolesAndBothJobKinds(t *testing.T
 		t.Fatal(err)
 	}
 	got = rolePrompt(sc, lead, "/srv/src/example-dataset", "example-dataset", "/srv/src/example-dataset", 4, issue, "QT-10")
-	for _, want := range []string{"main checkout /srv/src/example-dataset;", "/srv/src/example-dataset/AGENTS.md", "~/notes/example-dataset/"} {
+	for _, want := range []string{"main checkout /srv/src/example-dataset;", "/srv/src/example-dataset/AGENTS.md", "FLEET_SCRATCH=~/notes/example-dataset."} {
 		if !strings.Contains(got, want) {
 			t.Errorf("lead single, configured: %q not in the prompt", want)
 		}
 	}
 	got = rolePrompt(sc, worker, "/home/u/x-repo/example-init/wire", "", "/home/u/x-repo/example-init/wire", 3, atb.Issue{}, "")
-	for _, want := range []string{"the initiative multi-example-init", "main checkout /srv/src/<repo>", "~/notes/multi-example-init/"} {
+	for _, want := range []string{"the initiative multi-example-init", "main checkout /srv/src/<repo>", "FLEET_SCRATCH=~/notes/multi-example-init."} {
 		if !strings.Contains(got, want) {
 			t.Errorf("worker cross, configured: %q not in the prompt", want)
 		}

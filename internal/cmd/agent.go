@@ -869,14 +869,13 @@ func roleSlots(sc *config.Scope, id *identity.Identity, cwd, repo, leadCwd strin
 			"abandoned` only when all of it is given up; otherwise fleet gives back its claim and the parent returns "+
 			"to the state it had before this job.", parentIssue)
 	}
-	checkouts, scratch := sc.Tilde(sc.Paths.Checkouts), sc.Tilde(sc.Paths.Scratch)
+	checkouts := sc.Tilde(sc.Paths.Checkouts)
 	var repoLine, agentsMD string
 	if repo != "" {
 		checkout := sc.Tilde(leadCwd)
 		repoLine = fmt.Sprintf("The job is single-repo: its repo is %s, main checkout %s; `<repo>` below is %s.",
 			repo, checkout, repo)
 		agentsMD = fmt.Sprintf("Before anything else, read the `## Fleet` section of %s/AGENTS.md and follow it.", checkout)
-		scratch += "/" + repo
 	} else {
 		root := filepath.Dir(leadCwd)
 		initiative := sc.Channels.InitiativePrefix + filepath.Base(root)
@@ -884,13 +883,24 @@ func roleSlots(sc *config.Scope, id *identity.Identity, cwd, repo, leadCwd strin
 			"`<repo>` below is the repo a task names, main checkout %s/<repo>.", initiative, root, checkouts)
 		agentsMD = fmt.Sprintf("Before anything else, read %s (the initiative's charter), then the `## Fleet` section "+
 			"of %s/<R>/AGENTS.md of every repo R the job touches, and follow them.", filepath.Join(root, "AGENTS.md"), checkouts)
-		scratch += "/" + initiative
 	}
 	slots := map[string]string{"job": id.Job, "scope": id.Scope, "agent": id.Agent, "parent": id.Parent,
 		"lead": id.Parent, "cwd": cwd, "repo_line": repoLine, "issue": issue.Identifier, "issue_note": issueNote,
-		"linear": linear, "agents_md": agentsMD, "cap": strconv.Itoa(cap), "scratch": scratch}
+		"linear": linear, "agents_md": agentsMD, "cap": strconv.Itoa(cap),
+		"scratch": sc.Tilde(jobScratch(sc, repo, leadCwd))}
 	maps.Copy(slots, modelValues(sc))
 	return slots
+}
+
+// jobScratch is the directory for the files of a job's agents, their
+// `FLEET_SCRATCH`: `<scratch>/<repo>` for a single-repo job, else
+// `<scratch>/<initiative prefix><I>` for the initiative whose checkout
+// holds the lead's directory `leadCwd`.
+func jobScratch(sc *config.Scope, repo, leadCwd string) string {
+	if repo == "" {
+		repo = sc.Channels.InitiativePrefix + filepath.Base(filepath.Dir(leadCwd))
+	}
+	return filepath.Join(sc.Paths.Scratch, repo)
 }
 
 // orDefault is the --model or --effort a start passes: the command's
