@@ -5,6 +5,8 @@ import "testing"
 func TestTheWorkOrderScopeAndScratchTravelInTheEnvironment(t *testing.T) {
 	t.Setenv("FLEET_AGENT", "item-1-a")
 	t.Setenv("FLEET_ROLE", "worker")
+	t.Setenv("FLEET_PARENT", "item-1-lead")
+	t.Setenv("FLEET_JOB", "item-1")
 	t.Setenv("FLEET_ISSUE", "EX-7")
 	t.Setenv("FLEET_SCOPE", "example")
 	t.Setenv("FLEET_SCRATCH", "/home/u/scratch/example-dataset")
