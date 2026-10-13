@@ -1,9 +1,11 @@
 package atb
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -48,5 +50,45 @@ func TestAFailureKeepsAtbsExitAndRedactedStderrOutOfTheMessage(t *testing.T) {
 	}
 	if got := redact(strings.Repeat("é", maxStderr)); len(got) > maxStderr+len(" [cut]") || !strings.HasSuffix(got, " [cut]") {
 		t.Errorf("cut: %d bytes", len(got))
+	}
+}
+
+// A key that atb prints across the cut (its first 5 bytes before it) is
+// replaced whole before the cut, so no part of it is kept or shown.
+func TestAKeyAcrossTheCutIsRedactedWhole(t *testing.T) {
+	dir := t.TempDir()
+	script := "#!/bin/sh\nhead -c " + strconv.Itoa(maxStderr-5) + " /dev/zero | tr '\\0' a >&2\n" +
+		"echo \"$LINEAR_API_KEY tail\" >&2\nexit 1\n"
+	if err := os.WriteFile(filepath.Join(dir, "atb"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+":/usr/bin:/bin")
+	t.Setenv("LINEAR_API_KEY", "0xPLAINREV")
+	err := Claim("EX-1", "a", "s", "x")
+	var failure *Failure
+	if !errors.As(err, &failure) {
+		t.Fatalf("%v is not a Failure", err)
+	}
+	var shown bytes.Buffer
+	WriteStderr(&shown, err)
+	for _, text := range []string{failure.Stderr, shown.String()} {
+		if strings.Contains(text, "0xPL") || !strings.HasSuffix(strings.TrimSpace(text), "aaa[reda [cut]") {
+			t.Errorf("text ends %q", text[len(text)-30:])
+		}
+	}
+}
+
+func TestWriteStderrShowsTheRedactedStderrWithoutControlCharacters(t *testing.T) {
+	err := &Failure{Failure: exit.Environmentf("atb linear claim EX-1 failed"), Op: "atb linear claim EX-1",
+		Stderr: "error: no holder\n\x1b[2Jsee\tthe log"}
+	var out bytes.Buffer
+	WriteStderr(&out, err)
+	if want := "atb linear claim EX-1 printed on stderr (credentials redacted):\n  error: no holder\n  [2Jsee\tthe log\n"; out.String() != want {
+		t.Errorf("wrote %q, want %q", out.String(), want)
+	}
+	out.Reset()
+	WriteStderr(&out, exit.Environmentf("not atb's"))
+	if out.Len() != 0 {
+		t.Errorf("wrote %q for an error that is not atb's", out.String())
 	}
 }
