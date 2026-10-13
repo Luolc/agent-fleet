@@ -426,20 +426,37 @@ func TestJobEndForceRemovesAWorktreeWithAnInitializedSubmodule(t *testing.T) {
 	w.closeHerdr("")
 	close := func() result { return w.asThread("job", "end", "item-1", "--force") }
 
+	sub := filepath.Join(wt, "theme")
+	refused := func(what string) {
+		t.Helper()
+		if out := close(); out.code != 5 || !strings.Contains(out.stderr, "uncommitted changes in "+wt) {
+			t.Errorf("%s: %+v", what, out)
+		}
+	}
+
 	// A change inside the submodule is uncommitted too.
-	dirty := filepath.Join(wt, "theme", "notes.txt")
+	dirty := filepath.Join(sub, "notes.txt")
 	if err := os.WriteFile(dirty, []byte("draft\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if out := close(); out.code != 5 || !strings.Contains(out.stderr, "uncommitted changes in "+wt) {
-		t.Errorf("%+v", out)
-	}
+	refused("a changed file")
 	if _, err := os.Stat(dirty); err != nil {
 		t.Error("uncommitted change lost")
 	}
-	if err := os.Remove(dirty); err != nil {
-		t.Fatal(err)
-	}
+
+	// So is a stash, and a commit only on a local branch once the
+	// submodule is back on the recorded commit: both live in the
+	// submodule's repository under the worktree's git dir.
+	w.git("-C", sub, "stash", "push", "-q", "-u")
+	refused("a stash")
+	w.git("-C", sub, "stash", "drop", "-q")
+	w.git("-C", sub, "checkout", "-q", "-b", "fix")
+	w.git("-C", sub, "commit", "-q", "--allow-empty", "-m", "wip")
+	wip := w.git("-C", sub, "rev-parse", "HEAD")
+	w.git("-C", wt, "submodule", "update", "-q")
+	refused("a commit on a local branch")
+	w.git("-C", sub, "cat-file", "-e", wip)
+	w.git("-C", sub, "branch", "-q", "-D", "fix")
 
 	if out := close(); out.code != 0 {
 		t.Fatalf("%+v", out)

@@ -43,7 +43,8 @@ const (
 		"may have its cwd inside one of the job's directories (the worktrees `fleet worktree` " +
 		"recorded for it and, for a cross-repo job, its directory <I>/<job>/ under the scope's `paths.initiatives`); each worktree is " +
 		"removed with `git worktree remove --force` once `git status` finds no uncommitted " +
-		"changes in it, its submodules included, and its local branch deleted, and the " +
+		"changes in it, its submodules included, and no submodule has a stash or a commit " +
+		"on a branch that is on no remote, and its local branch deleted, and the " +
 		"cross-repo directory is removed unless a git checkout inside it has uncommitted " +
 		"changes. When something is left it is " +
 		"listed and `job end` exits 5 without ending the job. Otherwise the job is marked ended " +
@@ -235,7 +236,7 @@ func removeWorktree(worktree string) error {
 		branch = strings.TrimSpace(out)
 	}
 	// --force: git refuses any worktree with an initialized submodule
-	// without it. dirtyCheckouts has already run git's own clean check.
+	// without it. dirtyCheckouts has already found nothing to lose.
 	if _, err := Git("-C", common, "worktree", "remove", "--force", worktree); err != nil {
 		return err
 	}
@@ -293,8 +294,7 @@ func removeDirs(h *herdr.Herdr, workspaces []string, dirs []jobDir, except strin
 
 // dirtyCheckouts are the git checkouts with uncommitted changes, which
 // removing would lose: the worktrees, and those inside the directories that
-// are removed whole (a cross-repo job's). The check is the one `git worktree
-// remove` runs without --force; it counts changes inside submodules.
+// are removed whole (a cross-repo job's).
 func dirtyCheckouts(dirs []jobDir) ([]string, error) {
 	var checkouts []string
 	for _, d := range dirs {
@@ -321,15 +321,35 @@ func dirtyCheckouts(dirs []jobDir) ([]string, error) {
 	}
 	var dirty []string
 	for _, checkout := range checkouts {
-		status, err := Git("-C", checkout, "status", "--porcelain", "--ignore-submodules=none")
+		lost, err := wouldLose(checkout)
 		if err != nil {
 			return nil, err
 		}
-		if strings.TrimSpace(status) != "" {
+		if lost {
 			dirty = append(dirty, "uncommitted changes in "+checkout)
 		}
 	}
 	return dirty, nil
+}
+
+// wouldLose reports whether removing `checkout` would lose work: changes
+// `git status` sees, its submodules' included, or what a submodule keeps
+// only in its own repository (commits on no remote, stashes), which goes
+// with the worktree's git dir.
+func wouldLose(checkout string) (bool, error) {
+	status, err := Git("-C", checkout, "status", "--porcelain", "--ignore-submodules=none")
+	if err != nil {
+		return false, err
+	}
+	if strings.TrimSpace(status) != "" {
+		return true, nil
+	}
+	local, err := Git("-C", checkout, "submodule", "foreach", "--recursive", "--quiet",
+		"git log --oneline --branches --not --remotes; git stash list")
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(local) != "", nil
 }
 
 // whatIsLeft is what is left of `job`: agents (other than `except`) in its
