@@ -1,6 +1,7 @@
 package atb
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
@@ -48,5 +49,20 @@ func TestAFailureKeepsAtbsExitAndRedactedStderrOutOfTheMessage(t *testing.T) {
 	}
 	if got := redact(strings.Repeat("é", maxStderr)); len(got) > maxStderr+len(" [cut]") || !strings.HasSuffix(got, " [cut]") {
 		t.Errorf("cut: %d bytes", len(got))
+	}
+}
+
+func TestWriteStderrShowsTheRedactedStderrWithoutControlCharacters(t *testing.T) {
+	err := &Failure{Failure: exit.Environmentf("atb linear claim EX-1 failed"), Op: "atb linear claim EX-1",
+		Stderr: "error: no holder\n\x1b[2Jsee\tthe log"}
+	var out bytes.Buffer
+	WriteStderr(&out, err)
+	if want := "atb linear claim EX-1 printed on stderr (credentials redacted):\n  error: no holder\n  [2Jsee\tthe log\n"; out.String() != want {
+		t.Errorf("wrote %q, want %q", out.String(), want)
+	}
+	out.Reset()
+	WriteStderr(&out, exit.Environmentf("not atb's"))
+	if out.Len() != 0 {
+		t.Errorf("wrote %q for an error that is not atb's", out.String())
 	}
 }

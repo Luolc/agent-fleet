@@ -962,6 +962,7 @@ func startAndDeliver(h *herdr.Herdr, conn *sql.DB, id *identity.Identity, place 
 func startFailed(agent string, err error, code exit.Code, created []string, hint string) (exit.Code, error) {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "fleet: %s\n", err)
+		atb.WriteStderr(os.Stderr, err)
 	}
 	if len(created) > 0 {
 		fmt.Fprintf(os.Stderr, "start of %s did not complete; created so far:\n", agent)

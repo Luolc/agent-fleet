@@ -4,6 +4,7 @@ package cmd
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 
@@ -42,8 +43,9 @@ const (
 		"titled with the task's first non-empty line without leading `#` (at most 80 " +
 		"characters) and described by the task file, written onto the row, then `atb linear " +
 		"claim` in the worker's name. The worker gets FLEET_ISSUE and its task starts with a " +
-		"line naming the work order's URL. If an atb step fails, nothing else is created; an " +
-		"issue created but not claimed is listed, and the row keeps it.\n\n" +
+		"line naming the work order's URL. If an atb step fails, nothing else is created and the " +
+		"row is ended, so the name is free and `job end` does not wait for it; an issue created " +
+		"but not claimed is listed, and the ended row keeps it.\n\n" +
 		"Then a tab is made in the job's workspace " +
 		"with the FLEET_* variables set, and Claude Code (the only supported agent) is started " +
 		"with `herdr agent start --kind claude` and fixed arguments (permission prompts " +
@@ -51,12 +53,13 @@ const (
 		"when given or set in the scope's `models.worker`); the pane is renamed after the worker. " +
 		"Its folder-trust prompt is accepted; any other screen that is not the input box stops the spawn. Finally the task " +
 		"is delivered as `fleet send` would, and the row becomes active.\n\n" +
-		"There is no rollback and no retry. When a step fails after something was created, the " +
+		"There is no rollback and no retry. When a step fails after the tab was created, the " +
 		"output lists what exists; the worker's row stays `starting`, and the cleanup is the " +
 		"lead's call (`fleet job end <job> --force` from outside ends every row of the job).\n\n" +
 		"Exit: 0 when the task was delivered; 1 when a check refuses; 2/3/4 as `send` for the " +
 		"delivery; 3 when the worker stops at a screen other than its input box (the screen is " +
-		"printed); 5 when atb, herdr or the database fails, including a failed start."
+		"printed); 5 when atb, herdr or the database fails, including a failed start. A failed " +
+		"atb step is followed by atb's stderr with Linear credentials redacted."
 )
 
 // SpawnArgs are the arguments of `spawn`.
@@ -202,6 +205,22 @@ func (c *spawnChecked) dedup(conn querier) error {
 	return nil
 }
 
+// linearFailed ends a spawn whose Linear steps failed. Nothing is in herdr
+// yet and the work order, if created, is not claimed, so the reserved row
+// is ended: the name is free again and `job end` is not held up by a
+// worker that never started. The ended row keeps the work order.
+func (c *spawnChecked) linearFailed(conn *sql.DB, err error, created []string, hint string) (exit.Code, error) {
+	if endErr := endRow(conn, c.id.Agent); endErr != nil {
+		return startFailed(c.id.Agent, errors.Join(err, endErr), 0, created, hint)
+	}
+	created[0] = fmt.Sprintf("ledger row %s, now ended: nothing was started and the name is free", c.id.Agent)
+	hint = "find out why from the error above first"
+	if len(created) > 1 {
+		hint += "; the work order is claimed by nobody, cancel it in Linear"
+	}
+	return startFailed(c.id.Agent, err, 0, created, hint)
+}
+
 // Spawn runs `spawn`.
 func Spawn(h *herdr.Herdr, args SpawnArgs) (exit.Code, error) {
 	c, conn, err := spawnChecks(h, args)
@@ -221,7 +240,7 @@ func Spawn(h *herdr.Herdr, args SpawnArgs) (exit.Code, error) {
 	issue, err := workOrder(conn, c.linear, c.job.ParentIssue, c.title, c.task, c.id, c.me.Agent,
 		scopeOf(c.job.Repo, c.me.Job), &created)
 	if err != nil {
-		return startFailed(c.id.Agent, err, 0, created, hint)
+		return c.linearFailed(conn, err, created, hint)
 	}
 	c.id.Issue = issue.Identifier
 	c.id.Scratch = jobScratch(c.sc, c.job.Repo, c.job.LeadCwd)

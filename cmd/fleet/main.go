@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/Luolc/agent-fleet/internal/atb"
 	"github.com/Luolc/agent-fleet/internal/cliargs"
 	"github.com/Luolc/agent-fleet/internal/cmd"
 	"github.com/Luolc/agent-fleet/internal/exit"
@@ -397,6 +398,7 @@ func run(args []string) int {
 	var failure *exit.Failure
 	if errors.As(err, &failure) {
 		fmt.Fprintf(os.Stderr, "fleet: %s\n", failure.Message)
+		atb.WriteStderr(os.Stderr, err)
 		return int(failure.Code)
 	}
 	fmt.Fprintf(os.Stderr, "fleet: %s\n", err)
