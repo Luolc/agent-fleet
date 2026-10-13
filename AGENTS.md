@@ -7,6 +7,21 @@ Repo-specific notes for coding agents working on agent-fleet.
 Everything in this repo is English: code, comments, docs, commit messages,
 PR text.
 
+## Direction
+
+The long-term goal: fleet is a multi-agent framework that needs only herdr.
+Git, GitHub, Linear and Slack (through fednet) are optional, not prerequisites.
+
+- A new feature adds no coupling to them. The coupling already there comes out
+  over time: when a change touches such code anyway, move it toward the goal,
+  but do not rework code only to remove a dependency.
+- Code-hosting workflow stays out of fleet: no `fleet merge`, no
+  `fleet ci watch`. Merging and watching CI belong to the user's own workflow
+  or to tools outside fleet.
+- A change adds coupling when it adds a call to `git`, `gh`, `atb` or `fednet`,
+  or writes a step with these tools into a built-in prompt. Fixing a call that
+  is already there does not.
+
 ## Layout
 
 - `cmd/fleet/`: the `fleet` binary. `main` dispatches on the first argument;
