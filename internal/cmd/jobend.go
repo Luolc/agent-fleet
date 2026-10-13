@@ -42,8 +42,8 @@ const (
 		"Then the cleanup: every other agent in the job's workspace is closed; no agent but you " +
 		"may have its cwd inside one of the job's directories (the worktrees `fleet worktree` " +
 		"recorded for it and, for a cross-repo job, its directory <I>/<job>/ under the scope's `paths.initiatives`); each worktree is " +
-		"removed with `git worktree remove` (which refuses uncommitted changes) and its local " +
-		"branch deleted, and the cross-repo directory is removed unless a git checkout inside it " +
+		"removed with `git worktree remove --force` once `git status` finds no uncommitted " +
+		"changes in it, its submodules included, and its local branch deleted, and the cross-repo directory is removed unless a git checkout inside it " +
 		"has uncommitted changes. When something is left it is " +
 		"listed and `job end` exits 5 without ending the job. Otherwise the job is marked ended " +
 		"with its outcome, your row ended, the worktrees removed, the conclusion is printed " +
@@ -233,7 +233,9 @@ func removeWorktree(worktree string) error {
 	if out, err := Git("-C", worktree, "symbolic-ref", "--quiet", "--short", "HEAD"); err == nil {
 		branch = strings.TrimSpace(out)
 	}
-	if _, err := Git("-C", common, "worktree", "remove", worktree); err != nil {
+	// --force: git refuses any worktree with an initialized submodule
+	// without it. dirtyCheckouts has already run git's own clean check.
+	if _, err := Git("-C", common, "worktree", "remove", "--force", worktree); err != nil {
 		return err
 	}
 	fmt.Fprintf(os.Stdout, "removed worktree %s\n", worktree)
@@ -288,26 +290,38 @@ func removeDirs(h *herdr.Herdr, workspaces []string, dirs []jobDir, except strin
 	return nil
 }
 
-// dirtyCheckouts are the git checkouts with uncommitted changes inside the
-// directories that are removed whole (a cross-repo job's), which removing
-// would lose; a worktree is refused by `git worktree remove` itself.
+// dirtyCheckouts are the git checkouts with uncommitted changes, which
+// removing would lose: the worktrees, and those inside the directories that
+// are removed whole (a cross-repo job's). The check is the one `git worktree
+// remove` runs without --force; it counts changes inside submodules.
 func dirtyCheckouts(dirs []jobDir) ([]string, error) {
 	var dirty []string
+	check := func(checkout string) error {
+		status, err := Git("-C", checkout, "status", "--porcelain", "--ignore-submodules=none")
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(status) != "" {
+			dirty = append(dirty, "uncommitted changes in "+checkout)
+		}
+		return nil
+	}
 	for _, d := range dirs {
-		if d.worktree || !exists(d.path) {
+		if !exists(d.path) {
+			continue
+		}
+		if d.worktree {
+			if err := check(d.path); err != nil {
+				return nil, err
+			}
 			continue
 		}
 		err := filepath.WalkDir(d.path, func(path string, entry fs.DirEntry, err error) error {
 			if err != nil || entry.Name() != ".git" {
 				return err
 			}
-			checkout := filepath.Dir(path)
-			status, err := Git("-C", checkout, "status", "--porcelain")
-			if err != nil {
+			if err := check(filepath.Dir(path)); err != nil {
 				return err
-			}
-			if strings.TrimSpace(status) != "" {
-				dirty = append(dirty, "uncommitted changes in "+checkout)
 			}
 			if entry.IsDir() {
 				return filepath.SkipDir
