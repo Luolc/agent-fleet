@@ -463,11 +463,13 @@ func (c *jobChecked) reserve(conn *sql.DB) error {
 	})
 }
 
-// bindParent writes the parent issue onto the reserved job row and lead
-// row. The lead row's partial unique index refuses it when another live
-// lead already holds the parent.
+// bindParent writes the parent issue `--new-parent` created onto the
+// reserved job row, marked as created by the job, and onto the lead row.
+// The lead row's partial unique index refuses it when another live lead
+// already holds the parent.
 func (c *jobChecked) bindParent(conn querier) error {
-	if _, err := conn.Exec("UPDATE jobs SET parent_issue = ?1 WHERE job = ?2 AND state = 'open'", c.parent, c.id.Job); err != nil {
+	if _, err := conn.Exec("UPDATE jobs SET parent_issue = ?1, parent_created = 1 WHERE job = ?2 AND state = 'open'",
+		c.parent, c.id.Job); err != nil {
 		return exit.Database(err)
 	}
 	if _, err := conn.Exec("UPDATE agents SET parent_issue = ?1 WHERE name = ?2 AND state != 'ended'",

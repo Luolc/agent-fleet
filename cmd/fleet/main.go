@@ -235,7 +235,9 @@ Options:
       --abandon             End the job as abandoned instead of done
       --close-parent <OUTCOME>
                             Close the job's parent issue as done or abandoned; without it the
-                            parent returns to the state it had before the job claimed it
+                            parent returns to the state it had before the job claimed it, except
+                            that a parent the job created (--new-parent) is closed as done when
+                            the job ends done
       --force               Reclaim the job from outside (a thread agent, or no FLEET_ROLE): no report,
                             no Linear step; the cleanup after a failed start or a lost lead
       --scope <NAME>        ` + scopeHelp + `

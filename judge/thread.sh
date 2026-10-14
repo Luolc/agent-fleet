@@ -660,8 +660,9 @@ check "job end --force: the job's directory removed, the checkout kept" "no yes"
 thra "$K" TH-5 -- job end item-9 --force >/dev/null 2>&1; rc=$?
 check "job end --force of the repo job: exit 0" 0 "$rc"
 
-# Ending a job gives back fleet's claim on the parent issue without closing
-# it, so a later job takes the same parent; --close-parent closes it.
+# Ending a job gives back fleet's claim on the parent issue (--restore)
+# without closing it, so a later job takes the same parent; --close-parent
+# closes it.
 printf 'Did part of it. 0xREPORTP\n' > /home/agent/tasks/report-par.md
 parjob() { thra "$X" "" -- job start "$1" --parent-issue EX-20 --task-file "$(task "$1" "part of EX-20 0x$1")" 2>&1; }
 parend() { # <job> [flags...]: `job end` as the job's lead
@@ -672,7 +673,7 @@ parend() { # <job> [flags...]: `job end` as the job's lead
 }
 for job in par-a par-b; do
   flags=()
-  want="linear release EX-20 --agent par-a-lead --reason job par-a ended"
+  want="linear release EX-20 --agent par-a-lead --reason job par-a ended --restore"
   if [ "$job" = par-b ]; then
     flags=(--close-parent done)
     want="linear release EX-20 --agent par-b-lead --reason done --done"
