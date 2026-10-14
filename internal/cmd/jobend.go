@@ -32,9 +32,11 @@ const (
 		"linear comment`) and the work order is released as done or abandoned (`atb linear " +
 		"release`); then the conclusion (outcome, lead, work order, report path) is written to " +
 		"the job's parent issue and fleet's claim on the parent is released. The parent is " +
-		"closed only with --close-parent (done or abandoned), for when everything it asks for " +
+		"closed with --close-parent (done or abandoned), for when everything it asks for " +
 		"is done or given up; without it the parent returns to the state it had before the " +
-		"job claimed it, and a later job can take it. Each step done is " +
+		"job claimed it (`--restore`), and a later job can take it, except that a parent the " +
+		"job created (`job start --new-parent`) is closed as done when the job ends done. " +
+		"Each step done is " +
 		"recorded in the ledger; if a step fails, `job end` exits 5 naming it and nothing else " +
 		"changes, and running it again continues from the first step not recorded, so a " +
 		"release already done is not repeated; the same holds for the ledger update, the " +
@@ -582,7 +584,7 @@ func linearPending(conn *sql.DB, open *jobRow, name string) ([]string, error) {
 	}
 	if open.ParentIssue != "" {
 		add("comment-parent", fmt.Sprintf("comment the conclusion on parent %s", open.ParentIssue))
-		add("release-parent", fmt.Sprintf("release parent %s (agent %s)", open.ParentIssue, lead))
+		add("release-parent", fmt.Sprintf("release parent %s (agent %s) with --restore", open.ParentIssue, lead))
 	}
 	return pending, nil
 }
@@ -613,8 +615,10 @@ type leadEnding struct {
 	me     *identity.Identity
 	job    *jobRow
 	report string
-	// closeParent is `done`, `abandoned` or "" (the parent is not closed).
+	// closeParent is `done`, `abandoned` or "" (--close-parent not given).
 	closeParent string
+	// parentCreated is whether `job start --new-parent` created the parent.
+	parentCreated bool
 }
 
 // leadArgs refuses a caller that is not a lead, a job that is not the
@@ -675,8 +679,21 @@ func (e *leadEnding) ledgerChecks(conn *sql.DB) error {
 	if e.closeParent != "" && job.ParentIssue == "" {
 		return exit.Refusedf("job %s has no parent issue to close", e.me.Job)
 	}
+	if err := conn.QueryRow("SELECT parent_created FROM jobs WHERE id = ?1", job.ID).Scan(&e.parentCreated); err != nil {
+		return exit.Database(err)
+	}
 	e.job = job
 	return nil
+}
+
+// parentClose is how the parent is closed: as --close-parent says, else
+// `done` when the job created it and ends done, else "": the claim is
+// given back and the parent returns to its state from before the job.
+func (e *leadEnding) parentClose(abandon bool) string {
+	if e.closeParent == "" && e.parentCreated && !abandon {
+		return "done"
+	}
+	return e.closeParent
 }
 
 // stepDone is whether `step` of the ending `key` is recorded.
@@ -709,8 +726,9 @@ func conclusion(job, outcome, lead, issue, report string) string {
 
 // linearEnd writes the report to the lead's work order and releases it,
 // then the conclusion to the parent and releases fleet's claim on it,
-// closing it only as --close-parent says; each only when the job has one. Each step done is recorded under the job's key, so a
-// retry after a failure continues where it stopped.
+// closing it only as parentClose says; each only when the job has one.
+// Each step done is recorded under the job's key, so a retry after a
+// failure continues where it stopped.
 func (e *leadEnding) linearEnd(conn querier, abandon bool) error {
 	key := endKey(e.job)
 	if e.me.Issue != "" {
@@ -730,10 +748,11 @@ func (e *leadEnding) linearEnd(conn querier, abandon bool) error {
 		return err
 	}
 	return runStep(conn, key, "release-parent", func() error {
-		if e.closeParent == "" {
-			return atb.ReleaseClaim(e.job.ParentIssue, e.me.Agent, "job "+e.job.Job+" ended")
+		how := e.parentClose(abandon)
+		if how == "" {
+			return atb.ReleaseRestore(e.job.ParentIssue, e.me.Agent, "job "+e.job.Job+" ended")
 		}
-		return atb.Release(e.job.ParentIssue, e.me.Agent, e.closeParent == "abandoned")
+		return atb.Release(e.job.ParentIssue, e.me.Agent, how == "abandoned")
 	})
 }
 

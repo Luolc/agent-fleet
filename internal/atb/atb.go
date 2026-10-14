@@ -156,10 +156,19 @@ func Comment(issue, file string) error {
 }
 
 // ReleaseClaim is `atb linear release <issue> --agent <agent> --reason
-// <reason>`: the claim is given up and the issue returns to the state it
-// had before the claim.
+// <reason>`: the claim is given up and the issue keeps its state.
 func ReleaseClaim(issue, agent, reason string) error {
 	_, err := run("atb linear release "+issue, "linear", "release", issue, "--agent", agent, "--reason", reason)
+	return err
+}
+
+// ReleaseRestore is `atb linear release <issue> --agent <agent> --reason
+// <reason> --restore`: the claim is given up and the issue returns to the
+// state the agent's claim comment recorded (its `from:` line). atb fails,
+// writing nothing, when there is no such line or the state is gone.
+func ReleaseRestore(issue, agent, reason string) error {
+	_, err := run("atb linear release "+issue, "linear", "release", issue, "--agent", agent, "--reason", reason,
+		"--restore")
 	return err
 }
 

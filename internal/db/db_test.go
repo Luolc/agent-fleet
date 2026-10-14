@@ -387,3 +387,39 @@ func TestAVersion11LedgerTakesOverTheRemindersItsQuestionsName(t *testing.T) {
 		t.Error("a second row for m-2 was accepted")
 	}
 }
+
+// A job a version-13 binary started reads as one whose parent it did not
+// create, so `job end` gives the parent back rather than closing it.
+func TestAVersion13LedgerKeepsItsJobsAsNotHavingCreatedTheirParent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fleet.db")
+	conn, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range append(migrations[:13:13],
+		"INSERT INTO jobs (job, parent_issue, lead_cwd, state, started_at) VALUES ('a', 'EX-1', '/c', 'open', 1)",
+		"PRAGMA user_version = 13") {
+		if _, err := conn.Exec(step); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	conn, err = OpenAt(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	var parent string
+	var created, version int64
+	if err := conn.QueryRow("SELECT parent_issue, parent_created FROM jobs WHERE job = 'a'").Scan(&parent, &created); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if parent != "EX-1" || created != 0 || version != schemaVersion {
+		t.Errorf("parent %q, parent_created %d, version %d", parent, created, version)
+	}
+}

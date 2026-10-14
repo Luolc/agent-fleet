@@ -148,6 +148,18 @@ func jobRow(w *world, job string) string {
 	return strings.Join([]string{parent, key, repo, cwd, state}, " ")
 }
 
+// parentCreated is the parent_created of the newest job named job.
+func parentCreated(w *world, job string) int {
+	w.t.Helper()
+	conn := w.ledger()
+	defer conn.Close()
+	var created int
+	if err := conn.QueryRow("SELECT parent_created FROM jobs WHERE job = ?1 ORDER BY id DESC LIMIT 1", job).Scan(&created); err != nil {
+		w.t.Fatal(err)
+	}
+	return created
+}
+
 func (w *world) spawnWorker(args ...string) result {
 	w.t.Helper()
 	return w.run("", append([]string{"spawn", "a"}, args...),
@@ -487,6 +499,9 @@ func TestJobStartCreatesTheParentClaimsItAndMakesTheWorkOrderFirst(t *testing.T)
 	if got := jobRow(w, "item-2"); got != "EX-11 B-1 example-dataset "+checkout+" open" {
 		t.Errorf("job row = %s", got)
 	}
+	if got := parentCreated(w, "item-2"); got != 1 {
+		t.Errorf("parent_created = %d, want 1 for a parent --new-parent made", got)
+	}
 	if got := row(w, "item-2-lead"); got != "EX-12 EX-11 active "+checkout {
 		t.Errorf("row = %s", got)
 	}
@@ -571,6 +586,9 @@ func TestJobStartOfACrossRepoJobReadsTheParentsTeamAndProject(t *testing.T) {
 	}
 	if got := jobRow(w, "wire"); got != "EX-10  "+" "+crossRepo+" open" {
 		t.Errorf("job row = %q", got)
+	}
+	if got := parentCreated(w, "wire"); got != 0 {
+		t.Errorf("parent_created = %d, want 0 for a parent --parent-issue named", got)
 	}
 	// A worker of the cross-repo job: its work order goes where the parent
 	// says, read again from Linear.

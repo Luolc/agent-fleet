@@ -867,7 +867,8 @@ func roleSlots(sc *config.Scope, id *identity.Identity, cwd, repo, leadCwd strin
 			"and the workers' work orders, and `fleet job end` writes your report and the conclusion to Linear. "+
 			"Add `--close-parent done` to it only when everything the parent asks for is done, `--close-parent "+
 			"abandoned` only when all of it is given up; otherwise fleet gives back its claim and the parent returns "+
-			"to the state it had before this job.", parentIssue)
+			"to the state it had before this job, except that a parent `job start --new-parent` created for this "+
+			"job is closed as done when the job ends done.", parentIssue)
 	}
 	checkouts := sc.Tilde(sc.Paths.Checkouts)
 	var repoLine, agentsMD string
