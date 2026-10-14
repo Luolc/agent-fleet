@@ -1090,6 +1090,12 @@ func TestJobStartFindsAnInitiativesRepoInItsCheckout(t *testing.T) {
 	w := newWorld(t)
 	w.useStartHerdr()
 	checkout := dir(w, filepath.Join("home", "x-repo", "example-init"))
+	if err := os.MkdirAll(filepath.Join(checkout, ".fleet"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(checkout, ".fleet", "config.json"), []byte(`{"resource_check": false}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	taskFile := task(w, "task.md", "Find out why main is red\n")
 	out := w.run("", []string{"job", "start", "item-2", "--repo", "x-repo-example-init", "--task-file", taskFile},
 		"FLEET_SCOPE="+scope)
