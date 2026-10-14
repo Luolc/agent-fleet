@@ -705,19 +705,18 @@ func (r *watchRun) send(to, body string) error {
 }
 
 // endBroken ends the session of a thread agent gone from herdr: the
-// ticket released as it was before the claim (not done), the closing line
-// saying the session broke off, the row ended and the tab closed, as
-// `thread end`'s recorded steps.
+// ticket the session claimed (the row's issue) released as it was before
+// the claim (not done), the closing line saying the session broke off,
+// the row ended and the tab closed, as `thread end`'s recorded steps.
 func (r *watchRun) endBroken(t *watchedThread) error {
 	name := t.agent.name
 	e, err := newThreadEnding(r.conn, name, false)
 	if err != nil {
 		return err
 	}
-	if e.ticket != "" {
-		if err := runStep(r.conn, e.key, "release", func() error {
-			return atb.ReleaseClaim(e.ticket, name, "the session ended abnormally: its agent is gone from herdr")
-		}); err != nil {
+	// A session that ran without its ticket holds no claim to release.
+	if e.issue != "" {
+		if err := runStep(r.conn, e.key, "release", func() error { return releaseBroken(e.issue, name) }); err != nil {
 			return err
 		}
 	}
@@ -725,6 +724,25 @@ func (r *watchRun) endBroken(t *watchedThread) error {
 		return err
 	}
 	fmt.Fprintf(os.Stdout, "ended the session of %s on thread %s: its agent is gone from herdr\n", name, t.key)
+	return nil
+}
+
+// releaseBroken releases a broken session's claim on `issue` with
+// `--restore`. atb refusing that with exit 1 (the claim recorded no
+// `from:` state, or the team no longer has it) would fail every run on the
+// same step, so the claim is then released keeping the issue's state.
+func releaseBroken(issue, agent string) error {
+	reason := "the session ended abnormally: its agent is gone from herdr"
+	err := atb.ReleaseRestore(issue, agent, reason)
+	var failure *atb.Failure
+	if !errors.As(err, &failure) || failure.ExitCode != 1 {
+		return err
+	}
+	if err := atb.ReleaseClaim(issue, agent, reason); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "fleet: %v; %s released keeping its state\n", err, issue)
+	atb.WriteStderr(os.Stderr, err)
 	return nil
 }
 

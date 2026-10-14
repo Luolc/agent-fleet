@@ -356,7 +356,8 @@ const t0 int64 = 1_800_000_000
 // code in <dir>/delete-exit, 0 without one; while <dir>/fednet-down
 // exists it exits 4. The
 // fake atb logs its argv to <dir>/atb.log, and fails while <dir>/atb-down
-// exists.
+// exists; a release with --restore exits with the code in
+// <dir>/restore-exit, when there is one.
 func watchThreadWorld(t *testing.T) *watchWorld {
 	t.Helper()
 	w := newWatchWorld(t)
@@ -387,6 +388,7 @@ esac
 dir='` + w.dir + `'
 printf '%s\n' "$*" >> "$dir/atb.log"
 [ -e "$dir/atb-down" ] && exit 1
+case " $* " in *" --restore "*) [ -f "$dir/restore-exit" ] && exit "$(cat "$dir/restore-exit")" ;; esac
 if [ "$2" = query ]; then
   cat "$dir/issues.json" 2>/dev/null || echo '{"issues":{"nodes":[]}}'
 fi
@@ -972,10 +974,10 @@ func TestWatchRemindsOfScreenQuestionsButNeverTimesThemOut(t *testing.T) {
 func TestWatchEndsTheSessionOfAThreadAgentGoneFromHerdr(t *testing.T) {
 	w := watchThreadWorld(t)
 	w.exec("INSERT INTO threads (thread, slug, ticket, ticket_url, created_at) VALUES ('C4/4.0', 'c4-4-0', 'EX-4', 'https://linear.example.test/EX-4', 0)",
-		"INSERT INTO agents (name, role, thread, pane_id, state, started_at) VALUES ('thread-c4', 'thread', 'C4/4.0', 'p4', 'active', 0)")
+		"INSERT INTO agents (name, role, thread, pane_id, state, started_at, issue) VALUES ('thread-c4', 'thread', 'C4/4.0', 'p4', 'active', 0, 'EX-4')")
 	w.lastMessage("C4/4.0", t0)
 	out := w.watchAt(time.Minute, 0)
-	if got := w.log("atb.log"); got != "linear release EX-4 --agent thread-c4 --reason the session ended abnormally: its agent is gone from herdr |" {
+	if got := w.log("atb.log"); got != "linear release EX-4 --agent thread-c4 --reason the session ended abnormally: its agent is gone from herdr --restore |" {
 		t.Errorf("atb: %s", got)
 	}
 	if got := w.log("fednet.log"); !strings.Contains(got, "-footer -- 会话意外中断了，再说话会重新开始 · [EX-4](https://linear.example.test/EX-4)") {
@@ -986,6 +988,34 @@ func TestWatchEndsTheSessionOfAThreadAgentGoneFromHerdr(t *testing.T) {
 	}
 	if !strings.Contains(out.stdout, "ended the session of thread-c4 on thread C4/4.0: its agent is gone from herdr") {
 		t.Errorf("%s", out.stdout)
+	}
+}
+
+// atb refusing the --restore (exit 1: no `from:` state to restore) does
+// not stop the ending, which would fail on it every run: the claim is
+// released keeping the ticket's state. A session that ran without its
+// ticket has no claim, and nothing is released.
+func TestWatchEndsABrokenSessionWhoseTicketCannotBeRestored(t *testing.T) {
+	w := watchThreadWorld(t)
+	w.exec("INSERT INTO threads (thread, slug, ticket, ticket_url, created_at) VALUES ('C4/4.0', 'c4-4-0', 'EX-4', 'https://linear.example.test/EX-4', 0)",
+		"INSERT INTO agents (name, role, thread, pane_id, state, started_at, issue) VALUES ('thread-c4', 'thread', 'C4/4.0', 'p4', 'active', 0, 'EX-4')",
+		"INSERT INTO threads (thread, slug, ticket, ticket_url, created_at) VALUES ('C6/6.0', 'c6-6-0', 'EX-6', 'https://linear.example.test/EX-6', 0)",
+		"INSERT INTO agents (name, role, thread, pane_id, state, started_at) VALUES ('thread-c6', 'thread', 'C6/6.0', 'p6', 'active', 0)")
+	w.lastMessage("C4/4.0", t0)
+	w.lastMessage("C6/6.0", t0)
+	if err := os.WriteFile(filepath.Join(w.dir, "restore-exit"), []byte("1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := w.watchAt(time.Minute, 0)
+	reason := "--reason the session ended abnormally: its agent is gone from herdr"
+	if got, want := w.log("atb.log"), "linear release EX-4 --agent thread-c4 "+reason+" --restore | linear release EX-4 --agent thread-c4 "+reason+" |"; got != want {
+		t.Errorf("atb: %s", got)
+	}
+	if !strings.Contains(out.stderr, "EX-4 released keeping its state") {
+		t.Errorf("%s", out.stderr)
+	}
+	if got := w.query("SELECT group_concat(name || ' ' || state, ', ') FROM agents ORDER BY name"); got != "thread-c4 ended, thread-c6 ended" {
+		t.Errorf("rows %s", got)
 	}
 }
 
