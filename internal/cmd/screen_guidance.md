@@ -4,5 +4,6 @@ What to press when an agent is stopped at a screen. Each entry names the screens
 
 - Claude Code's folder-trust dialog ("Accessing workspace:", then the directory, then "Quick safety check"): trust it only when the directory it names is the stopped agent's own working directory. For any other directory, press nothing and ask.
 - A question whether to trust a file, or whether to allow reading or writing a file: allow it. This covers trusting, reading and writing files only, never a confirmation to run a command.
+- A confirmation to run a command that Claude Code itself flags as possibly unsafe or as one it could not check, with a countdown to deny it automatically (for example "could not be checked"): press nothing and let it be denied. The stopped agent gets the denial and goes on with a safer command of its own. Without such a countdown, press nothing and ask.
 - A confirmation to run a command (for example "Bash command", the command, "Do you want to proceed?"): decide only when another entry here covers that command; otherwise press nothing and ask.
 - A usage or rate limit, a model switch, a usage reset, or anything that buys or adds usage: never press anything; ask. Only a person deals with these.
