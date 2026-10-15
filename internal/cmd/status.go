@@ -31,7 +31,8 @@ const (
 		"  owes-work  a lead or worker that has not run `fleet done` but is idle or done in herdr\n" +
 		"  blocked    herdr reports it blocked by an interactive prompt\n" +
 		"  missing    in the ledger but gone from herdr\n" +
-		"  suspect    `fleet watch` currently counts it as stuck\n\n" +
+		"  suspect    `fleet watch` currently counts it as stuck\n" +
+		"  light      started with --light: past the load check, told to only read\n\n" +
 		"Exit: 0; 1 when the scope is not a scope name; 5 when herdr or the database fails, " +
 		"or the ledger does not exist."
 )
@@ -59,6 +60,7 @@ type Live struct {
 	LastScreenHash sql.NullString
 	LastChangeAt   sql.NullInt64
 	Suspect        bool
+	Light          bool
 }
 
 // InHerdr is what `herdr agent list` says about one agent.
@@ -108,7 +110,7 @@ func LiveRows(conn *sql.DB, job *string) ([]Live, error) {
 	}
 	rows, err := conn.Query(
 		"SELECT id, name, role, job, parent, state, started_at, last_status, last_seq, "+
-			"last_screen_hash, last_change_at, suspect FROM agents "+
+			"last_screen_hash, last_change_at, suspect, light FROM agents "+
 			"WHERE state != 'ended' AND (?1 IS NULL OR job = ?1) ORDER BY job, started_at, id",
 		jobArg)
 	if err != nil {
@@ -119,7 +121,7 @@ func LiveRows(conn *sql.DB, job *string) ([]Live, error) {
 	for rows.Next() {
 		var l Live
 		if err := rows.Scan(&l.ID, &l.Name, &l.Role, &l.Job, &l.Parent, &l.State, &l.StartedAt,
-			&l.LastStatus, &l.LastSeq, &l.LastScreenHash, &l.LastChangeAt, &l.Suspect); err != nil {
+			&l.LastStatus, &l.LastSeq, &l.LastScreenHash, &l.LastChangeAt, &l.Suspect, &l.Light); err != nil {
 			return nil, exit.Database(err)
 		}
 		lives = append(lives, l)
@@ -258,6 +260,9 @@ func statusLine(live Live, agent *InHerdr, now int64) line {
 	}
 	if live.Suspect {
 		flags = append(flags, "suspect")
+	}
+	if live.Light {
+		flags = append(flags, "light")
 	}
 	var sinceChange *int64
 	if live.LastChangeAt.Valid {

@@ -423,3 +423,38 @@ func TestAVersion13LedgerKeepsItsJobsAsNotHavingCreatedTheirParent(t *testing.T)
 		t.Errorf("parent %q, parent_created %d, version %d", parent, created, version)
 	}
 }
+
+// An agent a version-14 binary started reads as one started without
+// `--light`.
+func TestAVersion14LedgerKeepsItsAgentsAsNotLight(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fleet.db")
+	conn, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range append(migrations[:14:14],
+		"INSERT INTO agents (name, role, state, started_at) VALUES ('a-w', 'worker', 'active', 1)",
+		"PRAGMA user_version = 14") {
+		if _, err := conn.Exec(step); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	conn, err = OpenAt(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	var light, version int64
+	if err := conn.QueryRow("SELECT light FROM agents WHERE name = 'a-w'").Scan(&light); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if light != 0 || version != schemaVersion {
+		t.Errorf("light %d, version %d", light, version)
+	}
+}

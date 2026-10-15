@@ -217,6 +217,57 @@ func TestStartsPassTheScopesModelsWhenTheCommandGivesNone(t *testing.T) {
 	}
 }
 
+// --light is recorded on the row and tells the agent to only read; a start
+// without it says nothing of the kind.
+func TestLightStartsAreRecordedAndToldToOnlyRead(t *testing.T) {
+	w := newWorld(t)
+	w.configure(`{"resource_check": false}`)
+	openJobWithLead(w, "")
+	w.useStartHerdr()
+	cwd := dir(w, "wt")
+	taskFile := task(w, "task.md", "look around\n")
+	rule := "You were started with `--light`: fleet skipped its load check for you"
+	delivered := func(label string, out result) string {
+		t.Helper()
+		if out.code != 0 {
+			t.Fatalf("%s: %+v", label, out)
+		}
+		argv, err := os.ReadFile(filepath.Join(w.dir, "argv"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(argv)
+	}
+	light := func(name string) int {
+		t.Helper()
+		conn := w.ledger()
+		defer conn.Close()
+		var light int
+		if err := conn.QueryRow("SELECT light FROM agents WHERE name = ?1", name).Scan(&light); err != nil {
+			t.Fatal(err)
+		}
+		return light
+	}
+	spawn := func(name string, flags ...string) result {
+		return w.run("", append([]string{"spawn", name, "--task-file", taskFile, "--cwd", cwd}, flags...),
+			"FLEET_AGENT=item-1-lead", "FLEET_ROLE=lead", "FLEET_PARENT=thread-1", "FLEET_SCOPE="+scope, "FLEET_JOB=item-1")
+	}
+	argv := delivered("spawn --light", spawn("a", "--light"))
+	if light("item-1-a") != 1 || !strings.Contains(argv, "\n## Note from fleet\n\n"+rule) ||
+		strings.Index(argv, rule) > strings.Index(argv, "\n## Your task\n") {
+		t.Errorf("spawn --light: light %d, argv %q", light("item-1-a"), argv)
+	}
+	argv = delivered("spawn", spawn("b"))
+	if light("item-1-b") != 0 || strings.Contains(argv, rule) {
+		t.Errorf("spawn: light %d, argv %q", light("item-1-b"), argv)
+	}
+	argv = delivered("job start --light", w.asThread("job", "start", "item-2", "--repo", "example-dataset",
+		"--task-file", taskFile, "--light"))
+	if light("item-2-lead") != 1 || !strings.Contains(argv, rule) {
+		t.Errorf("job start --light: light %d, argv %q", light("item-2-lead"), argv)
+	}
+}
+
 func TestSpawnCreatesAndClaimsTheWorkOrderBeforeAnythingElse(t *testing.T) {
 	w := newWorld(t)
 	w.configure(withLinear)

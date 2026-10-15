@@ -354,7 +354,7 @@ func (w *workers) startWorker(e config.Entry, id *identity.Identity, s workerSub
 		return exit.Environmentf("cannot encode the subject of %s: %v", name, err)
 	}
 	if err := reserve(w.conn, func(q querier) error { return liveNameTaken(q, name) },
-		func(q querier) error { return insertStarting(q, id, w.dir, string(record), "") }); err != nil {
+		func(q querier) error { return insertStarting(q, id, w.dir, string(record), "", false) }); err != nil {
 		return err
 	}
 	created := []string{fmt.Sprintf("ledger row %s (state starting)", name)}
