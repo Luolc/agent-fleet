@@ -13,9 +13,10 @@ import (
 // (work order EX-13) and item-1-b (EX-14), each in a worktree of its own
 // recorded for the job, in panes p5 and p6 whose tabs are t5 and t6, and a
 // fake herdr listing item-1-a until its tab is closed; item-1-b never
-// started, so herdr lists no agent in its pane. `tab close` is logged to
-// <dir>/calls with atb's calls. Returns the worktrees' directory and the
-// main checkout.
+// started, so herdr lists no agent in its pane. `tab close` and `agent
+// prompt <target>` are logged to <dir>/calls with atb's calls, the prompt's
+// text to <dir>/prompt-<target>; a prompt to a target with <dir>/gone-<target>
+// is agent_not_found. Returns the worktrees' directory and the main checkout.
 func workerEndWorld(t *testing.T) (w *world, wt, checkout string) {
 	t.Helper()
 	w = newWorld(t)
@@ -56,6 +57,10 @@ case "$1 $2" in
     if [ -e "$dir/closed-$3" ]; then echo '{"error":{"code":"tab_not_found","message":"no tab"}}'; else
       echo '{"result":{"tab":{"tab_id":"'"$3"'"}}}'; fi ;;
   "tab close") echo "herdr $1 $2 $3" >> "$dir/calls"; touch "$dir/closed-$3"; echo '{"result":{}}' ;;
+  "agent prompt")
+    if [ -e "$dir/gone-$3" ]; then echo '{"error":{"code":"agent_not_found","message":"no agent"}}'; else
+      echo "herdr $1 $2 $3" >> "$dir/calls"; printf '%s' "$4" > "$dir/prompt-$3"
+      echo '{"result":{"type":"agent_prompted"}}'; fi ;;
   *) echo "fake herdr: unexpected command: $*" >&2; exit 2 ;;
 esac
 `
@@ -136,6 +141,12 @@ func TestWorkerEndReleasesClosesRemovesItsWorktreeAndUnblocksJobEnd(t *testing.T
 	if !strings.Contains(w.calls(), "herdr tab close t6") {
 		t.Errorf("calls = %q", w.calls())
 	}
+	// The lead did not end it, so the lead is told.
+	want = []string{"[FROM: a shell]\na shell ended your worker item-1-b with `fleet worker end`; do not wait for its `fleet done`.",
+		"Its work order EX-14 is released as abandoned.", "Its branch item-1-b is kept."}
+	if got := w.prompt("item-1-lead"); got != strings.Join(want, "\n")+"\n" || !strings.Contains(out.stdout, "told item-1-lead") {
+		t.Errorf("prompt = %q, stdout %q", got, out.stdout)
+	}
 	// No live worker refuses job end any more for its workers.
 	jobEnd = w.asAgent("item-1-lead", "lead", "thread-1", "item-1", "job", "end", "--report-file", report)
 	if strings.Contains(jobEnd.stderr, "live workers") {
@@ -207,5 +218,41 @@ func TestWorkerEndStopsAtUncommittedChangesAndResumesAfterAFailedStep(t *testing
 	}
 	if got := strings.Count(w.calls(), "atb linear comment"); got != 1 {
 		t.Errorf("comments = %d, calls %q", got, w.calls())
+	}
+}
+
+// prompt is the text the fake herdr last prompted `target` with.
+func (w *world) prompt(target string) string {
+	w.t.Helper()
+	data, err := os.ReadFile(filepath.Join(w.dir, "prompt-"+target))
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	return string(data)
+}
+
+func TestWorkerEndByAThreadAgentTellsTheLeadAndAGoneLeadIsOnlyAWarning(t *testing.T) {
+	w, _, _ := workerEndWorld(t)
+	report := task(w, "report.md", "stuck\n")
+	out := w.run("", []string{"worker", "end", "item-1-a", "--report-file", report},
+		"FLEET_AGENT=thread-1", "FLEET_ROLE=thread", "FLEET_SCOPE="+scope, linearKey)
+	if out.code != 0 || !strings.Contains(out.stdout, "told item-1-lead") {
+		t.Fatalf("%+v", out)
+	}
+	want := "[FROM: thread-1]\nthread-1 ended your worker item-1-a with `fleet worker end`; do not wait for its `fleet done`.\n" +
+		"Its work order EX-13 is released as abandoned.\nIts branch item-1-a is kept.\nReport: " + report + "\n"
+	if got := w.prompt("item-1-lead"); got != want {
+		t.Errorf("prompt = %q, want %q", got, want)
+	}
+
+	// The lead is gone: the worker is ended all the same, with a warning.
+	if err := os.WriteFile(filepath.Join(w.dir, "gone-item-1-lead"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out = w.run("", []string{"worker", "end", "item-1-b"}, "FLEET_AGENT=thread-1", "FLEET_ROLE=thread",
+		"FLEET_SCOPE="+scope, linearKey)
+	if out.code != 0 || state(w, "item-1-b") != "ended" ||
+		out.stderr != "warning: item-1-b is ended, but its parent item-1-lead was not told: it is not found\n" {
+		t.Errorf("%+v", out)
 	}
 }
