@@ -530,17 +530,33 @@ func (r *watchRun) remindAgent(t *watchedThread) error {
 	var text strings.Builder
 	fmt.Fprintf(&text, "fleet watch, rule `question reminder` (%d of %d): %d question(s) leads asked you in thread %s are "+
 		"still pending, the first asked %s ago. Settle each (answer it, look it up or ask the people) and send the "+
-		"lead your answer with `fleet send <lead> --file <file>`.\n", due, len(r.cfg.Watch.Reminders), len(leads), t.key,
+		"lead your answer with `fleet send <lead> --file <file>`; for one whose job has ended there is no lead to "+
+		"send to, and acting on the answer is yours.\n", due, len(r.cfg.Watch.Reminders), len(leads), t.key,
 		Duration(r.now-leads[0].askedAt))
 	ids := make([]any, 0, len(leads))
 	for _, q := range leads {
-		fmt.Fprintf(&text, "- from %s: %s\n", q.askedBy, WorkOrderTitle(q.text))
+		ended := ""
+		if q.moved {
+			ended = " (job " + q.job + " ended)"
+		}
+		fmt.Fprintf(&text, "- from %s%s: %s\n", q.askedBy, ended, WorkOrderTitle(q.text))
 		ids = append(ids, q.id)
 	}
-	if err := r.send(t.agent.name, text.String()); err != nil {
+	body, err := WithHeader(watchSender, text.String())
+	if err != nil {
 		return err
 	}
-	_, err := r.conn.Exec("UPDATE questions SET reminders = ?1 WHERE id IN (?"+strings.Repeat(", ?", len(ids)-1)+")",
+	code, err := Deliver(r.h, t.agent.name, body)
+	if err != nil {
+		return err
+	}
+	r.got(code)
+	// A reminder that surely did not arrive (blocked, not found) is sent
+	// again next run.
+	if code != exit.Ok && code != exit.Unknown {
+		return nil
+	}
+	_, err = r.conn.Exec("UPDATE questions SET reminders = ?1 WHERE id IN (?"+strings.Repeat(", ?", len(ids)-1)+")",
 		append([]any{due}, ids...)...)
 	return dbErr(err)
 }

@@ -894,12 +894,26 @@ func TestWatchMovesTheQuestionsOfAJobThatEndedToItsThread(t *testing.T) {
 	// and the thread agent's reminders go on from when it was asked.
 	w.exec("INSERT INTO jobs (job, lead_cwd, home_thread, state, started_at) VALUES ('d', '/c', 'C4/4.0', 'open', " +
 		fmt.Sprint(t0+2*3600) + ")")
-	w.watchAt(3*time.Hour, 0)
+	// The thread agent is blocked: the reminder is not counted, and the
+	// next run sends it again.
+	w.reply(`{"error":{"code":"agent_blocked","message":"b"}}`)
+	w.screen("thread-c4", "Do you want to proceed?\n")
+	w.watchAt(3*time.Hour, 3)
+	if got := w.query("SELECT reminders FROM questions WHERE job = 'd'"); got != "1" {
+		t.Errorf("reminders after a blocked delivery: %s", got)
+	}
+	w.reply(`{"result":{"type":"agent_prompted"}}`)
+	w.watchAt(3*time.Hour+time.Minute, 0)
 	prompts = w.prompts()
-	if len(prompts) != 2 || prompts[1][0] != "thread-c4" || !strings.Contains(prompts[1][1], "rule `question reminder` (2 of 3): "+
-		"1 question(s) leads asked you in thread C4/4.0 are still pending, the first asked 3h00m ago.") ||
-		!strings.Contains(prompts[1][1], "- from d-lead: Which schema?") {
+	last := prompts[len(prompts)-1]
+	if last[0] != "thread-c4" || !strings.Contains(last[1], "rule `question reminder` (2 of 3): "+
+		"1 question(s) leads asked you in thread C4/4.0 are still pending, the first asked 3h01m ago.") ||
+		!strings.Contains(last[1], "for one whose job has ended there is no lead to send to, and acting on the answer is yours") ||
+		!strings.Contains(last[1], "- from d-lead (job d ended): Which schema?") {
 		t.Errorf("%q", prompts)
+	}
+	if got := w.query("SELECT reminders FROM questions WHERE job = 'd'"); got != "2" {
+		t.Errorf("reminders after the delivery: %s", got)
 	}
 	if got := w.log("fednet.log"); strings.Contains(got, "Reminder") {
 		t.Errorf("%s", got)

@@ -148,7 +148,7 @@ lacks "watch threads: the people are not reminded of a lead's question (0xQW6)" 
 has "watch threads: Q3's agent is reminded of the lead's question" "$(qreceived "$(qname "$Q3")")" \
   "[FROM: watch]" "rule \`question reminder\` (1 of 3): 1 question(s) leads asked you in thread $Q3" "- from q3-lead: Merge the import? 0xQW3"
 has "watch threads: Q6's agent is reminded of the moved question" "$(qreceived "$(qname "$Q6")")" \
-  "rule \`question reminder\` (1 of 3): 1 question(s) leads asked you in thread $Q6" "- from q6-lead: Which schema should the follow-up use? 0xQW6"
+  "rule \`question reminder\` (1 of 3): 1 question(s) leads asked you in thread $Q6" "acting on the answer is yours" "- from q6-lead (job q6 ended): Which schema should the follow-up use? 0xQW6"
 check "watch threads: the reminder is counted with its msg_id" "1|m- " "$(qledger "SELECT reminders || '|' || substr(reminder_msg, 1, 2) FROM questions WHERE thread = '$Q1'")"
 q1first=$(qreminder "$Q1")
 check "watch threads: and kept as the thread's reminder" "$q1first|posted " "$(qledger "SELECT msg_id || '|' || state FROM reminders WHERE thread = '$Q1'")"
