@@ -375,7 +375,7 @@ func TestWorktreeRunsStatuteCompileInTheRootWithStatuteToml(t *testing.T) {
 	if out.code != 0 || out.stdout != path+"\n" {
 		t.Fatalf("%+v", out)
 	}
-	if got, want := w.statuteCalls(), "compile in "+path+"\n"; got != want {
+	if got, want := w.statuteCalls(), "compile --private-only in "+path+"\n"; got != want {
 		t.Errorf("statute calls = %q, want %q", got, want)
 	}
 	if !strings.Contains(out.stderr, "statute out") || !strings.Contains(out.stderr, "statute err") {
@@ -415,7 +415,7 @@ func TestWorktreeWarnsWhenStatuteIsMissingOrFails(t *testing.T) {
 	w.fakeStatute(3)
 	out = w.worktree("item-2", dataset)
 	if out.code != 0 || out.stdout != filepath.Join(wt, "item-2")+"\n" ||
-		!strings.Contains(out.stderr, "`statute compile` in "+filepath.Join(wt, "item-2")+" failed") ||
+		!strings.Contains(out.stderr, "`statute compile --private-only` in "+filepath.Join(wt, "item-2")+" failed") ||
 		!strings.Contains(out.stderr, "statute out") || !strings.Contains(out.stderr, "statute err") {
 		t.Errorf("failing statute: %+v, want exit 0, the path, statute's output and a warning", out)
 	}

@@ -3,6 +3,7 @@
 package cmd
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -10,6 +11,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/Luolc/agent-fleet/internal/config"
 	"github.com/Luolc/agent-fleet/internal/db"
@@ -39,9 +42,11 @@ const (
 		"printed and nothing changes, so every agent of a job gets the same worktree. A path " +
 		"that exists otherwise is refused. stdout carries only the path.\n\n" +
 		"When the new worktree's root has statute.toml and statute is on PATH, `statute " +
-		"compile` runs there, to generate the private output the checkout does not track; " +
-		"its output goes to stderr. A missing statute or a failed compile is only a warning " +
-		"on stderr: the worktree stays and the exit code is unchanged.\n\n" +
+		"compile --private-only` runs there, to generate the private output the checkout " +
+		"does not track without touching tracked files; its output goes to stderr. A " +
+		"missing statute, a failed compile or one still running after 60 s (it is then " +
+		"killed) is only a warning on stderr: the worktree stays and the exit code is " +
+		"unchanged.\n\n" +
 		"Exit: 0 when the path is printed; 1 when FLEET_JOB is not set, <repo> has no " +
 		"checkout, the scope config is invalid, --name or --branch is invalid, --detach comes " +
 		"with --branch or names no commit of the checkout, the branch already exists, or the " +
@@ -230,10 +235,16 @@ func Worktree(args WorktreeArgs) (exit.Code, error) {
 	return exit.Ok, nil
 }
 
-// compileStatute runs `statute compile` in a new worktree whose root has
-// statute.toml: the private output statute writes is not tracked, so a
-// fresh checkout lacks it. statute is optional, so its absence or failure
-// is only a warning, and its output goes to stderr: stdout carries the path.
+// statuteTimeout bounds `statute compile --private-only`, which does not
+// touch the network; a hung one must not hold up the worktree. A variable
+// so the test can shorten it.
+var statuteTimeout = 60 * time.Second
+
+// compileStatute runs `statute compile --private-only` in a new worktree
+// whose root has statute.toml: the private output statute writes is not
+// tracked, so a fresh checkout lacks it, and the full compile would rewrite
+// tracked files. statute is optional, so its absence, failure or timeout is
+// only a warning, and its output goes to stderr: stdout carries the path.
 func compileStatute(path string) {
 	if !exists(filepath.Join(path, "statute.toml")) {
 		return
@@ -244,10 +255,21 @@ func compileStatute(path string) {
 			"its private output was not generated\n", path)
 		return
 	}
-	compile := exec.Command(bin, "compile")
+	ctx, cancel := context.WithTimeout(context.Background(), statuteTimeout)
+	defer cancel()
+	compile := exec.CommandContext(ctx, bin, "compile", "--private-only")
 	compile.Dir = path
 	compile.Stdout, compile.Stderr = os.Stderr, os.Stderr
-	if err := compile.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "fleet worktree: warning: `statute compile` in %s failed: %v\n", path, err)
+	// Its own process group, killed whole, so nothing it started outlives
+	// the deadline.
+	compile.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	compile.Cancel = func() error { return syscall.Kill(-compile.Process.Pid, syscall.SIGKILL) }
+	err = compile.Run()
+	switch {
+	case ctx.Err() != nil:
+		fmt.Fprintf(os.Stderr, "fleet worktree: warning: `statute compile --private-only` in %s timed out "+
+			"after %v and was killed\n", path, statuteTimeout)
+	case err != nil:
+		fmt.Fprintf(os.Stderr, "fleet worktree: warning: `statute compile --private-only` in %s failed: %v\n", path, err)
 	}
 }
