@@ -1,0 +1,31 @@
+id = 6
+slug = "judge-public-surface"
+revision = 1
+kind = "rule"
+status = "trial"
+lang = "en"
+parent = "R15"
+default = "on"
+authority = ["discriminating-checks"]
+constitution = ">=1"
+level = "project"
+check = "none"
+uses = ["instructions", "review"]
+
+[title]
+en = "Let the judge observe only fleet's public surface"
+
+[text.statement]
+en = "Write the end-to-end suites in `judge/` so that they observe only fleet's public surface (its command line, its output and exit codes, and what it does in herdr), so that they run unchanged against any implementation of the command line."
+
+[text.reason]
+en = '''
+The judge is a black-box check: a suite that reads fleet's internals would pass or fail with the implementation instead of with the behavior.
+'''
+
+[text.verification]
+en = '''
+The judge runs in docker with a real herdr and a fake `claude`; `judge/run.sh` lists its parameters.
+
+Violated when a suite reads fleet's source, its internal packages or its ledger's schema, or depends on how the Go binary is built.
+'''

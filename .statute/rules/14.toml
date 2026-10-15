@@ -1,0 +1,29 @@
+id = 14
+slug = "actions-by-sha"
+revision = 1
+kind = "rule"
+status = "trial"
+lang = "en"
+parent = "R15"
+default = "on"
+authority = ["secure-authoring"]
+constitution = ">=1"
+level = "project"
+check = "none"
+uses = ["instructions", "review"]
+
+[title]
+en = "Pin every third-party action by commit SHA"
+
+[text.statement]
+en = "In `.github/workflows/`, pin every third-party action to a commit SHA, never to a tag or a branch."
+
+[text.reason]
+en = '''
+A tag or a branch can be moved to other code, which would then run in CI with this repository's token.
+'''
+
+[text.verification]
+en = '''
+Violated when a workflow uses a third-party action by a tag or a branch.
+'''

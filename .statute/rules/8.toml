@@ -1,0 +1,29 @@
+id = 8
+slug = "go-line-only"
+revision = 1
+kind = "rule"
+status = "trial"
+lang = "en"
+parent = "R15"
+default = "on"
+authority = ["evidence.grounds"]
+constitution = ">=1"
+level = "project"
+check = "none"
+uses = ["instructions", "review"]
+
+[title]
+en = "Pin the Go version in go.mod with a single go line"
+
+[text.statement]
+en = "Pin the Go version in `go.mod` with a single `go` line and no `toolchain` line."
+
+[text.reason]
+en = '''
+The checks run with `GOTOOLCHAIN=local`, so a Go that does not match fails instead of downloading another one; a `toolchain` line would name a second version.
+'''
+
+[text.verification]
+en = '''
+Violated when `go.mod` has a `toolchain` line or more than one `go` line.
+'''

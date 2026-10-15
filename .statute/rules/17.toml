@@ -1,0 +1,29 @@
+id = 17
+slug = "fleet-worktrees"
+revision = 1
+kind = "rule"
+status = "trial"
+lang = "en"
+parent = "R161"
+default = "on"
+authority = ["guards"]
+constitution = ">=1"
+level = "project"
+check = "none"
+uses = ["instructions"]
+
+[title]
+en = "Open worktrees in this repository only through fleet"
+
+[text.statement]
+en = "Open your worktree with `fleet worktree agent-fleet --branch <type>/<short-desc>`, or work in the one your lead names, and check out a pull request's head for review with `fleet worktree agent-fleet --name <name> --detach <head-sha>`; never run `git worktree add`."
+
+[text.reason]
+en = '''
+`fleet job end` removes the worktrees fleet recorded, and only those.
+'''
+
+[text.verification]
+en = '''
+Violated when an agent that fleet started here adds a worktree with `git worktree add`.
+'''
