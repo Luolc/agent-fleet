@@ -154,7 +154,7 @@ func TestAScreenOfALeadWithoutAHomeThreadOpensOne(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, _ := os.ReadFile(calls)
-	if !strings.HasPrefix(string(got), "client open-thread -socket /run/fednet.sock -channel C0123 -- Questions from job r in example-dataset") ||
+	if !strings.HasPrefix(string(got), "client open-thread -socket /run/fednet.sock -channel C0123 -- Thread of job r in example-dataset") ||
 		!strings.Contains(string(got), "client post -socket /run/fednet.sock -thread C0123/1700000099.000 -- r-lead is at a usage limit") {
 		t.Errorf("fednet calls = %q", got)
 	}

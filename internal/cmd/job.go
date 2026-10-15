@@ -635,9 +635,9 @@ func noHomeThreadSection(channel, general string) string {
 		"None: this job has no home thread. A caller outside fleet's threads started it (a timer or a shell; " +
 		"FLEET_PARENT=" + plainStarter + " stands for it), not a thread agent, so the task below is all there is, " +
 		"and no person follows the job until you ask. Your first `fleet ask-human` opens a thread in the channel #" +
-		channel + ", or in #" + general + " when fleet knows no thread of #" + channel + " (then say which repo the " +
-		"question is about in its first line); it becomes the job's home thread, and its thread agent passes the " +
-		"people's answers on. Until then `fleet job end` posts the conclusion nowhere.\n"
+		channel + ", or in #" + general + " when fleet knows no thread of #" + channel + "; it becomes the job's " +
+		"home thread, and its thread agent asks the people and passes their answers on. Until then `fleet job end` " +
+		"posts the conclusion nowhere.\n"
 }
 
 // jobLine is one job as `job list` prints it.

@@ -88,14 +88,16 @@ const (
 		"Questions: the people are reminded of a thread's pending questions in one post listing " +
 		"them, at each of `reminders` (30m, 3h, 24h) after the oldest, mentioning the person who " +
 		"last wrote in the thread (without the mention when fednet refuses it); once it is posted, " +
-		"the reminders before it are deleted from the thread. A thread agent's question " +
+		"the reminders before it are deleted from the thread. Leads' questions, which went to " +
+		"the thread agent and never to the people, are left out of that post: at the same times " +
+		"the live thread agent, if any, gets one message listing them instead. A thread agent's question " +
 		"pending for `thread_question` (72h) is closed and its session reclaimed. A lead's question " +
 		"pending for `lead_question` (72h): the lead is told its job ends in 30 minutes; if the job " +
 		"is still open then, watch reclaims it as `job end --force` does and posts the Linear steps " +
 		"not done to the thread, closing the job's pending questions, as it does for a job that " +
 		"ended any other way after its lead was told. A lead's question still " +
 		"pending when its job ended otherwise (`job end`, or `job end --force`) is the thread's from " +
-		"then on: reminded of as before, counted from when it was asked; the live thread agent, if " +
+		"then on: its thread agent reminded of it as before, counted from when it was asked; the live thread agent, if " +
 		"any, is told once; it is closed after `thread_question` without the session being reclaimed.\n\n" +
 		"Watches: the three rules named above are the defaults of `watches` in the scope's settings; an entry " +
 		"of the same name sets only their `every` (the least time between two runs), `prompt` (a file in place " +

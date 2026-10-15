@@ -1,6 +1,6 @@
-// `fleet ask-human`: a lead (or a thread agent) asks the people in the
-// job's home thread a question; fleet posts it, and the thread agent passes
-// the answer back.
+// `fleet ask-human`: a lead asks the people in the job's home thread a
+// question through the thread's agent, which asks them and passes the
+// answer back; a thread agent's own question fleet posts to its thread.
 
 package cmd
 
@@ -21,41 +21,45 @@ import (
 
 // AskHumanAbout and AskHumanLongAbout are the help texts of `ask-human`.
 const (
-	AskHumanAbout     = "Ask the people in your job's home thread a question (leads and thread agents)"
-	AskHumanLongAbout = "Ask the people in your job's home thread a question (leads and thread agents).\n\n" +
-		"A lead has no other way to talk to people. The question is read from --file; it is " +
-		"recorded as pending in the ledger (table `questions`), posted by fleet to the job's " +
-		"home thread (`jobs.home_thread`, the thread of the thread agent that started the " +
-		"job) with `fednet client post`, then delivered there as `fleet inbox` delivers a " +
+	AskHumanAbout     = "Put a question for the people to your home thread's agent (leads), or ask them (thread agents)"
+	AskHumanLongAbout = "Put a question for the people to your home thread's agent (leads), or ask them (thread agents).\n\n" +
+		"A lead does not talk to people: only the thread agent does. A lead's question is a " +
+		"message to that agent, which decides whether to answer it, look it up or ask the people, " +
+		"in its own words. The question is read from --file; it is recorded as pending in the " +
+		"ledger (table `questions`) and delivered to the job's home thread (`jobs.home_thread`, " +
+		"the thread of the thread agent that started the job) as `fleet inbox` delivers a " +
 		"message: to the thread's live agent, headed `[FROM: <you>]`, or to a thread agent " +
 		"started for the thread (its ticket claimed again, the question as the session's " +
-		"first message). When a person answers in the thread, the thread agent passes the " +
-		"answer on with `fleet send`. A person's message in the thread marks the thread's " +
-		"pending questions answered.\n\n" +
+		"first message). The message starts `[QUESTION from <you>]`; fleet posts nothing to the " +
+		"thread. The thread agent sends the lead its answer with `fleet send`, which marks the " +
+		"lead's questions pending in that thread answered; so does a person's message in the " +
+		"thread, for every question pending there.\n\n" +
 		"A single-repo job without a home thread (started by a caller without FLEET_ROLE) gets " +
 		"one at its lead's first ask: fleet opens a thread with `fednet client open-thread` in " +
 		"the channel of the job's repo (`<repo prefix><repo>`, or the initiative's channel for " +
 		"an initiative's repo run in the initiative's checkout), or, when fleet knows no id " +
 		"of that channel, in the general initiative's channel (`<initiative prefix><general " +
-		"initiative>`); the question should then name the repo in its first line. fleet takes " +
+		"initiative>`). fleet takes " +
 		"a channel's id from the newest thread of it this scope has seen, or else from fednet's " +
 		"routes (`fednet client routes -json`), the route with the channel's name (direct " +
-		"messages left out in both); routes fednet cannot give count as naming none. The thread is recorded as the job's home thread, and the " +
-		"question goes on as above. Until it is recorded nothing of the question is.\n\n" +
-		"The post and the delivery are recorded in the ledger (table `steps`), so running it " +
-		"again with the same question while it is pending continues where it stopped and " +
-		"never posts it twice.\n\n" +
+		"messages left out in both); routes fednet cannot give count as naming none. The thread " +
+		"opens with fleet's one line naming the job and its repo, not the question. It is " +
+		"recorded as the job's home thread, and the question goes on as above. Until it is " +
+		"recorded nothing of the question is.\n\n" +
+		"The delivery (and a thread agent's post) is recorded in the ledger (table `steps`), so " +
+		"running it again with the same question while it is pending continues where it " +
+		"stopped and never delivers or posts it twice.\n\n" +
 		"Approval cards (fednet's request-approval) are not supported yet: --approval is " +
 		"refused. Ask for a go-ahead in plain text (\"reply yes to go ahead\").\n\n" +
 		"A thread agent asking records the question on its own thread and fleet posts it " +
 		"there; nothing is delivered.\n\n" +
-		"Exit: 0 when the question is posted and the thread agent has it (a thread agent's " +
-		"own: once it is posted); 1 with --approval, when the caller is a worker, the file " +
+		"Exit: 0 when the thread agent has the question (a thread agent's own: once it is " +
+		"posted); 1 with --approval, when the caller is a worker, the file " +
 		"is unreadable or empty, the job is not open, a cross-repo job has no home thread (it " +
 		"was started by a caller without FLEET_THREAD), fleet knows neither channel to open " +
 		"a single-repo job's home thread in, or the scope has no fednet socket; " +
 		"2/3/4 as `send` for the delivery; 3 when a new thread agent stops at an unknown " +
-		"screen; 5 when opening the thread or the post fails, or herdr, atb or the database fails. A " +
+		"screen; 5 when opening the thread or a thread agent's post fails, or herdr, atb or the database fails. A " +
 		"thread agent that has to be started while Linear is unavailable starts without its " +
 		"ticket, as `fleet inbox` starts one. After a failure " +
 		"the question stays pending; ask again to finish."
@@ -108,11 +112,11 @@ func AskHuman(h *herdr.Herdr, args AskHumanArgs) (exit.Code, error) {
 		return 0, err
 	}
 	key := fmt.Sprintf("ask-human:%d", id)
-	posted, err := postQuestion(conn, key, cfg.FednetSocket, thread, text)
-	if err != nil {
-		return 0, err
-	}
 	if me.Role == identity.Thread {
+		posted, err := postQuestion(conn, key, cfg.FednetSocket, thread, text)
+		if err != nil {
+			return 0, err
+		}
 		if posted {
 			fmt.Fprintf(os.Stdout, "posted a pending question to thread %s\n", thread)
 		} else {
@@ -125,15 +129,15 @@ func AskHuman(h *herdr.Herdr, args AskHumanArgs) (exit.Code, error) {
 	if err != nil {
 		return 0, err
 	}
-	if !posted && !delivered {
-		fmt.Fprintf(os.Stdout, "the question was already posted to thread %s and delivered to its agent; nothing done\n", thread)
+	if !delivered {
+		fmt.Fprintf(os.Stdout, "the question was already delivered to the agent of thread %s; nothing done\n", thread)
 		return exit.Ok, nil
 	}
-	fmt.Fprintf(os.Stdout, "posted the question to thread %s; its agent passes the answer on\n", thread)
+	fmt.Fprintf(os.Stdout, "gave the question to the agent of thread %s, which asks the people and passes the answer on\n", thread)
 	return exit.Ok, nil
 }
 
-// postQuestion is the `post` step of an ask: true when it ran now, false
+// postQuestion is the `post` step of a thread agent's ask: true when it ran now, false
 // when an earlier run recorded it. fednet's output is not shown, and the
 // failure names only what the caller can do: ask again.
 func postQuestion(conn *sql.DB, key, socket, thread, text string) (bool, error) {
@@ -154,8 +158,7 @@ func postQuestion(conn *sql.DB, key, socket, thread, text string) (bool, error) 
 }
 
 // deliverQuestion is the `deliver` step of a lead's ask: true when it ran
-// now, false when an earlier run recorded it. A failure says the question
-// is posted already, so asking again only delivers it.
+// now, false when an earlier run recorded it.
 func deliverQuestion(h *herdr.Herdr, conn *sql.DB, key, scope string, cfg *config.Scope, msg inboundMessage) (bool, error) {
 	ran := false
 	err := runStep(conn, key, "deliver", func() error {
@@ -168,7 +171,7 @@ func deliverQuestion(h *herdr.Herdr, conn *sql.DB, key, scope string, cfg *confi
 	})
 	var failure *exit.Failure
 	if errors.As(err, &failure) {
-		return false, exit.New(failure.Code, failure.Message+"; the question is posted, run ask-human again to deliver it")
+		return false, exit.New(failure.Code, failure.Message+"; the question is recorded, run ask-human again to deliver it")
 	}
 	return ran, err
 }
@@ -185,7 +188,7 @@ func askThread(conn *sql.DB, me *identity.Identity) (thread, job string, cfg *co
 		return "", "", nil, err
 	}
 	if cfg.FednetSocket == "" {
-		return "", "", nil, exit.Refusedf("fednet.socket is not configured for scope %s, so fleet cannot post the question", me.Scope)
+		return "", "", nil, exit.Refusedf("fednet.socket is not configured for scope %s, so the question cannot reach the thread", me.Scope)
 	}
 	if thread == "" {
 		if thread, err = openHomeThread(conn, cfg, row); err != nil {
@@ -234,7 +237,9 @@ func askedIn(conn *sql.DB, me *identity.Identity) (thread, job string, row *jobR
 // channel's name; direct messages, which have the general mapping too,
 // are left out: their Slack ids start with D, and no thread opens there.
 // Routes fednet cannot give count as naming no channel, with a line on
-// stderr. Until the thread is recorded nothing of the question is.
+// stderr. The thread opens with a line of fleet's, since fednet opens no
+// thread without a message; the question is the thread agent's to ask.
+// Until the thread is recorded nothing of the question is.
 func openHomeThread(conn *sql.DB, cfg *config.Scope, row *jobRow) (string, error) {
 	tried := []string{jobMapping(cfg, row.Repo, row.LeadCwd), generalMapping(cfg.Channels)}
 	var routes map[string]string
@@ -265,7 +270,7 @@ func openHomeThread(conn *sql.DB, cfg *config.Scope, row *jobRow) (string, error
 			"either, or a route with the channel's name, makes it known); nothing is recorded, run ask-human again then",
 			row.Job, tried[0], tried[1])
 	}
-	text := fmt.Sprintf("Questions from job %s in %s, which started without a thread; fleet posts them below.", row.Job, row.Repo)
+	text := fmt.Sprintf("Thread of job %s in %s, which started without one.", row.Job, row.Repo)
 	thread, err := fednet.OpenThread(cfg.FednetSocket, channel, text)
 	var failure *exit.Failure
 	if errors.As(err, &failure) {

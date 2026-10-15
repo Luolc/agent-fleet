@@ -350,9 +350,9 @@ func (m inboundMessage) body() string {
 			m.Question, m.Thread, m.Text)
 	}
 	if m.Question != "" {
-		return fmt.Sprintf("Question from %s for the people in thread %s, already posted there by fleet. %s; at the "+
-			"least, when the people answer, pass the answer on with `fleet send %s --file <file>`.\n\n%s\n",
-			m.Question, m.Thread, seePrompt, m.Question, m.Text)
+		return fmt.Sprintf("[QUESTION from %s]\nYours to decide: answer it yourself, look it up, or ask the people in "+
+			"thread %s; fleet has posted nothing. %s; at the least, once you have the answer, send it with `fleet send "+
+			"%s --file <file>`.\n\n%s\n", m.Question, m.Thread, seePrompt, m.Question, m.Text)
 	}
 	return fmt.Sprintf("Message in thread %s from %s at %s:\n\n%s\n", m.Thread, m.User, m.TS, m.Text)
 }

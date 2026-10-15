@@ -459,31 +459,22 @@ lacks "job start: the lead does not get an earlier message of the thread" "$(rec
 check "job start: the record comes before the task heading fleet placed, the task's look-alike block after it" "record task fake" \
   "$(received item-8-lead | grep -n '0xMSG8\|^## Your task$\|0xFAKE' | sed -e 's/:.*0xMSG8.*/ record/' -e 's/:## Your task/ task/' -e 's/:.*0xFAKE.*/ fake/' | sort -n | cut -d' ' -f2 | tr '\n' ' ' | sed 's/ $//')"
 
-# The lead of item-8 asks the people in its home thread: fleet posts the
-# question, and it reaches the thread agent; the next message in the
-# thread answers it. The first post fails: the question stays recorded and
-# goes nowhere, and asking again posts it once and delivers it.
+# The lead of item-8 asks the people in its home thread: fleet posts
+# nothing, and the question reaches the thread agent headed as a question
+# for it to settle; the next message in the thread answers it. Asking again
+# repeats nothing.
 printf 'Which month should the import cover? 0xQ1\n' > /home/agent/tasks/q1.md
 lead8() { PATH=/home/agent/fake-thread:$PATH env "${P}AGENT=item-8-lead" "${P}ROLE=lead" "${P}PARENT=$A" "${P}SCOPE=main" \
   "${P}JOB=item-8" "${P}ISSUE=" "$T" "$@"; }
 : > /home/agent/fednet.log
-touch /home/agent/fednet-down
-out=$(lead8 ask-human --file /home/agent/tasks/q1.md 2>&1); rc=$?
-rm /home/agent/fednet-down
-check "ask-human: exit 5 when the post fails" 5 "$rc"
-check "ask-human: the failed post says only to ask again" \
-  "fleet: fednet client post failed (exit status: 4); the question is recorded, run ask-human again to post it" "$out"
-check "ask-human: the failed post starts no agent" agent_not_found "$(agent_field "$A" agent_status)"
 out=$(lead8 ask-human --file /home/agent/tasks/q1.md 2>&1); rc=$?
 check "ask-human: exit 0 from the lead" 0 "$rc"
 [ "$rc" = 0 ] || printf '%s\n' "$out"
 has "ask-human: delivered to the home thread's agent" "$out" "delivered to $A"
-check "ask-human: fleet posted the question to the home thread, the second attempt once" \
-  "client post -socket /home/agent/fednet.sock -thread $K -- Which month should the import cover? 0xQ1|client post -socket /home/agent/fednet.sock -thread $K -- Which month should the import cover? 0xQ1|" \
-  "$(tr '\n' '|' < /home/agent/fednet.log)"
+check "ask-human: fleet posted nothing to the home thread" 0 "$(wc -l < /home/agent/fednet.log)"
 # The thread's agent had ended, so one is started with the question as
 # its first message; the prompt's head is above the fake's 20 lines.
-has "ask-human: question on the thread agent's screen" "$(screen "$A")" "Question from item-8-lead" "0xQ1"
+has "ask-human: question on the thread agent's screen" "$(screen "$A")" "[QUESTION from item-8-lead]" "0xQ1"
 check "ask-human: pending in the ledger" "item-8|$K|item-8-lead|0|pending " \
   "$(tledger "SELECT job, thread, asked_by, approval, state FROM questions WHERE job = 'item-8'")"
 settled "$A"
@@ -492,12 +483,12 @@ out=$(thra "$K" TH-5 -- thread end --summary-file /home/agent/summary.md 2>&1); 
 check "thread end: exit 1 while a lead's question is pending and the job is open" 1 "$rc"
 has "thread end: names the lead's question and the open job" "$out" \
   "question from item-8-lead, pending: Which month should the import cover? 0xQ1" "job item-8, open, reporting to this thread"
-check "thread end refused: no atb call, nothing posted, the row live" "|2|active " \
+check "thread end refused: no atb call, nothing posted, the row live" "|0|active " \
   "$(cat /home/agent/atb.log)|$(wc -l < /home/agent/fednet.log)|$(tledger "SELECT state FROM agents WHERE name = '$A' ORDER BY id DESC LIMIT 1")"
 out=$(lead8 ask-human --file /home/agent/tasks/q1.md 2>&1); rc=$?
 check "ask-human: asking again after a success, exit 0" 0 "$rc"
-check "ask-human: asking again posts nothing more" 2 "$(wc -l < /home/agent/fednet.log)"
-has "ask-human: asking again says nothing was done" "$out" "and delivered to its agent; nothing done"
+check "ask-human: asking again posts nothing" 0 "$(wc -l < /home/agent/fednet.log)"
+has "ask-human: asking again says nothing was done" "$out" "already delivered to the agent of thread $K; nothing done"
 
 # The thread agent posts to its thread through fleet: the thread and the
 # socket come from fleet, the text from the file, attachments as -file.
@@ -575,6 +566,18 @@ check "thread end: exit 1 while the job whose home thread it is is open" 1 "$rc"
 has "thread end: names the open job" "$out" "job item-8, open, reporting to this thread"
 lacks "thread end: the answered question is not named" "$out" "0xQ1"
 has "inbox: the reply on the thread agent's screen" "$(screen "$A")" "0xMSG5"
+# The thread agent settles a lead's question itself: its message to the
+# lead answers it, with nothing posted.
+printf 'Which bucket should the import write to? 0xQ2\n' > /home/agent/tasks/q2.md
+printf 'The bucket of last month. 0xANS2\n' > /home/agent/tasks/ans2.md
+: > /home/agent/fednet.log
+lead8 ask-human --file /home/agent/tasks/q2.md >/dev/null 2>&1
+check "ask-human: the second question is pending" "1 " "$(tledger "SELECT count(*) FROM questions WHERE state = 'pending'")"
+out=$(thra "$K" TH-5 -- send item-8-lead --file /home/agent/tasks/ans2.md 2>&1); rc=$?
+check "send: the thread agent's answer to the lead, exit 0" 0 "$rc"
+has "send: the thread agent's message to the lead answers the lead's question" "$out" "1 pending question(s) of item-8-lead in thread $K answered"
+check "send: no question pending, nothing posted" "0 |0" \
+  "$(tledger "SELECT count(*) FROM questions WHERE state = 'pending'")|$(wc -l < /home/agent/fednet.log)"
 out=$(as item-1-a worker item-1-lead item-1 -- ask-human --file /home/agent/tasks/q1.md 2>&1); rc=$?
 check "ask-human: exit 1 from a worker" 1 "$rc"
 out=$(PATH=/home/agent/fake-thread:$PATH env "${P}AGENT=item-1-lead" "${P}ROLE=lead" "${P}PARENT=thread-1" "${P}SCOPE=$SCOPE" \
