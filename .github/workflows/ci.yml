@@ -70,6 +70,28 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: tools/*.sum
 
+      # The statute-compile hook runs the statute that statute-checks.toml
+      # names, the version that compiled the files it compares.
+      - name: statute version
+        id: statute
+        run: |
+          version=$(sed -n 's/^statute = "\(.*\)"$/\1/p' statute-checks.toml)
+          [ -n "$version" ] || { echo "no statute version in statute-checks.toml" >&2; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: statute cache
+        id: statute-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cargo/bin/statute
+          key: statute-${{ runner.os }}-${{ steps.statute.outputs.version }}
+
+      - name: install statute
+        if: steps.statute-cache.outputs.cache-hit != 'true'
+        env:
+          VERSION: ${{ steps.statute.outputs.version }}
+        run: cargo install statute --version "$VERSION" --locked
+
       - name: pre-commit
         env:
           SKIP: gitleaks

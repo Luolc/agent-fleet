@@ -10,3 +10,12 @@ repos:
         language: system
         entry: bash -c 'out=$(gofmt -l "$@") && [ -z "$out" ] || { echo "$out"; exit 1; }' --
         types: [go]
+      # AGENTS.md, statute-checks.toml and the skills statute copies and
+      # links must match a fresh compile of statute.toml and statute.lock.
+      # The private output, which git ignores, is not compared.
+      - id: statute-compile
+        name: statute compile check
+        entry: statute compile --check
+        language: system
+        files: ^(statute(\.toml|\.lock|-checks\.toml)$|AGENTS\.md$|\.statute/|\.agents/|\.claude/)
+        pass_filenames: false
