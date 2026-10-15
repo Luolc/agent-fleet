@@ -226,7 +226,7 @@ A lower-ranking provision or a principal may depart from a higher-ranking provis
 - R71 Never set a change to merge automatically.
 - R211 Where a repository's instructions do not say whether a merge waits for CI, merge only after the required check has passed on the approved head; where they say a merge does not wait, do not merge when the summary job of CI has already failed on the approved head.
 - R256 Once you have rewritten the pushed history of a branch that others work on, tell each of them, before your task ends, to clone again or to reset to the new history before they go on.
-- L12 A merge into `main` here does not wait for CI: `check` is not a required status check, and an approved pull request may be merged before it finishes.
+- L12 Merge an approved pull request into `main` without holding it for `check` to finish: `check` is not a required status check here.
 - R1 When you report work as done, whether to another agent or to a person, attach an acceptance record to the report.
 - R27 Build every fixture from made-up data only, with no effect outside the test environment.
 - R53 Before you push a change, run the commit hooks and the checks the change touches on the version you push, and push only when they all pass.
@@ -248,11 +248,11 @@ A lower-ranking provision or a principal may depart from a higher-ranking provis
 - L6 Write the end-to-end suites in `judge/` so that they observe only fleet's public surface (its command line, its output and exit codes, and what it does in herdr), so that they run unchanged against any implementation of the command line.
 - L8 Pin the Go version in `go.mod` with a single `go` line and no `toolchain` line.
 - L9 Raise the `go` line of `go.mod` only to a Go version already installed where the checks run, so the installed Go is raised first.
-- L10 Before a push, run on the version you push the commit hooks, `pre-commit run --all-files`, and besides them, for what the change touches:
+- L10 The checks a change here touches, besides the commit hooks (`pre-commit run --all-files`), are:
 
-  - any file outside `docs/` and the Markdown files: `scripts/check.sh` (gofmt, `go vet`, golangci-lint, `go test`, govulncheck, a static build, the design's line cap and the judge's shards), with `FLEET_CHECK_CORES=N` on a machine shared with others to limit it to N cores;
-  - `docs/design.md` alone: `scripts/check-design-cap.sh`;
-  - `cmd/`, `internal/`, `go.mod`, `go.sum` or `judge/`: `judge/run.sh <binary>` against a binary built from the change (`go build -o <binary> ./cmd/fleet`); it needs docker, and `JUDGE_SUITES="<suite> ..."` runs only those suites.
+  - for any file outside `docs/` and the Markdown files: `scripts/check.sh` (gofmt, `go vet`, golangci-lint, `go test`, govulncheck, a static build, the design's line cap and the judge's shards), with `FLEET_CHECK_CORES=N` on a machine shared with others to limit it to N cores;
+  - for `docs/design.md` alone: `scripts/check-design-cap.sh`;
+  - for `cmd/`, `internal/`, `go.mod`, `go.sum` or `judge/`: `judge/run.sh <binary>` against a binary built from the change (`go build -o <binary> ./cmd/fleet`); it needs docker, and `JUDGE_SUITES="<suite> ..."` runs only those suites.
 - L11 In `.github/workflows/ci.yml`, list every other job in the `needs` of the job `check`, let `check` pass only when each of them succeeded or was skipped because `changes` said it need not run, and name no other job `check`.
 - L13 Write each suite of `judge/` so that it sets up everything it needs and runs alone, and give each suite a place in exactly one of the judge's CI shards.
 - L14 In `.github/workflows/`, pin every third-party action to a commit SHA, never to a tag or a branch.

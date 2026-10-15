@@ -1,6 +1,6 @@
 id = 10
 slug = "touched-checks"
-revision = 1
+revision = 2
 kind = "rule"
 status = "trial"
 lang = "en"
@@ -13,15 +13,15 @@ check = "none"
 uses = ["instructions", "review"]
 
 [title]
-en = "Run the checks of what you change before a push"
+en = "The checks a change touches, by what it changes"
 
 [text.statement]
 en = '''
-Before a push, run on the version you push the commit hooks, `pre-commit run --all-files`, and besides them, for what the change touches:
+The checks a change here touches, besides the commit hooks (`pre-commit run --all-files`), are:
 
-- any file outside `docs/` and the Markdown files: `scripts/check.sh` (gofmt, `go vet`, golangci-lint, `go test`, govulncheck, a static build, the design's line cap and the judge's shards), with `FLEET_CHECK_CORES=N` on a machine shared with others to limit it to N cores;
-- `docs/design.md` alone: `scripts/check-design-cap.sh`;
-- `cmd/`, `internal/`, `go.mod`, `go.sum` or `judge/`: `judge/run.sh <binary>` against a binary built from the change (`go build -o <binary> ./cmd/fleet`); it needs docker, and `JUDGE_SUITES="<suite> ..."` runs only those suites.
+- for any file outside `docs/` and the Markdown files: `scripts/check.sh` (gofmt, `go vet`, golangci-lint, `go test`, govulncheck, a static build, the design's line cap and the judge's shards), with `FLEET_CHECK_CORES=N` on a machine shared with others to limit it to N cores;
+- for `docs/design.md` alone: `scripts/check-design-cap.sh`;
+- for `cmd/`, `internal/`, `go.mod`, `go.sum` or `judge/`: `judge/run.sh <binary>` against a binary built from the change (`go build -o <binary> ./cmd/fleet`); it needs docker, and `JUDGE_SUITES="<suite> ..."` runs only those suites.
 '''
 
 [text.reason]
@@ -33,5 +33,5 @@ en = '''
 en = '''
 The commit hooks run gitleaks on the staged changes, then gofmt. `scripts/check.sh` runs with `GOTOOLCHAIN=local`. CI also runs `go test -race ./...` at default parallelism; a local run limited in cores does not stand in for it. When unsure whether a check is touched, it runs.
 
-Violated when a change is pushed and the hooks or a check listed for what it touches did not run on the pushed version, or did not pass.
+Violated when a change is pushed without a check this list gives for the paths it changes having passed on the pushed version.
 '''
