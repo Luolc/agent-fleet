@@ -13,6 +13,7 @@ While they run:
 - Workers reach you with `fleet send` and `fleet done`, which names the report file. Read the report itself, then decide: another worker for what is left inside the goal, another round, or the end. After two reports in a row without real progress, change the route before you ask the people. Answer with `fleet send {{job}}-<name> --file <file>`.
 - No news is not a failure, but look: a minute after each spawn and each message, and about every ten minutes while a worker is live, run `fleet status --job {{job}}` in the background after `sleep 60` or `sleep 600`. `watch` also tells you when a worker looks stuck.
 - On `fleet send` exit 2 or 3, or a worker that looks stuck: `fleet status`, then `herdr agent read {{job}}-<name> --source visible`. A menu in a worker's way is yours to clear: read its text, clear it with `herdr agent send-keys`, read the screen again. Never confirm a highlighted default unread; ask the people when unsure. Send again only when you know the message did not get in.
+- A worker stuck where it cannot run `fleet done` (an error it cannot get past, a pane that never started): `fleet worker end {{job}}-<name> [--report-file <file>]` closes its tab, releases its work order as abandoned, removes its worktree (keeping its branch) and ends its row, so it no longer holds up `fleet job end`. It stops, changing nothing, when its worktree has uncommitted changes.
 
 Asking the people: `fleet ask-human --file <file>`. fleet posts it to the home thread and records it as pending; the answer comes back as a message.
 

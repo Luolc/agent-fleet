@@ -52,6 +52,7 @@ Commands:
   spawn     ` + cmd.SpawnAbout + `
   send      ` + cmd.SendAbout + `
   done      ` + cmd.DoneAbout + `
+  worker    ` + cmd.WorkerAbout + `
   status    ` + cmd.StatusAbout + `
   report    ` + cmd.ReportAbout + `
   watch     ` + cmd.WatchAbout + `
@@ -242,6 +243,31 @@ Options:
                             the job ends done
       --force               Reclaim the job from outside (a thread agent, or no FLEET_ROLE): no report,
                             no Linear step; the cleanup after a failed start or a lost lead
+      --scope <NAME>        ` + scopeHelp + `
+  -h, --help                Print help
+`
+
+const workerUsage = "Usage: fleet worker <COMMAND>"
+
+var workerHelp = cmd.WorkerAbout + ".\n\n" + workerUsage + `
+
+Commands:
+  end  ` + cmd.WorkerEndAbout + `
+
+Options:
+  -h, --help  Print help
+`
+
+const workerEndUsage = "Usage: fleet worker end [OPTIONS] <NAME>"
+
+var workerEndHelp = cmd.WorkerEndLongAbout + "\n\n" + workerEndUsage + `
+
+Arguments:
+  <NAME>  The worker's full name, <job>-<name>, as ` + "`fleet status`" + ` shows it
+
+Options:
+      --report-file <PATH>  Written to the worker's work order before it is released as abandoned;
+                            without it, a fixed line naming you
       --scope <NAME>        ` + scopeHelp + `
   -h, --help                Print help
 `
@@ -449,6 +475,8 @@ func dispatch(args []string) (exit.Code, error) {
 		return runSpawn(rest[1:], &scope)
 	case "done":
 		return runDone(rest[1:], &scope)
+	case "worker":
+		return runWorker(rest[1:], &scope)
 	case "status":
 		return runStatus(rest[1:], &scope)
 	case "report":
@@ -466,7 +494,7 @@ func dispatch(args []string) (exit.Code, error) {
 
 // help is clap's implicit `help [COMMAND]` subcommand.
 func help(args []string) (exit.Code, error) {
-	helps := map[string]string{"inbox": inboxHelp, "thread": threadHelp, "job": jobHelp, "ask-human": askHumanHelp, "send": sendHelp, "spawn": spawnHelp, "done": doneHelp,
+	helps := map[string]string{"inbox": inboxHelp, "thread": threadHelp, "job": jobHelp, "ask-human": askHumanHelp, "send": sendHelp, "spawn": spawnHelp, "done": doneHelp, "worker": workerHelp,
 		"status": statusHelp, "report": reportHelp, "watch": watchHelp, "worktree": worktreeHelp, "prompt": promptHelp, "help": topHelp}
 	if len(args) == 0 {
 		fmt.Fprint(os.Stdout, topHelp)
@@ -484,6 +512,10 @@ func help(args []string) (exit.Code, error) {
 			fmt.Fprint(os.Stdout, jobEndHelp)
 			return exit.Ok, nil
 		}
+	}
+	if args[0] == "worker" && len(args) > 1 && args[1] == "end" {
+		fmt.Fprint(os.Stdout, workerEndHelp)
+		return exit.Ok, nil
 	}
 	if args[0] == "prompt" && len(args) > 1 && args[1] == "show" {
 		fmt.Fprint(os.Stdout, promptShowHelp)
@@ -855,6 +887,37 @@ func runJobEnd(args []string, scope *cliargs.OptString) (exit.Code, error) {
 	return cmd.JobEnd(h, cmd.JobEndArgs{
 		Job: job, ReportFile: reportFile.Ptr(), Abandon: abandon.Value,
 		CloseParent: closeParent.Ptr(), Force: force.Value})
+}
+
+// runWorker dispatches `fleet worker <COMMAND>`.
+func runWorker(args []string, scope *cliargs.OptString) (exit.Code, error) {
+	if len(args) == 0 {
+		return 0, &usageError{"'fleet worker' requires a subcommand but one was not provided", workerUsage}
+	}
+	switch args[0] {
+	case "-h", "--help", "help":
+		fmt.Fprint(os.Stdout, workerHelp)
+		return exit.Ok, nil
+	case "end":
+		return runWorkerEnd(args[1:], scope)
+	default:
+		return 0, &usageError{fmt.Sprintf("unrecognized subcommand '%s'", args[0]), workerUsage}
+	}
+}
+
+func runWorkerEnd(args []string, scope *cliargs.OptString) (exit.Code, error) {
+	fs := flagSet("worker end", scope)
+	reportFile := cliargs.OptString{Name: "report-file", Placeholder: "PATH"}
+	fs.Var(&reportFile, "report-file", "File with the report")
+	got, helped, err := parse(fs, args, workerEndHelp, workerEndUsage, []string{"NAME"})
+	if err != nil || helped {
+		return exit.Ok, err
+	}
+	h, err := scoped(scope)
+	if err != nil {
+		return 0, err
+	}
+	return cmd.WorkerEnd(h, cmd.WorkerEndArgs{Name: got[0], ReportFile: reportFile.Ptr()})
 }
 
 func runWorktree(args []string, scope *cliargs.OptString) (exit.Code, error) {

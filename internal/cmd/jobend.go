@@ -136,6 +136,9 @@ func describe(agent map[string]any) string {
 type jobDir struct {
 	path     string
 	worktree bool
+	// keepBranch keeps a worktree's branch: `worker end` runs mid-job,
+	// when the branch's commits may be on no remote yet.
+	keepBranch bool
 }
 
 // agentsLeft are the agents in one of `workspaces` or with their cwd inside
@@ -224,10 +227,11 @@ func liveRowsOf(conn *sql.DB, job, role string) ([]string, error) {
 }
 
 // removeWorktree removes `worktree` from the repository it was made from
-// and deletes the branch it had checked out, if any. git names that
+// and deletes the branch it had checked out, if any, unless keepBranch.
+// git names that
 // repository's directory, so it is found wherever the checkout is and
 // whatever its layout (a `.git` directory or a separate git dir).
-func removeWorktree(worktree string) error {
+func removeWorktree(worktree string, keepBranch bool) error {
 	out, err := Git("-C", worktree, "rev-parse", "--path-format=absolute", "--git-common-dir")
 	if err != nil {
 		return err
@@ -243,6 +247,10 @@ func removeWorktree(worktree string) error {
 		return err
 	}
 	fmt.Fprintf(os.Stdout, "removed worktree %s\n", worktree)
+	if branch != "" && keepBranch {
+		fmt.Fprintf(os.Stdout, "kept branch %s\n", branch)
+		return nil
+	}
 	if branch != "" {
 		// -D: after a squash merge the branch is not an ancestor of main.
 		if _, err := Git("-C", common, "branch", "-D", branch); err != nil {
@@ -253,17 +261,23 @@ func removeWorktree(worktree string) error {
 	return nil
 }
 
-// removeDirs refuses while an agent other than `except` is in one of
-// `workspaces` or `dirs`, then removes each directory that still exists.
-func removeDirs(h *herdr.Herdr, workspaces []string, dirs []jobDir, except string) error {
+// inTheWay is what keeps `dirs` from being removed: the agents other than
+// `except` in one of `workspaces` or `dirs`, else the checkouts with
+// uncommitted changes.
+func inTheWay(h *herdr.Herdr, workspaces []string, dirs []jobDir, except string) ([]string, error) {
 	blocking, err := agentsLeft(h, workspaces, dirs, except)
+	if err != nil || len(blocking) > 0 {
+		return blocking, err
+	}
+	return dirtyCheckouts(dirs)
+}
+
+// removeDirs refuses while something is in the way (inTheWay), then
+// removes each directory that still exists.
+func removeDirs(h *herdr.Herdr, workspaces []string, dirs []jobDir, except string) error {
+	blocking, err := inTheWay(h, workspaces, dirs, except)
 	if err != nil {
 		return err
-	}
-	if len(blocking) == 0 {
-		if blocking, err = dirtyCheckouts(dirs); err != nil {
-			return err
-		}
 	}
 	if len(blocking) > 0 {
 		paths := make([]string, len(dirs))
@@ -281,7 +295,7 @@ func removeDirs(h *herdr.Herdr, workspaces []string, dirs []jobDir, except strin
 			continue
 		}
 		if d.worktree {
-			if err := removeWorktree(d.path); err != nil {
+			if err := removeWorktree(d.path, d.keepBranch); err != nil {
 				return err
 			}
 			continue
@@ -756,9 +770,14 @@ func (e *leadEnding) linearEnd(conn querier, abandon bool) error {
 	})
 }
 
-// commentParent writes `text` to the parent issue through a temporary file.
+// commentParent writes `text` to the parent issue.
 func (e *leadEnding) commentParent(text string) error {
-	file, err := os.CreateTemp("", "fleet-conclusion-*.md")
+	return commentText(e.job.ParentIssue, text)
+}
+
+// commentText writes `text` to `issue` through a temporary file.
+func commentText(issue, text string) error {
+	file, err := os.CreateTemp("", "fleet-comment-*.md")
 	if err != nil {
 		return exit.IO(err)
 	}
@@ -770,7 +789,7 @@ func (e *leadEnding) commentParent(text string) error {
 	if err != nil {
 		return exit.IO(err)
 	}
-	return atb.Comment(e.job.ParentIssue, file.Name())
+	return atb.Comment(issue, file.Name())
 }
 
 // jobEndByLead is the lead ending its own job.
