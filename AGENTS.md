@@ -221,12 +221,12 @@ A lower-ranking provision or a principal may depart from a higher-ranking provis
 - R214 When quoting a key original such as a provision, a specification or an official definition, quote the original text rather than a translation of it, and add a summary after it where one is needed.
 - R215 Write a value that goes stale, such as a version number, a price, a policy, the behavior of an outside platform or the current state of something, into text that stays only together with the date it was read.
 - R236 When a text gives a proper noun in translation, put its original beside it at its first occurrence and at the key places; where there is no established translation or you are unsure of one, write the original alone.
-- R193 Read a principal's message as the output of speech-to-text: act on what the principal meant, not on the literal words, and take a word that plainly does not fit the context as a mistranscription, inferring from the context what the principal meant to say.
-- R194 Before using a file path, a code identifier, a command-line argument or a domain term from a principal's message, infer its most likely intended form and check its separators and case against the names that really exist in the repository and outside it.
-- R195 When you have inferred an identifier or chosen one meaning of an ambiguous term, list those guesses in your reply and ask the principal to confirm them.
 - R197 In a proposal to carry out an action and in a question to a person, write out each key parameter of the action, such as an amount, a count, a date, a target machine or a SHA, with its value.
 - R198 In steps for a person to carry out, name the machine and the interface of each step, give one action per step, write commands that run as copied, give each step its sign of completion, and give a default wherever one can be given instead of leaving the choice to the person on the spot.
 - R249 Write what you address to a person, such as replies, questions and reports, in English, whatever language their messages are in, and use it for the whole text, summaries and follow-up questions included.
+- R193 Read a principal's message as the output of speech-to-text: act on what the principal meant, not on the literal words, and take a word that plainly does not fit the context as a mistranscription, inferring from the context what the principal meant to say.
+- R194 Before using a file path, a code identifier, a command-line argument or a domain term from a principal's message, infer its most likely intended form and check its separators and case against the names that really exist in the repository and outside it.
+- R195 When you have inferred an identifier or chosen one meaning of an ambiguous term, list those guesses in your reply and ask the principal to confirm them.
 - R68 Put what is still needed after the task ends, such as a decision, knowledge to keep or work handed over to a later agent, into a repository through review, never only into a conversation.
 - R69 Never write to the cross-session memory an agent tool keeps for itself; keep a lesson that must last in a repository, through review.
 - R74 Before you write into a repository a fact you have only from someone else's account, check that it holds at its source and name in the change what you read; when it does not hold there yet, write an open item with an owner and a condition that confirms it instead of the fact.
@@ -277,6 +277,13 @@ A lower-ranking provision or a principal may depart from a higher-ranking provis
 - R40 When you act on a relayed yes, record its reference and the result of each check in the record the action leaves.
 - R28 Where work is divided among agents the way fleet does, as a worker, stay within your task and ask the agent responsible for your job.
 - R115 Where work is divided among agents the way fleet does, as the agent responsible for a job, ask principals only through the agent talking with them, or by posting the question into the conversation they hold with that agent.
+- R164 Where work is divided among agents the way fleet does, let only one task at a time change a repository's dependency lock file.
+- R165 Where work is divided among agents the way fleet does, treat the main checkout the agents share as read-only and switch no branch in it, and do work that needs a checkout or runs tests in a worktree of your own.
+- R167 Where work is divided among agents the way fleet does, press keys in another agent's terminal only as the agent responsible for a job, and only to clear a menu that blocks a worker of that job.
+- R170 Where work is divided among agents the way fleet does, as a research worker, change no repository.
+- R171 Where work is divided among agents the way fleet does, as a worker, give in your report what you did, its effect, why the task is done or abandoned, its metrics, the pull request number, the approved SHA, the merge commit, the checks run and the attempt number of the CI run, and for each follow-up left who takes it and when.
+- R227 Where work is divided among agents the way fleet does, as the agent responsible for a job, give a research worker no reviewer.
+- L18 As a worker here, give in your report the `judge: N ok, M failed` line of each judge shard of the CI run on your pull request, or say that CI skipped the judge.
 - R162 Do cross-repository work in the working directory of its fleet job, inside the checkout of the initiative's repository in the scope's initiatives directory.
 - R163 As a worker that `fleet watch` started, do what the prompt of your watch says, and never run `fleet done`.
 - R166 As a lead that fleet started, when a review is still unapproved after three rounds or its author and reviewer disagree about a P0 finding, put the matter to a principal with `fleet ask-human`; give another round yourself instead only when the remaining finding is the same as in the round before, smaller than it was, and undisputed.
@@ -289,13 +296,6 @@ A lower-ranking provision or a principal may depart from a higher-ranking provis
 - R229 Put the cross-repository issues of a joint project in its initiative's project in the issue tracker.
 - L17 Open your worktree with `fleet worktree agent-fleet --branch <type>/<short-desc>`, or work in the one your lead names, and check out a pull request's head for review with `fleet worktree agent-fleet --name <name> --detach <head-sha>`; never run `git worktree add`.
 - L19 Before starting a job in this repository, look at `fleet job list` and the open issues for work already under way, and when unsure whether it is, ask through the route your role gives.
-- R164 Where work is divided among agents the way fleet does, let only one task at a time change a repository's dependency lock file.
-- R165 Where work is divided among agents the way fleet does, treat the main checkout the agents share as read-only and switch no branch in it, and do work that needs a checkout or runs tests in a worktree of your own.
-- R167 Where work is divided among agents the way fleet does, press keys in another agent's terminal only as the agent responsible for a job, and only to clear a menu that blocks a worker of that job.
-- R170 Where work is divided among agents the way fleet does, as a research worker, change no repository.
-- R171 Where work is divided among agents the way fleet does, as a worker, give in your report what you did, its effect, why the task is done or abandoned, its metrics, the pull request number, the approved SHA, the merge commit, the checks run and the attempt number of the CI run, and for each follow-up left who takes it and when.
-- R227 Where work is divided among agents the way fleet does, as the agent responsible for a job, give a research worker no reviewer.
-- L18 As a worker here, give in your report the `judge: N ok, M failed` line of each judge shard of the CI run on your pull request, or say that CI skipped the judge.
 - R176 Write the titles, bodies and comments of work items in Chinese.
 - R177 Write what is to be done in a parent work item, and record each attempt at it in a child work item.
 - R178 Give each agent that makes an attempt a child work item of its own, and never reuse or reopen that child work item.
