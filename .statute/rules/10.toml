@@ -1,6 +1,6 @@
 id = 10
 slug = "touched-checks"
-revision = 2
+revision = 3
 kind = "rule"
 status = "trial"
 lang = "en"
@@ -31,7 +31,7 @@ en = '''
 
 [text.verification]
 en = '''
-The commit hooks run gitleaks on the staged changes, then gofmt. `scripts/check.sh` runs with `GOTOOLCHAIN=local`. CI also runs `go test -race ./...` at default parallelism; a local run limited in cores does not stand in for it. When unsure whether a check is touched, it runs.
+The commit hooks run gitleaks on the staged changes, then gofmt, then `statute compile --check` when a statute input or output changes. `scripts/check.sh` runs with `GOTOOLCHAIN=local`. CI also runs `go test -race ./...` at default parallelism; a local run limited in cores does not stand in for it. When unsure whether a check is touched, it runs.
 
 Violated when a change is pushed without a check this list gives for the paths it changes having passed on the pushed version.
 '''
