@@ -207,6 +207,8 @@ Options:
                           else the agent's own
       --effort <EFFORT>   Effort passed to the agent as --effort. Default: the scope's models.lead,
                           else the agent's own
+      --light             Skip the load check (memory is still checked) for a lead that only reads;
+                          its first message tells it not to build, test or run anything CPU-heavy
       --scope <NAME>      ` + scopeHelp + `
   -h, --help              Print help
 `
@@ -258,6 +260,8 @@ Options:
                           else the agent's own
       --effort <EFFORT>   Effort passed to the agent as --effort. Default: the scope's models.worker,
                           else the agent's own
+      --light             Skip the load check (memory is still checked) for a worker that only reads;
+                          its first message tells it not to build, test or run anything CPU-heavy
       --scope <NAME>      ` + scopeHelp + `
   -h, --help              Print help
 `
@@ -708,6 +712,8 @@ func runJobStart(args []string, scope *cliargs.OptString) (exit.Code, error) {
 	fs.Var(&key, "key", "Dedup key")
 	fs.Var(&model, "model", "Model passed to the agent as --model")
 	fs.Var(&effort, "effort", "Effort passed to the agent as --effort")
+	light := cliargs.Bool{Name: "light"}
+	fs.Var(&light, "light", "Skip the load check for a lead that only reads")
 	got, helped, err := parse(fs, args, jobStartHelp, jobStartUsage, []string{"JOB"}, &taskFile)
 	if err != nil || helped {
 		return exit.Ok, err
@@ -718,7 +724,7 @@ func runJobStart(args []string, scope *cliargs.OptString) (exit.Code, error) {
 	}
 	return cmd.JobStart(h, cmd.JobStartArgs{
 		Job: got[0], TaskFile: taskFile.Value, ParentIssue: parentIssue.Ptr(), NewParent: newParent.Ptr(),
-		Repo: repo.Ptr(), Key: key.Ptr(), Model: model.Ptr(), Effort: effort.Ptr()})
+		Repo: repo.Ptr(), Key: key.Ptr(), Model: model.Ptr(), Effort: effort.Ptr(), Light: light.Value})
 }
 
 func runJobList(args []string, scope *cliargs.OptString) (exit.Code, error) {
@@ -747,6 +753,8 @@ func runSpawn(args []string, scope *cliargs.OptString) (exit.Code, error) {
 	fs.Var(&cwd, "cwd", "Directory the worker runs in")
 	fs.Var(&model, "model", "Model passed to the agent as --model")
 	fs.Var(&effort, "effort", "Effort passed to the agent as --effort")
+	light := cliargs.Bool{Name: "light"}
+	fs.Var(&light, "light", "Skip the load check for a worker that only reads")
 	got, helped, err := parse(fs, args, spawnHelp, spawnUsage, []string{"NAME"}, &taskFile, &cwd)
 	if err != nil || helped {
 		return exit.Ok, err
@@ -756,7 +764,8 @@ func runSpawn(args []string, scope *cliargs.OptString) (exit.Code, error) {
 		return 0, err
 	}
 	return cmd.Spawn(h, cmd.SpawnArgs{
-		Name: got[0], TaskFile: taskFile.Value, Cwd: cwd.Value, Model: model.Ptr(), Effort: effort.Ptr()})
+		Name: got[0], TaskFile: taskFile.Value, Cwd: cwd.Value, Model: model.Ptr(), Effort: effort.Ptr(),
+		Light: light.Value})
 }
 
 func runDone(args []string, scope *cliargs.OptString) (exit.Code, error) {

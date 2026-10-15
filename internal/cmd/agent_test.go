@@ -216,11 +216,11 @@ func TestResourcesNeedLoadBelowCPUsAndMoreThan2GiB(t *testing.T) {
 	mem := func(kib uint64) string {
 		return "MemTotal: 99999999 kB\nMemAvailable: " + strconv.FormatUint(kib, 10) + " kB\n"
 	}
-	if err := CheckResources("1.50 1.0 1.0 1/100 42\n", 2, mem(3*1024*1024)); err != nil {
+	if err := CheckResources("1.50 1.0 1.0 1/100 42\n", 2, mem(3*1024*1024), false); err != nil {
 		t.Fatal(err)
 	}
 	refused := func(load string, cpus int, kib uint64) exit.Code {
-		return code(CheckResources(load, cpus, mem(kib)))
+		return code(CheckResources(load, cpus, mem(kib), false))
 	}
 	if got := refused("2.00 0 0", 2, 3*1024*1024); got != exit.Refused {
 		t.Errorf("load at the cpu count: %d", got)
@@ -230,6 +230,20 @@ func TestResourcesNeedLoadBelowCPUsAndMoreThan2GiB(t *testing.T) {
 	}
 	if got := refused("", 2, 3*1024*1024); got != exit.Environment {
 		t.Errorf("empty loadavg: %d", got)
+	}
+}
+
+func TestALightAgentSkipsTheLoadButNotTheMemory(t *testing.T) {
+	mem := func(kib uint64) string { return "MemAvailable: " + strconv.FormatUint(kib, 10) + " kB\n" }
+	busy := "26.00 18.0 11.0 9/900 42\n"
+	if err := CheckResources(busy, 8, mem(3*1024*1024), true); err != nil {
+		t.Errorf("light at load 26 on 8 CPUs: %v", err)
+	}
+	if got := code(CheckResources(busy, 8, mem(3*1024*1024), false)); got != exit.Refused {
+		t.Errorf("not light at load 26 on 8 CPUs: %d", got)
+	}
+	if got := code(CheckResources(busy, 8, mem(1024*1024), true)); got != exit.Refused {
+		t.Errorf("light with 1 GiB available: %d", got)
 	}
 }
 
@@ -282,11 +296,19 @@ func TestWorkOrderTitleIsTheFirstNonEmptyLine(t *testing.T) {
 func TestTheResourceCheckFollowsTheConfig(t *testing.T) {
 	saved := machineResources
 	defer func() { machineResources = saved }()
-	machineResources = func() error { return exit.Refusedf("the machine is busy") }
+	machineResources = func(light bool) error {
+		if light {
+			return nil
+		}
+		return exit.Refusedf("the machine is busy")
+	}
 	for _, on := range []bool{true, false} {
 		cfg := &config.Config{MaxAgentsPerJob: 4, ResourceCheck: on}
-		if refused := resources(cfg) != nil; refused != on {
+		if refused := resources(cfg, false) != nil; refused != on {
 			t.Errorf("resource_check %v: refused %v", on, refused)
+		}
+		if err := resources(cfg, true); err != nil {
+			t.Errorf("resource_check %v, light: %v", on, err)
 		}
 	}
 }

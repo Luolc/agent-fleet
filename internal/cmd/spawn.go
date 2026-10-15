@@ -34,8 +34,8 @@ const (
 		"on, the task's first non-empty line gives a title; the name uses only [a-z0-9-], is " +
 		"not `watch`, and is not taken in the ledger or in herdr; the job's workspace exists; " +
 		"the job holds fewer than max_agents_per_job live agents including the lead; with " +
-		"resource_check, the 1-minute load average is below the CPU count and available " +
-		"memory is above 2 GiB; last, for a cross-repo job, the parent's team and project are " +
+		"resource_check, the 1-minute load average is below the CPU count (skipped with --light) " +
+		"and available memory is above 2 GiB; last, for a cross-repo job, the parent's team and project are " +
 		"read from Linear.\n\n" +
 		"Then the worker's row is reserved as `starting`, in one transaction with the name and " +
 		"cap checks, so two spawns cannot both pass them. With Linear on, the work order is " +
@@ -53,6 +53,10 @@ const (
 		"when given or set in the scope's `models.worker`); the pane is renamed after the worker. " +
 		"Its folder-trust prompt is accepted; any other screen that is not the input box stops the spawn. Finally the task " +
 		"is delivered as `fleet send` would, and the row becomes active.\n\n" +
+		"--light is for a worker that only reads and does I/O (research, a review that runs no " +
+		"build or test): the ledger marks it light, `fleet status` flags it, and its first message " +
+		"tells it not to compile, run test suites or start anything CPU-heavy, and to stop and say " +
+		"so when the work needs that. fleet does not enforce it.\n\n" +
 		"There is no rollback and no retry. When a herdr step fails (the tab, the start, the " +
 		"delivery), the " +
 		"output lists what exists; the worker's row stays `starting`, and the cleanup is the " +
@@ -78,6 +82,8 @@ type SpawnArgs struct {
 	// Effort is passed to the agent as --effort. Default: the scope's
 	// `models.worker.effort`, else the agent's own.
 	Effort *string
+	// Light skips the load check; the worker is told to only read.
+	Light bool
 }
 
 // spawnChecked is what the checks before anything is created established.
@@ -94,6 +100,7 @@ type spawnChecked struct {
 	title     string
 	cwd       string
 	workspace string
+	light     bool
 }
 
 // spawnChecks runs every check in order: the caller and the names, the
@@ -115,7 +122,7 @@ func spawnChecks(h *herdr.Herdr, args SpawnArgs) (*spawnChecked, *sql.DB, error)
 		return nil, nil, exit.Refusedf("FLEET_JOB is not set")
 	}
 	c := &spawnChecked{me: me, id: &identity.Identity{Agent: me.Job + "-" + args.Name, Role: identity.Worker,
-		Parent: me.Agent, Scope: me.Scope, Job: me.Job}}
+		Parent: me.Agent, Scope: me.Scope, Job: me.Job}, light: args.Light}
 	if err := CheckAgentName(c.id.Agent); err != nil {
 		return nil, nil, err
 	}
@@ -182,7 +189,7 @@ func (c *spawnChecked) ledgerAndHerdr(h *herdr.Herdr, conn *sql.DB) error {
 		return exit.Environmentf("expected one workspace labelled %s, herdr has %d", c.me.Job, len(workspaces))
 	}
 	c.workspace = workspaces[0]
-	if err := resources(c.cfg); err != nil {
+	if err := resources(c.cfg, c.light); err != nil {
 		return err
 	}
 	return c.linear.resolve()
@@ -233,7 +240,7 @@ func Spawn(h *herdr.Herdr, args SpawnArgs) (exit.Code, error) {
 	// The worker's row is reserved in one transaction with the checks, so
 	// two spawns of one name, or past the cap, cannot both pass.
 	if err := reserve(conn, c.dedup, func(q querier) error {
-		return insertStarting(q, c.id, c.cwd, c.task, c.job.ParentIssue)
+		return insertStarting(q, c.id, c.cwd, c.task, c.job.ParentIssue, c.light)
 	}); err != nil {
 		return 0, err
 	}
@@ -252,7 +259,7 @@ func Spawn(h *herdr.Herdr, args SpawnArgs) (exit.Code, error) {
 	created = append(created, fmt.Sprintf("tab %s (%s)", args.Name, place.TabID))
 	body := c.prompt.fill(roleSlots(c.sc, c.id, c.cwd, c.job.Repo, c.job.LeadCwd, c.cfg.MaxAgentsPerJob, issue,
 		c.job.ParentIssue)) +
-		taskSection(issue.URL, c.body)
+		noteSection(lightNote(c.light)) + taskSection(issue.URL, c.body)
 	code, err := startAndDeliver(h, conn, c.id, place, c.cwd, orDefault(args.Model, c.sc.Models.Worker.Model),
 		orDefault(args.Effort, c.sc.Models.Worker.Effort), c.me.Agent, body, &created)
 	if err != nil || code != exit.Ok {

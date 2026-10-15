@@ -62,7 +62,8 @@ const (
 		"lead has the same parent issue (the lead is named: talk to it instead); the lead's " +
 		"name is free in the ledger and in herdr; no workspace is labelled after the job and, " +
 		"for a cross-repo job, <initiatives>/<I>/<job>/ does not exist; with resource_check, the " +
-		"1-minute load average is below the CPU count and available memory is above 2 GiB; " +
+		"1-minute load average is below the CPU count (skipped with --light, as for `fleet spawn " +
+		"--light`; see its help) and available memory is above 2 GiB; " +
 		"last, for a cross-repo job, the parent's team and project are read from Linear.\n\n" +
 		"Then the job is reserved: the job's row (open, with the caller's thread as the job's " +
 		"home thread when it has one) and the lead's row (`starting`) are " +
@@ -121,6 +122,8 @@ type JobStartArgs struct {
 	// `models.lead`, else the agent's own.
 	Model  *string
 	Effort *string
+	// Light skips the load check; the lead is told to only read.
+	Light bool
 }
 
 // JobListArgs are the arguments of `job list`.
@@ -212,6 +215,7 @@ type jobChecked struct {
 	task   string
 	title  string
 	parent string
+	light  bool
 }
 
 // jobStartChecks runs every check in order: the caller and the names, the
@@ -233,7 +237,7 @@ func jobStartChecks(h *herdr.Herdr, args JobStartArgs) (*jobChecked, *sql.DB, er
 			"the agents `fleet watch` starts or started", args.Job, workerPrefix, legacyHelperPrefix, legacyRevisitPrefix)
 	}
 	c := &jobChecked{me: me, id: &identity.Identity{Agent: args.Job + "-lead", Role: identity.Lead,
-		Parent: me.Agent, Scope: me.Scope, Job: args.Job}}
+		Parent: me.Agent, Scope: me.Scope, Job: args.Job}, light: args.Light}
 	if err := CheckAgentName(c.id.Agent); err != nil {
 		return nil, nil, err
 	}
@@ -442,7 +446,7 @@ func (c *jobChecked) ledgerAndHerdr(h *herdr.Herdr, conn *sql.DB) error {
 		return exit.Refusedf("job %s already has a workspace or the directory %s; if it is left over, "+
 			"clean up with `fleet job end %s --force`", job, c.cwd, job)
 	}
-	if err := resources(c.cfg); err != nil {
+	if err := resources(c.cfg, c.light); err != nil {
 		return err
 	}
 	return c.linear.resolve()
@@ -459,7 +463,7 @@ func (c *jobChecked) reserve(conn *sql.DB) error {
 			c.id.Job, c.parent, c.key, c.repo, c.cwd, c.me.Thread, db.Now()); err != nil {
 			return exit.Database(err)
 		}
-		return insertStarting(q, c.id, c.cwd, c.task, c.parent)
+		return insertStarting(q, c.id, c.cwd, c.task, c.parent, c.light)
 	})
 }
 
@@ -540,7 +544,7 @@ func JobStart(h *herdr.Herdr, args JobStartArgs) (exit.Code, error) {
 	if c.repo == "" {
 		checkout = filepath.Dir(c.cwd)
 	}
-	note := noteSection(syncCheckout(checkout))
+	note := noteSection(syncCheckout(checkout), lightNote(c.light))
 	if c.repo == "" {
 		if err := os.Mkdir(c.cwd, 0o777); err != nil {
 			return startFailed(c.id.Agent, exit.IO(err), 0, created, hint)
