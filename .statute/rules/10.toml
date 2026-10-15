@@ -1,10 +1,10 @@
 id = 10
 slug = "touched-checks"
-revision = 3
+revision = 4
 kind = "rule"
 status = "trial"
 lang = "en"
-parent = "R15"
+parent = "R276"
 default = "on"
 authority = ["evidence.grounds"]
 constitution = ">=1"

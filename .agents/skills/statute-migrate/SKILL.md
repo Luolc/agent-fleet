@@ -50,7 +50,12 @@ files changes, this table is the one place to change.
    the built-in first-party source, which is enough for a public
    repository with no private rules. When the person keeps private
    rules, it must name their private source; ask before writing it
-   ([Questions](#questions), Q1).
+   ([Questions](#questions), Q1). In a public repository, a
+   `personal` parameter whose value in the global configuration differs
+   from the committed one (such as the language an agent writes to the
+   person in) makes a private output by itself, so even with no
+   private rules `statute compile` asks for the two private links in
+   the exclude file first (step g).
 3. The repository has no rule set yet. One that has a rule set
    written before default switches is redone from step b: its `rules`
    and `packs` are where the three lists of step f start.
@@ -235,7 +240,10 @@ public repository reaches the private output only.
 Then show the person the three lists, with the reason on each line,
 and ask them to look them over (Q4). `statute explain --defaults`
 prints the three lists from the rule set as written; `statute explain
-<rule>` says why one rule is in or out.
+<rule>` says why one rule is in or out. An `exclude` entry for a rule
+under a domain that is off by default is not listed under "On by
+default, and turned off", since the rule was never on by default;
+`statute.lock` shows that it is out.
 
 ## g. Lock, compile, check
 
@@ -249,12 +257,16 @@ prints the three lists from the rule set as written; `statute explain
    until everything is in place.
 3. `statute check`, which exits 0 when no rule a script checks is
    violated, and lists the rules for review.
-4. In a public repository with private rules, install the checkout
-   hook, so that each new worktree and each switch of branch writes the
-   private output and the private links
+4. In a public repository with a private output (private rules, or a
+   `personal` value that differs from the committed one), install the
+   checkout hook, so that each new worktree and each switch of branch
+   writes the private output and the private links
    ([Private rules in a public repository](https://github.com/Luolc/agent-constitution/blob/main/docs/design/rule-sources.md#private-rules-in-a-public-repository),
    A new worktree).
-   statute does not install it. With no checkout hook, write one with
+   statute does not install it. First see which hooks are really
+   there, under `git rev-parse --git-path hooks`, and then decide
+   whether to write the hook directly or go through a hook manager.
+   With no checkout hook, write one with
    `#!/bin/sh` and the hook line, and make it executable; when there is
    one, append the hook line and change nothing else in it. When a hook
    manager owns the checkout hook, add the line that manager's way;
@@ -262,13 +274,46 @@ prints the three lists from the rule set as written; `statute explain
    `pre-commit install --hook-type post-checkout`, and gives the
    checkout type in `PRE_COMMIT_CHECKOUT_TYPE` instead of `$3`. The
    hook does not reach the worktrees that exist already: run `statute
-   compile --private-only` once in each of them.
+   compile --private-only` once in each of them. The private lock
+   file lists only sources; to see which rules the private layer
+   enables, read the rule ID lines of the private output.
+5. Add `statute compile --check` to the repository's commit hooks, so
+   that a commit cannot leave the compiled file, the checks file or an
+   installed skill out of step with the rule set
+   ([Compilation and the site](https://github.com/Luolc/agent-constitution/blob/main/docs/design/statute-command.md#compilation-and-the-site)).
+   With pre-commit, add a local hook with `entry: statute compile
+   --check`, `language: system`, `pass_filenames: false` and `files`
+   matching the statute inputs and outputs (`statute.toml`,
+   `statute.lock`, `statute-checks.toml`, `AGENTS.md`, `.statute/`,
+   `.agents/`, `.claude/`, and the directories of the local rules); the
+   `statute-compile` hook in the
+   [`.pre-commit-config.yaml` of agent-constitution](https://github.com/Luolc/agent-constitution/blob/main/.pre-commit-config.yaml)
+   is a model, except that its entry runs statute from source. With
+   another hook manager, add it that manager's way. With no commit
+   hooks, add only the CI step, and say so in the pull request
+   description.
+   Then confirm CI runs it: when CI already runs every pre-commit hook,
+   nothing more is needed; otherwise add a CI step that runs
+   `statute compile --check`. The hook and CI run the statute version
+   that `statute-checks.toml` names, which is the one that compiled it,
+   and that version must be 0.1.4 or later, the first with the flag;
+   after upgrading statute, run `statute compile` again in the same
+   change.
 
 Acceptance, before you ask for a review:
 
-- `statute compile` runs again with no change to any file, and warns
-  of no `CLAUDE.md` unless the person chose to keep it.
+- `statute compile --check` exits 0, which shows the public output is
+  what a fresh compile writes (`statute compile` prints `wrote` for a
+  file even when its content did not change), and `statute compile`
+  warns of no `CLAUDE.md` unless the person chose to keep it. Where there
+  is a private output (a public repository with private rules, or a
+  personal value that differs), git ignores it, so compare it by hand:
+  copy the private output aside, note where each private link points
+  with `readlink`, run `statute compile`, and `cmp` each file with its
+  copy and compare each `readlink` result with the note.
 - The compiled file's first line says statute wrote it.
+- The pull request adds the `statute compile --check` hook, and the CI
+  step too unless CI already runs every pre-commit hook.
 - `statute check` exits 0.
 - The compiled file is compared with the legacy copies, section by
   section, against the mapping of step c: every item is where the
@@ -278,7 +323,7 @@ Acceptance, before you ask for a review:
   output and the private links as ignored, and `git ls-files` lists
   none of them; the private rule set and the private lock file are in
   git's own directory, where git tracks nothing.
-- In a public repository with private rules, the checkout hook holds
+- In a public repository with a private output, the checkout hook holds
   the hook line, and a worktree added with `git worktree add` has the
   private output and the private links without any other command.
 

@@ -1,10 +1,10 @@
 id = 12
 slug = "merge-does-not-wait-for-ci"
-revision = 2
+revision = 3
 kind = "rule"
 status = "trial"
 lang = "en"
-parent = "R14"
+parent = "R274"
 default = "on"
 authority = ["decide-yourself.routine-changes"]
 constitution = ">=1"
