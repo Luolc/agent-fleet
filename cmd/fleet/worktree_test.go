@@ -4,6 +4,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -323,6 +324,103 @@ func TestWorktreeSaysGitCannotRunWhenGitIsMissing(t *testing.T) {
 		"FLEET_JOB=item-1", "PATH="+t.TempDir())
 	if out.code != 5 || out.stdout != "" || !strings.Contains(out.stderr, "cannot run git") {
 		t.Errorf("%+v, want exit 5 saying git cannot run", out)
+	}
+}
+
+// withStatute commits statute.toml to origin through `seed`.
+func (w *world) withStatute(seed string) {
+	w.t.Helper()
+	if err := os.WriteFile(filepath.Join(seed, "statute.toml"), nil, 0o644); err != nil {
+		w.t.Fatal(err)
+	}
+	w.git("-C", seed, "add", "statute.toml")
+	w.git("-C", seed, "commit", "-q", "-m", "statute")
+	w.git("-C", seed, "push", "-q", "origin", "main")
+}
+
+// fakeStatute puts a statute on PATH that appends its argv and cwd to
+// <dir>/statute-calls, prints a line to stdout and one to stderr, and
+// exits `code`.
+func (w *world) fakeStatute(code int) {
+	w.t.Helper()
+	script := fmt.Sprintf(`#!/bin/sh
+echo "$* in $(pwd)" >> %q
+echo "statute out"
+echo "statute err" >&2
+exit %d
+`, filepath.Join(w.dir, "statute-calls"), code)
+	if err := os.WriteFile(filepath.Join(w.dir, "fake-herdr", "statute"), []byte(script), 0o755); err != nil {
+		w.t.Fatal(err)
+	}
+}
+
+// statuteCalls are the lines the fake statute appended.
+func (w *world) statuteCalls() string {
+	w.t.Helper()
+	out, err := os.ReadFile(filepath.Join(w.dir, "statute-calls"))
+	if err != nil && !os.IsNotExist(err) {
+		w.t.Fatal(err)
+	}
+	return string(out)
+}
+
+func TestWorktreeRunsStatuteCompileInTheRootWithStatuteToml(t *testing.T) {
+	w := newWorld(t)
+	_, seed := w.origin()
+	w.withStatute(seed)
+	w.fakeStatute(0)
+	path := filepath.Join(w.dir, "home", "wt", dataset, "item-1")
+
+	out := w.worktree("item-1", dataset)
+	if out.code != 0 || out.stdout != path+"\n" {
+		t.Fatalf("%+v", out)
+	}
+	if got, want := w.statuteCalls(), "compile in "+path+"\n"; got != want {
+		t.Errorf("statute calls = %q, want %q", got, want)
+	}
+	if !strings.Contains(out.stderr, "statute out") || !strings.Contains(out.stderr, "statute err") {
+		t.Errorf("stderr = %q, want statute's output", out.stderr)
+	}
+}
+
+func TestWorktreeWithoutStatuteTomlRunsNoStatute(t *testing.T) {
+	w := newWorld(t)
+	w.origin()
+	w.fakeStatute(0)
+
+	out := w.worktree("item-1", dataset)
+	if out.code != 0 || out.stderr != "" {
+		t.Fatalf("%+v", out)
+	}
+	if got := w.statuteCalls(); got != "" {
+		t.Errorf("statute calls = %q, want none", got)
+	}
+}
+
+func TestWorktreeWarnsWhenStatuteIsMissingOrFails(t *testing.T) {
+	w := newWorld(t)
+	_, seed := w.origin()
+	w.withStatute(seed)
+	wt := filepath.Join(w.dir, "home", "wt", dataset)
+
+	out := w.worktree("item-1", dataset)
+	if out.code != 0 || out.stdout != filepath.Join(wt, "item-1")+"\n" ||
+		!strings.Contains(out.stderr, "warning: ") || !strings.Contains(out.stderr, "statute is not on PATH") {
+		t.Errorf("no statute: %+v, want exit 0, the path and a warning", out)
+	}
+	if _, err := os.Stat(filepath.Join(wt, "item-1", "statute.toml")); err != nil {
+		t.Errorf("no statute: the worktree is not there")
+	}
+
+	w.fakeStatute(3)
+	out = w.worktree("item-2", dataset)
+	if out.code != 0 || out.stdout != filepath.Join(wt, "item-2")+"\n" ||
+		!strings.Contains(out.stderr, "`statute compile` in "+filepath.Join(wt, "item-2")+" failed") ||
+		!strings.Contains(out.stderr, "statute out") || !strings.Contains(out.stderr, "statute err") {
+		t.Errorf("failing statute: %+v, want exit 0, the path, statute's output and a warning", out)
+	}
+	if len(w.worktreeRows()) != 2 {
+		t.Errorf("rows = %q, want both worktrees", w.worktreeRows())
 	}
 }
 
