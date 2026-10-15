@@ -784,9 +784,11 @@ func TestWatchEndsAJobWhoseLeadsQuestionGoesUnanswered(t *testing.T) {
 	w.screen("k-lead", claude("⏺ Waiting", "1s", "2hr 59m"))
 	w.lastMessage("C3/3.0", t0+3600)
 
-	// Watch was down for three days: one reminder, the last one, listing both.
+	// Watch was down for three days. The leads' questions went to the
+	// thread agent, never to the people: nothing is posted, and with no
+	// live thread agent nobody is reminded.
 	w.watchAt(72*time.Hour, 0)
-	if got := w.log("fednet.log"); !strings.Contains(got, "Reminder 3 of 3: 2 question(s) here still wait for an answer, the first asked 3d00h ago: | - from k-lead: Merge it? | - from m-lead: Which host? |") {
+	if got := w.log("fednet.log"); strings.Contains(got, "Reminder") || strings.Contains(got, "Merge it?") {
 		t.Errorf("%s", got)
 	}
 	prompts := w.prompts()
@@ -879,9 +881,9 @@ func TestWatchMovesTheQuestionsOfAJobThatEndedToItsThread(t *testing.T) {
 		!strings.Contains(out.stdout, "closed 1 pending question(s) of ended jobs: a screen's, or the job ended after its lead was told") {
 		t.Errorf("%s", out.stdout)
 	}
-	// e's thread gets its reminder, and no agent is started for it.
-	if got := w.log("fednet.log"); !strings.Contains(got, "-thread C5/5.0 -- Reminder 1 of 3: 1 question(s) here still wait for an answer, "+
-		"the first asked 1h00m ago: | - from e-lead: Which host? |") || strings.Contains(got, "-thread C4/4.0 -- Reminder") {
+	// A lead's question is never posted to the people, and no agent is
+	// started for e's thread.
+	if got := w.log("fednet.log"); strings.Contains(got, "Reminder") {
 		t.Errorf("%s", got)
 	}
 	if got := w.query("SELECT count(*) FROM agents WHERE thread = 'C5/5.0'"); got != "0" {
@@ -889,15 +891,17 @@ func TestWatchMovesTheQuestionsOfAJobThatEndedToItsThread(t *testing.T) {
 	}
 
 	// Told once; a new job of the same name does not take the question,
-	// and the reminders go on from when it was asked.
+	// and the thread agent's reminders go on from when it was asked.
 	w.exec("INSERT INTO jobs (job, lead_cwd, home_thread, state, started_at) VALUES ('d', '/c', 'C4/4.0', 'open', " +
 		fmt.Sprint(t0+2*3600) + ")")
 	w.watchAt(3*time.Hour, 0)
-	if got := len(w.prompts()); got != 1 {
-		t.Errorf("%q", w.prompts())
+	prompts = w.prompts()
+	if len(prompts) != 2 || prompts[1][0] != "thread-c4" || !strings.Contains(prompts[1][1], "rule `question reminder` (2 of 3): "+
+		"1 question(s) leads asked you in thread C4/4.0 are still pending, the first asked 3h00m ago.") ||
+		!strings.Contains(prompts[1][1], "- from d-lead: Which schema?") {
+		t.Errorf("%q", prompts)
 	}
-	if got := w.log("fednet.log"); !strings.Contains(got, "-thread C4/4.0 -- Reminder 2 of 3: 1 question(s) here still wait for an answer, "+
-		"the first asked 3h00m ago: | - from d-lead: Which schema? |") {
+	if got := w.log("fednet.log"); strings.Contains(got, "Reminder") {
 		t.Errorf("%s", got)
 	}
 

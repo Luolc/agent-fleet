@@ -9,6 +9,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/Luolc/agent-fleet/internal/db"
 	"github.com/Luolc/agent-fleet/internal/exit"
 	"github.com/Luolc/agent-fleet/internal/herdr"
 	"github.com/Luolc/agent-fleet/internal/identity"
@@ -25,6 +26,10 @@ const (
 		"--timeout 20000` and the result is mapped to the exit codes.\n\n" +
 		"There is no automatic resend: exit 2 means the outcome is unknown, not that the " +
 		"message was lost.\n\n" +
+		"A thread agent's message that reaches a lead answers the lead's questions pending in " +
+		"the thread agent's thread (`fleet ask-human`): the thread agent has settled them, by " +
+		"itself or with the people. A ledger that cannot be updated is said on stderr; the " +
+		"exit code stays the delivery's.\n\n" +
 		"Exit: 0 when herdr reported agent_prompted; 1 for an empty body, a forged header or a " +
 		"missing FLEET_AGENT; 2 when herdr gave no clear signal (timeout, stalled); 3 when " +
 		"the target is blocked (its visible screen is printed so you can see what is in the " +
@@ -101,5 +106,37 @@ func Send(h *herdr.Herdr, args SendArgs) (exit.Code, error) {
 	if err != nil {
 		return 0, err
 	}
-	return Deliver(h, args.To, text)
+	code, err := Deliver(h, args.To, text)
+	if err == nil && code == exit.Ok && os.Getenv("FLEET_ROLE") == identity.Thread.String() {
+		answerLead(os.Getenv("FLEET_THREAD"), args.To)
+	}
+	return code, err
+}
+
+// answerLead marks the questions `lead` asked in `thread` and that are
+// still pending answered. A failure is only said: the message is out, and
+// a nonzero exit would have the thread agent send it again.
+func answerLead(thread, lead string) {
+	if thread == "" {
+		return
+	}
+	err := func() error {
+		conn, err := OpenLedger()
+		if err != nil {
+			return err
+		}
+		defer conn.Close()
+		res, err := conn.Exec("UPDATE questions SET state = 'answered', answered_at = ?1 "+
+			"WHERE thread = ?2 AND asked_by = ?3 AND state = 'pending'", db.Now(), thread, lead)
+		if err != nil {
+			return exit.Database(err)
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			fmt.Fprintf(os.Stdout, "%d pending question(s) of %s in thread %s answered\n", n, lead, thread)
+		}
+		return nil
+	}()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "fleet: the questions of %s in thread %s stay pending: %v\n", lead, thread, err)
+	}
 }

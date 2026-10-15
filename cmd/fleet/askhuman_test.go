@@ -71,15 +71,18 @@ func TestAskHumanReachesTheLiveThreadAgentAndIsAnsweredByTheNextMessage(t *testi
 	if out.code != 0 {
 		t.Fatalf("%+v", out)
 	}
-	if got := strings.TrimSpace(w.calls()); got != "fednet client post -socket /run/fednet.sock -thread "+threadKey+
-		" -- Which month: September or October?\nherdr status server\nherdr agent get\nherdr agent prompt" {
+	// fleet posts nothing: the thread agent asks the people.
+	if got := strings.TrimSpace(w.calls()); got != "herdr status server\nherdr agent get\nherdr agent prompt" {
 		t.Errorf("calls = %q", got)
 	}
+	if !strings.Contains(out.stdout, "gave the question to the agent of thread "+threadKey) {
+		t.Errorf("stdout = %q", out.stdout)
+	}
 	argv := w.file("argv")
-	if !strings.HasPrefix(argv, "agent\nprompt\nthread-c0123-1700000000-123\n[FROM: item-1-lead]\nQuestion from item-1-lead for the people in thread "+
-		threadKey+", already posted there by fleet. Your prompt says what to do under \"Messages from fleet\"; at the least, "+
-		"when the people answer, pass the answer on with `fleet send item-1-lead --file <file>`.\n\n"+
-		"Which month: September or October?\n") {
+	if !strings.HasPrefix(argv, "agent\nprompt\nthread-c0123-1700000000-123\n[FROM: item-1-lead]\n[QUESTION from item-1-lead]\n"+
+		"Yours to decide: answer it yourself, look it up, or ask the people in thread "+threadKey+"; fleet has posted "+
+		"nothing. Your prompt says what to do under \"Messages from fleet\"; at the least, once you have the answer, "+
+		"send it with `fleet send item-1-lead --file <file>`.\n\nWhich month: September or October?\n") {
 		t.Errorf("argv = %q", argv)
 	}
 	if got := questions(w); got != "item-1 "+threadKey+" item-1-lead plain pending" {
@@ -88,7 +91,7 @@ func TestAskHumanReachesTheLiveThreadAgentAndIsAnsweredByTheNextMessage(t *testi
 	// The same question again while pending: done already, nothing repeated.
 	_ = os.Remove(filepath.Join(w.dir, "calls"))
 	if out := w.askHuman("--file", question); out.code != 0 || w.calls() != "" ||
-		!strings.Contains(out.stdout, "already posted to thread "+threadKey+" and delivered to its agent; nothing done") {
+		!strings.Contains(out.stdout, "already delivered to the agent of thread "+threadKey+"; nothing done") {
 		t.Errorf("again: %+v, calls %q", out, w.calls())
 	}
 	out = w.askHuman("--file", task(w, "a.md", "May I delete the old table?\n"), "--approval")
@@ -100,6 +103,30 @@ func TestAskHumanReachesTheLiveThreadAgentAndIsAnsweredByTheNextMessage(t *testi
 		t.Errorf("answer: %+v", out)
 	}
 	if got := questions(w); got != "item-1 "+threadKey+" item-1-lead plain answered" {
+		t.Errorf("questions = %q", got)
+	}
+}
+
+// The thread agent's message to the lead settles the lead's questions in
+// its thread; its own stay pending until a person writes there.
+func TestAskHumanIsAnsweredByTheThreadAgentsMessageToTheLead(t *testing.T) {
+	w := threadWorld(t, "")
+	openJobWithHomeThread(w, true)
+	if out := w.inbox(w.event("m1", "start the import", "")); out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	if out := w.askHuman("--file", task(w, "q.md", "Which month?\n")); out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	if out := w.asThreadAgent("TH-5", "ask-human", "--file", task(w, "o.md", "Which bucket?\n")); out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	out := w.asThreadAgent("TH-5", "send", "item-1-lead", "--file", task(w, "a.md", "October, as the people said.\n"))
+	if out.code != 0 || !strings.Contains(out.stdout, "1 pending question(s) of item-1-lead in thread "+threadKey+" answered") {
+		t.Errorf("send: %+v", out)
+	}
+	if got := questions(w); got != "item-1 "+threadKey+" item-1-lead plain answered\n "+threadKey+
+		" thread-c0123-1700000000-123 plain pending" {
 		t.Errorf("questions = %q", got)
 	}
 }
@@ -131,10 +158,9 @@ func TestAskHumanStartsAThreadAgentWhenTheHomeThreadHasNone(t *testing.T) {
 	}
 	prompt := w.file("argv")
 	for _, want := range []string{"[FROM: item-1-lead]\nYou are a thread agent", "## Earlier sessions on this thread",
-		"## The message\n\nQuestion from item-1-lead for the people in thread " + threadKey, "Which month?\n",
-		"A lead's question waits for a person only when the rules the lead works under need a person's yes for it;",
-		"tell the lead with `fleet send` to decide it itself, naming the rule",
-		"the question stays pending until a person next writes here",
+		"## The message\n\n[QUESTION from item-1-lead]\nYours to decide: answer it yourself, look it up, or ask the people in thread " + threadKey, "Which month?\n",
+		"A lead's question is yours to settle: fleet has recorded it as pending and posted nothing",
+		"that settles its questions pending here",
 		"tell each open lead `fleet status` lists with PARENT thread-c0123-1700000000-123 what changed."} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt = %q, want %q in it", prompt, want)
@@ -142,6 +168,9 @@ func TestAskHumanStartsAThreadAgentWhenTheHomeThreadHasNone(t *testing.T) {
 	}
 	if got := questions(w); got != "item-1 "+threadKey+" item-1-lead plain pending" {
 		t.Errorf("questions = %q", got)
+	}
+	if strings.Contains(calls, "fednet client post") {
+		t.Errorf("fleet posted the lead's question: %q", calls)
 	}
 }
 
@@ -177,7 +206,7 @@ func TestAskHumanFinishesAStartItsEarlierRunWasKilledIn(t *testing.T) {
 		t.Fatalf("retry: %+v", out)
 	}
 	prompt := w.file("argv")
-	for _, want := range []string{"[FROM: item-1-lead]\nYou are a thread agent", "Question from item-1-lead for the people in thread " + threadKey, "0xQ1"} {
+	for _, want := range []string{"[FROM: item-1-lead]\nYou are a thread agent", "[QUESTION from item-1-lead]\nYours to decide: answer it yourself, look it up, or ask the people in thread " + threadKey, "0xQ1"} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("retry prompt = %q, want %q in it", prompt, want)
 		}
@@ -191,7 +220,7 @@ func TestAskHumanFinishesAStartItsEarlierRunWasKilledIn(t *testing.T) {
 	if got := questions(w); got != "item-1 "+threadKey+" item-1-lead plain pending" {
 		t.Errorf("questions = %q", got)
 	}
-	if got := strings.Count(w.calls(), "fednet client post"); got != 1 {
+	if got := strings.Count(w.calls(), "fednet client post"); got != 0 {
 		t.Errorf("posted %d times, calls %q", got, w.calls())
 	}
 }
@@ -264,12 +293,12 @@ func TestAskHumanRefusalsAndLinearDown(t *testing.T) {
 		t.Errorf("Linear down: %+v", out)
 	}
 	calls := w2.calls()
-	if !strings.Contains(calls, "-- Which month?") || !strings.Contains(calls, "agent start") ||
+	if strings.Contains(calls, "-- Which month?") || !strings.Contains(calls, "agent start") ||
 		!strings.Contains(calls, "-- Linear is unavailable (atb linear claim TH-5: exit 4); this session runs without its ticket.") {
 		t.Errorf("calls = %q", calls)
 	}
 	if prompt := w2.file("argv"); !strings.Contains(prompt, "FLEET_ISSUE= (empty: this session runs without its thread ticket") ||
-		!strings.Contains(prompt, "Question from item-1-lead") {
+		!strings.Contains(prompt, "[QUESTION from item-1-lead]") || !strings.Contains(prompt, "Which month?") {
 		t.Errorf("prompt = %q", prompt)
 	}
 	if got := questions(w2); got != "item-1 "+threadKey+" item-1-lead plain pending" {
@@ -277,8 +306,8 @@ func TestAskHumanRefusalsAndLinearDown(t *testing.T) {
 	}
 }
 
-// A post that fails leaves the question recorded and undelivered; asking
-// again posts it once and delivers it, and a third run repeats nothing.
+// A thread agent's post that fails leaves its question recorded; asking
+// again posts it once, and a third run repeats nothing.
 func TestAskHumanContinuesAfterAFailedPost(t *testing.T) {
 	w := threadWorld(t, "")
 	openJobWithHomeThread(w, true)
@@ -289,29 +318,24 @@ func TestAskHumanContinuesAfterAFailedPost(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = os.Remove(filepath.Join(w.dir, "calls"))
-	_ = os.Remove(filepath.Join(w.dir, "argv"))
 	question := task(w, "q.md", "Which month? 0xQ2\n")
-	out := w.askHuman("--file", question)
+	out := w.asThreadAgent("TH-5", "ask-human", "--file", question)
 	if out.code != 5 || out.stderr != "fleet: fednet client post failed (exit status: 4); the question is recorded, run ask-human again to post it\n" {
 		t.Errorf("failed post: %+v", out)
 	}
-	if strings.Contains(w.calls(), "agent prompt") {
-		t.Errorf("delivered after a failed post: %q", w.calls())
-	}
 	_ = os.Remove(filepath.Join(w.dir, "fednet-down"))
 	_ = os.Remove(filepath.Join(w.dir, "calls"))
-	if out := w.askHuman("--file", question); out.code != 0 {
+	if out := w.asThreadAgent("TH-5", "ask-human", "--file", question); out.code != 0 {
 		t.Fatalf("retry: %+v", out)
 	}
-	if got := strings.TrimSpace(w.calls()); got != "fednet client post -socket /run/fednet.sock -thread "+threadKey+
-		" -- Which month? 0xQ2\nherdr status server\nherdr agent get\nherdr agent prompt" {
+	if got := w.calls(); got != "fednet client post -socket /run/fednet.sock -thread "+threadKey+" -- Which month? 0xQ2\n" {
 		t.Errorf("retry calls = %q", got)
 	}
 	_ = os.Remove(filepath.Join(w.dir, "calls"))
-	if out := w.askHuman("--file", question); out.code != 0 || w.calls() != "" {
+	if out := w.asThreadAgent("TH-5", "ask-human", "--file", question); out.code != 0 || w.calls() != "" {
 		t.Errorf("third run: %+v, calls %q", out, w.calls())
 	}
-	if got := questions(w); got != "item-1 "+threadKey+" item-1-lead plain pending" {
+	if got := questions(w); got != " "+threadKey+" thread-c0123-1700000000-123 plain pending" {
 		t.Errorf("questions = %q", got)
 	}
 	// Without a socket nothing is recorded.
@@ -320,7 +344,7 @@ func TestAskHumanContinuesAfterAFailedPost(t *testing.T) {
 	if out.code != 1 || !strings.Contains(out.stderr, "fednet.socket is not configured") {
 		t.Errorf("no socket: %+v", out)
 	}
-	if got := questions(w); got != "item-1 "+threadKey+" item-1-lead plain pending" {
+	if got := questions(w); got != " "+threadKey+" thread-c0123-1700000000-123 plain pending" {
 		t.Errorf("questions after no socket = %q", got)
 	}
 }
@@ -429,10 +453,11 @@ func TestAskHumanOpensAHomeThreadInTheReposChannel(t *testing.T) {
 	if out.code != 0 || !strings.Contains(out.stdout, "opened thread C0123/1700000099.000 as the home thread of job item-1") {
 		t.Fatalf("%+v", out)
 	}
+	// The thread opens with fleet's line, not the question, and nothing
+	// more is posted: the thread agent asks.
 	calls := strings.Split(w.calls(), "\n")
-	if calls[0] != "fednet client open-thread -socket /run/fednet.sock -channel C0123 -- Questions from job item-1 in "+
-		"example-dataset, which started without a thread; fleet posts them below." ||
-		calls[1] != "fednet client post -socket /run/fednet.sock -thread C0123/1700000099.000 -- Revert the red commit or fix it?" {
+	if calls[0] != "fednet client open-thread -socket /run/fednet.sock -channel C0123 -- Thread of job item-1 in "+
+		"example-dataset, which started without one." || strings.Contains(w.calls(), "fednet client post") {
 		t.Errorf("calls = %q", calls)
 	}
 	checkout := filepath.Join(w.dir, "home", "dev", "example-dataset")
@@ -443,14 +468,14 @@ func TestAskHumanOpensAHomeThreadInTheReposChannel(t *testing.T) {
 		t.Errorf("questions = %q", got)
 	}
 	if argv := w.file("argv"); !strings.Contains(argv, "[FROM: item-1-lead]\nYou are a thread agent") ||
-		!strings.Contains(argv, "Question from item-1-lead for the people in thread C0123/1700000099.000") {
+		!strings.Contains(argv, "[QUESTION from item-1-lead]\nYours to decide: answer it yourself, look it up, or ask the people in thread C0123/1700000099.000") {
 		t.Errorf("argv = %q", argv)
 	}
 	if got := w.file("description"); !strings.HasPrefix(got, "channel: C0123\nthread: C0123/1700000099.000\n"+
 		"first message, a question from item-1-lead:\n\nRevert the red commit or fix it?") {
 		t.Errorf("ticket description = %q", got)
 	}
-	// Asked again: the home thread is there, nothing is opened or posted.
+	// Asked again: the home thread is there, nothing is opened or delivered.
 	_ = os.Remove(filepath.Join(w.dir, "calls"))
 	if out := w.askHuman("--file", question); out.code != 0 || w.calls() != "" {
 		t.Errorf("again: %+v, calls %q", out, w.calls())

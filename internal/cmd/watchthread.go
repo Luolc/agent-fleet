@@ -57,6 +57,13 @@ func (q question) byHelper() bool {
 	return helperNamed(q.askedBy) || q.askedBy == watchSender
 }
 
+// byLead is whether a lead asked the question (moved to the thread when
+// its job ended, or not): it went to the thread agent, never to the
+// people, so the people are not reminded of it.
+func (q question) byLead() bool {
+	return q.job != "" && !q.byHelper()
+}
+
 // session is a thread's live thread agent.
 type session struct {
 	name      string
@@ -433,8 +440,8 @@ func (r *watchRun) tellMoved(t *watchedThread) error {
 	}
 	var text strings.Builder
 	fmt.Fprintf(&text, "fleet watch, rule `questions of an ended job`: %d question(s) a lead asked in thread %s are still "+
-		"pending, but the job is no longer open. They are this thread's questions now: the people are reminded of "+
-		"them as before, and a person's next message in the thread answers them. `fleet thread end` waits for them "+
+		"pending, but the job is no longer open. They are this thread's questions now: fleet has shown them to nobody "+
+		"but you, and a person's next message in the thread answers them. `fleet thread end` waits for them "+
 		"as for your own; one still pending %s after it was asked is closed, and your session is not reclaimed for "+
 		"it. %s; at the least, with the job gone, acting on the answer is yours.\n",
 		len(moved), t.key, Duration(secs(r.cfg.Watch.ThreadQuestion)), seePrompt)
@@ -482,36 +489,77 @@ func firstLines(text string, n int) []string {
 	return kept
 }
 
-// remind posts one reminder of the thread's pending questions when the
+// remind reminds the thread agent of the leads' pending questions, and
+// posts one reminder of the thread's other pending questions when the
 // oldest has passed more of `reminders` than it was reminded of,
 // mentioning the person who last wrote in the thread, then deletes the
 // reminders it replaces.
 func (r *watchRun) remind(t *watchedThread) error {
+	if err := r.remindAgent(t); err != nil {
+		return err
+	}
 	if err := r.postReminder(t); err != nil {
 		return err
 	}
 	return r.deleteStale(t)
 }
 
-func (r *watchRun) postReminder(t *watchedThread) error {
-	if len(t.questions) == 0 {
-		return nil
-	}
-	oldest := t.questions[0]
+// remindersDue is how many of `reminders` the question has passed.
+func (r *watchRun) remindersDue(q question) int {
 	due := 0
 	for _, d := range r.cfg.Watch.Reminders {
-		if r.now-oldest.askedAt >= secs(d) {
+		if r.now-q.askedAt >= secs(d) {
 			due++
 		}
 	}
+	return due
+}
+
+// remindAgent reminds the live thread agent, unless it is being
+// reclaimed, of the leads' questions pending in its thread, at the same
+// times the people are reminded of theirs; without one nobody is.
+func (r *watchRun) remindAgent(t *watchedThread) error {
+	leads := slices.DeleteFunc(slices.Clone(t.questions), func(q question) bool { return !q.byLead() })
+	if len(leads) == 0 || t.agent == nil || t.agent.reclaimAt.Valid {
+		return nil
+	}
+	due := r.remindersDue(leads[0])
+	if due <= leads[0].reminders {
+		return nil
+	}
+	var text strings.Builder
+	fmt.Fprintf(&text, "fleet watch, rule `question reminder` (%d of %d): %d question(s) leads asked you in thread %s are "+
+		"still pending, the first asked %s ago. Settle each (answer it, look it up or ask the people) and send the "+
+		"lead your answer with `fleet send <lead> --file <file>`.\n", due, len(r.cfg.Watch.Reminders), len(leads), t.key,
+		Duration(r.now-leads[0].askedAt))
+	ids := make([]any, 0, len(leads))
+	for _, q := range leads {
+		fmt.Fprintf(&text, "- from %s: %s\n", q.askedBy, WorkOrderTitle(q.text))
+		ids = append(ids, q.id)
+	}
+	if err := r.send(t.agent.name, text.String()); err != nil {
+		return err
+	}
+	_, err := r.conn.Exec("UPDATE questions SET reminders = ?1 WHERE id IN (?"+strings.Repeat(", ?", len(ids)-1)+")",
+		append([]any{due}, ids...)...)
+	return dbErr(err)
+}
+
+func (r *watchRun) postReminder(t *watchedThread) error {
+	shown := slices.DeleteFunc(slices.Clone(t.questions), question.byLead)
+	if len(shown) == 0 {
+		return nil
+	}
+	oldest := shown[0]
+	due := r.remindersDue(oldest)
 	if due <= oldest.reminders {
 		return nil
 	}
 	var text strings.Builder
 	fmt.Fprintf(&text, "Reminder %d of %d: %d question(s) here still wait for an answer, the first asked %s ago:\n",
-		due, len(r.cfg.Watch.Reminders), len(t.questions), Duration(r.now-oldest.askedAt))
-	ids := make([]any, 0, len(t.questions))
-	for _, q := range t.questions {
+		due, len(r.cfg.Watch.Reminders), len(shown), Duration(r.now-oldest.askedAt))
+	ids := make([]any, 0, len(shown))
+	for _, q := range shown {
 		fmt.Fprintf(&text, "- from %s: %s\n", q.askedBy, WorkOrderTitle(q.text))
 		ids = append(ids, q.id)
 	}
@@ -529,7 +577,7 @@ func (r *watchRun) postReminder(t *watchedThread) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stdout, "reminded thread %s of %d question(s) (%d of %d)\n", t.key, len(t.questions), due,
+	fmt.Fprintf(os.Stdout, "reminded thread %s of %d question(s) (%d of %d)\n", t.key, len(shown), due,
 		len(r.cfg.Watch.Reminders))
 	tx, err := r.conn.Begin()
 	if err != nil {
