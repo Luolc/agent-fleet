@@ -57,6 +57,9 @@ func statusWorld(t *testing.T) *world {
 			t.Fatal(err)
 		}
 	}
+	if _, err := conn.Exec("UPDATE agents SET light = 1 WHERE name = 'x-w1'"); err != nil {
+		t.Fatal(err)
+	}
 	agents := []string{}
 	for _, a := range []struct {
 		name, status string
@@ -105,7 +108,7 @@ func TestStatusFlagsIdleDebtorsBlockedAndMissingAgents(t *testing.T) {
 	}
 	// The idle thread agent owes no work; the ended row is not shown.
 	for name, want := range map[string]string{
-		"thread-1": "[]", "x-lead": `["owes-work"]`, "x-w1": `["blocked"]`,
+		"thread-1": "[]", "x-lead": `["owes-work"]`, "x-w1": `["blocked","light"]`,
 		"x-w2": `["missing"]`, "y-lead": "[]", "z-lead": "<absent>",
 	} {
 		if got := flags(name); got != want {
@@ -139,7 +142,7 @@ func TestStatusFiltersByJobAndPrintsATable(t *testing.T) {
 	if strings.Contains(text, "y-lead") || strings.Contains(text, "\ny ") {
 		t.Errorf("%s", text)
 	}
-	if !strings.Contains(text, "owes-work") || !strings.Contains(text, "missing") {
+	if !strings.Contains(text, "owes-work") || !strings.Contains(text, "missing") || !strings.Contains(text, "blocked,light") {
 		t.Errorf("%s", text)
 	}
 }

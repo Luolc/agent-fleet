@@ -460,7 +460,7 @@ func (s *threadStart) reserve() error {
 		if err := q.QueryRow("SELECT sessions FROM threads WHERE thread = ?1", s.msg.Thread).Scan(&s.session); err != nil {
 			return exit.Database(err)
 		}
-		return insertStarting(q, s.id, s.cwd, "", "")
+		return insertStarting(q, s.id, s.cwd, "", "", false)
 	})
 }
 

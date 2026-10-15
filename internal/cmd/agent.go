@@ -467,9 +467,9 @@ func lines(text string) []string {
 }
 
 // CheckResources refuses unless the 1-minute load average is below `cpus`
-// and MemAvailable is above 2 GiB. Inputs are the texts of /proc/loadavg
-// and /proc/meminfo.
-func CheckResources(loadavg string, cpus int, meminfo string) error {
+// and MemAvailable is above 2 GiB; a `light` agent skips the load. Inputs
+// are the texts of /proc/loadavg and /proc/meminfo.
+func CheckResources(loadavg string, cpus int, meminfo string, light bool) error {
 	fields := strings.Fields(loadavg)
 	if len(fields) == 0 {
 		return exit.Environmentf("cannot parse /proc/loadavg")
@@ -497,7 +497,7 @@ func CheckResources(loadavg string, cpus int, meminfo string) error {
 	if !found {
 		return exit.Environmentf("cannot find MemAvailable in /proc/meminfo")
 	}
-	if load >= float64(cpus) {
+	if !light && load >= float64(cpus) {
 		return exit.Refusedf("the 1-minute load average is %s, not below the %d CPUs; try again later",
 			strconv.FormatFloat(load, 'f', -1, 64), cpus)
 	}
@@ -512,7 +512,7 @@ func CheckResources(loadavg string, cpus int, meminfo string) error {
 // test can stand in for the machine. `runtime.NumCPU` honors the affinity
 // mask, not a cgroup CPU quota: in a container with a quota the load may
 // be compared with more CPUs than the quota allows.
-var machineResources = func() error {
+var machineResources = func(light bool) error {
 	loadavg, err := os.ReadFile("/proc/loadavg")
 	if err != nil {
 		return exit.IO(err)
@@ -521,15 +521,15 @@ var machineResources = func() error {
 	if err != nil {
 		return exit.IO(err)
 	}
-	return CheckResources(string(loadavg), runtime.NumCPU(), string(meminfo))
+	return CheckResources(string(loadavg), runtime.NumCPU(), string(meminfo), light)
 }
 
 // resources is machineResources, unless the config turns the check off.
-func resources(cfg *config.Config) error {
+func resources(cfg *config.Config, light bool) error {
 	if !cfg.ResourceCheck {
 		return nil
 	}
-	return machineResources()
+	return machineResources(light)
 }
 
 // CheckName refuses a name that is empty, has characters outside
@@ -823,11 +823,11 @@ func reserve(conn *sql.DB, checks func(q querier) error, inserts func(q querier)
 }
 
 // insertStarting writes the new agent's row as `starting`.
-func insertStarting(conn querier, id *identity.Identity, cwd, task, parentIssue string) error {
+func insertStarting(conn querier, id *identity.Identity, cwd, task, parentIssue string, light bool) error {
 	if _, err := conn.Exec(
-		"INSERT INTO agents (name, role, job, cwd, parent, report_to, task, state, started_at, issue, parent_issue, thread) "+
-			"VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?6, 'starting', ?7, ?8, ?9, ?10)",
-		id.Agent, id.Role.String(), id.Job, cwd, id.Parent, task, db.Now(), id.Issue, parentIssue, id.Thread); err != nil {
+		"INSERT INTO agents (name, role, job, cwd, parent, report_to, task, state, started_at, issue, parent_issue, thread, light) "+
+			"VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?6, 'starting', ?7, ?8, ?9, ?10, ?11)",
+		id.Agent, id.Role.String(), id.Job, cwd, id.Parent, task, db.Now(), id.Issue, parentIssue, id.Thread, light); err != nil {
 		return exit.Database(err)
 	}
 	return nil
@@ -913,6 +913,18 @@ func orDefault(flag *string, value string) *string {
 		return flag
 	}
 	return &value
+}
+
+// lightNote is what a `--light` agent is told: it got past the load check
+// on the promise that it only reads, which fleet does not enforce.
+func lightNote(light bool) string {
+	if !light {
+		return ""
+	}
+	return "You were started with `--light`: fleet skipped its load check for you, because you only read and do " +
+		"I/O. Do not compile, run test suites, or start builds or other CPU-heavy commands (`cargo build`, " +
+		"`cargo test`, `go test`, `npm run build`, `hugo`, `docker` and the like). When the work needs one, " +
+		"stop and tell whoever gave you this task. fleet does not enforce this; it relies on you."
 }
 
 // taskSection is the last part of a first message, `## Your task`: the
