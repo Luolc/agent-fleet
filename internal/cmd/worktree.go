@@ -38,6 +38,10 @@ const (
 		"When the path already exists and the ledger records it for this job, the path is " +
 		"printed and nothing changes, so every agent of a job gets the same worktree. A path " +
 		"that exists otherwise is refused. stdout carries only the path.\n\n" +
+		"When the new worktree's root has statute.toml and statute is on PATH, `statute " +
+		"compile` runs there, to generate the private output the checkout does not track; " +
+		"its output goes to stderr. A missing statute or a failed compile is only a warning " +
+		"on stderr: the worktree stays and the exit code is unchanged.\n\n" +
 		"Exit: 0 when the path is printed; 1 when FLEET_JOB is not set, <repo> has no " +
 		"checkout, the scope config is invalid, --name or --branch is invalid, --detach comes " +
 		"with --branch or names no commit of the checkout, the branch already exists, or the " +
@@ -221,6 +225,29 @@ func Worktree(args WorktreeArgs) (exit.Code, error) {
 		}
 		return 0, err
 	}
+	compileStatute(path)
 	fmt.Fprintln(os.Stdout, path)
 	return exit.Ok, nil
+}
+
+// compileStatute runs `statute compile` in a new worktree whose root has
+// statute.toml: the private output statute writes is not tracked, so a
+// fresh checkout lacks it. statute is optional, so its absence or failure
+// is only a warning, and its output goes to stderr: stdout carries the path.
+func compileStatute(path string) {
+	if !exists(filepath.Join(path, "statute.toml")) {
+		return
+	}
+	bin, err := exec.LookPath("statute")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "fleet worktree: warning: %s has statute.toml but statute is not on PATH; "+
+			"its private output was not generated\n", path)
+		return
+	}
+	compile := exec.Command(bin, "compile")
+	compile.Dir = path
+	compile.Stdout, compile.Stderr = os.Stderr, os.Stderr
+	if err := compile.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "fleet worktree: warning: `statute compile` in %s failed: %v\n", path, err)
+	}
 }
