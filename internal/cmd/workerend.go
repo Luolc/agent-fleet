@@ -38,6 +38,12 @@ const (
 		"Then the tab of the pane the ledger records for the worker is closed (gone already is fine), its worktree removed " +
 		"(its branch kept, with any commits not pushed, for the lead to hand on or delete), and its row ended, so `job end` is no longer refused for it. The " +
 		"job's other worktrees are left alone.\n\n" +
+		"When the caller is not the worker's parent (a thread agent or a shell ending a lead's " +
+		"worker), the parent is told with a message headed `[FROM: <caller>]` (`a shell` without " +
+		"FLEET_AGENT): who ended which worker, the work order released as abandoned, the branches " +
+		"kept and the report file. Telling it is best effort: the worker is ended by then, so a " +
+		"parent that is gone, blocked or gives no clear signal leaves a warning on stderr and " +
+		"the exit code unchanged.\n\n" +
 		"Exit: 0 when the row is ended; 1 when a check refuses (the caller, the row, the report " +
 		"file); 4 when no live row has the name; 5 when atb, git, herdr or the database fails, " +
 		"or something is in the way (listed)."
@@ -54,15 +60,15 @@ type WorkerEndArgs struct {
 
 // workerRow is the live ledger row `worker end` ends.
 type workerRow struct {
-	id                          int64
-	role, job, cwd, issue, pane string
+	id                                  int64
+	role, job, parent, cwd, issue, pane string
 }
 
 // liveWorker is the live row named `name`, or nil.
 func liveWorker(conn *sql.DB, name string) (*workerRow, error) {
 	var r workerRow
-	err := conn.QueryRow("SELECT id, role, job, cwd, issue, pane_id FROM agents WHERE name = ?1 AND state != 'ended'",
-		name).Scan(&r.id, &r.role, &r.job, &r.cwd, &r.issue, &r.pane)
+	err := conn.QueryRow("SELECT id, role, job, parent, cwd, issue, pane_id FROM agents WHERE name = ?1 AND state != 'ended'",
+		name).Scan(&r.id, &r.role, &r.job, &r.parent, &r.cwd, &r.issue, &r.pane)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -144,6 +150,10 @@ func WorkerEnd(h *herdr.Herdr, args WorkerEndArgs) (exit.Code, error) {
 			return 0, err
 		}
 	}
+	branches, err := keptBranches(conn, dirs)
+	if err != nil {
+		return 0, err
+	}
 	if err := removeDirs(h, nil, dirs, args.Name); err != nil {
 		return 0, err
 	}
@@ -151,7 +161,63 @@ func WorkerEnd(h *herdr.Herdr, args WorkerEndArgs) (exit.Code, error) {
 		return 0, err
 	}
 	fmt.Fprintf(os.Stdout, "ended worker %s of job %s\n", args.Name, row.job)
+	tellParent(h, row, args.Name, report, branches)
 	return exit.Ok, nil
+}
+
+// keptBranches are the branches the ledger records for `dirs`.
+func keptBranches(conn *sql.DB, dirs []jobDir) ([]string, error) {
+	var branches []string
+	for _, d := range dirs {
+		var branch string
+		if err := conn.QueryRow("SELECT branch FROM worktrees WHERE path = ?1 AND removed_at IS NULL", d.path).
+			Scan(&branch); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return nil, exit.Database(err)
+		}
+		if branch != "" {
+			branches = append(branches, branch)
+		}
+	}
+	return branches, nil
+}
+
+// tellParent tells the worker's parent who ended it, unless the parent is
+// the caller; a failure is only a warning, since the worker is ended
+// already.
+func tellParent(h *herdr.Herdr, row *workerRow, name, report string, branches []string) {
+	if row.parent == "" || row.parent == os.Getenv("FLEET_AGENT") {
+		return
+	}
+	var body strings.Builder
+	fmt.Fprintf(&body, "%s ended your worker %s with `fleet worker end`; do not wait for its `fleet done`.\n", callerName(), name)
+	if row.issue != "" {
+		fmt.Fprintf(&body, "Its work order %s is released as abandoned.\n", row.issue)
+	}
+	for _, b := range branches {
+		fmt.Fprintf(&body, "Its branch %s is kept.\n", b)
+	}
+	if report != "" {
+		fmt.Fprintf(&body, "Report: %s\n", report)
+	}
+	// The body is never empty and starts with the caller's name, so the
+	// header cannot fail.
+	text, _ := WithHeader(callerName(), body.String())
+	outcome, err := h.Prompt(row.parent, text)
+	var reason string
+	switch {
+	case err != nil:
+		reason = err.Error()
+	case outcome.Kind == herdr.Prompted:
+		fmt.Fprintf(os.Stdout, "told %s\n", row.parent)
+		return
+	case outcome.Kind == herdr.Blocked:
+		reason = "it is blocked by an interactive prompt"
+	case outcome.Kind == herdr.NotFound:
+		reason = "it is not found"
+	default:
+		reason = "no clear signal: " + outcome.Reason
+	}
+	fmt.Fprintf(os.Stderr, "warning: %s is ended, but its parent %s was not told: %s\n", name, row.parent, reason)
 }
 
 // endWorkerRow marks `dirs` removed and the worker's row ended.
