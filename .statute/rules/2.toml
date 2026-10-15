@@ -1,0 +1,31 @@
+id = 2
+slug = "reduce-existing-coupling"
+revision = 1
+kind = "rule"
+status = "trial"
+lang = "en"
+parent = "R83"
+default = "on"
+authority = ["simplicity"]
+constitution = ">=1"
+level = "project"
+check = "none"
+uses = ["instructions", "review"]
+
+[title]
+en = "When changing code that depends on git, GitHub, Linear or Slack, reduce that dependence where the change can"
+
+[text.statement]
+en = "When a change to fleet rewrites code that depends on git, GitHub, Linear or Slack, make the rewritten code depend on them less where the change can do so within its own goal."
+
+[text.reason]
+en = '''
+fleet is to need only herdr. The dependence already there comes out a step at a time, in the changes that touch it, rather than in one large change.
+'''
+
+[text.verification]
+en = '''
+A dependence is a call to `git`, `gh`, `atb`, `fednet` or the services behind them, a step that uses them in a built-in prompt, or a feature that fails without them.
+
+Violated when a change rewrites such code and keeps a dependence it could have made optional or removed without going beyond its goal.
+'''

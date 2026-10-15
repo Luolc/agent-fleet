@@ -1,0 +1,29 @@
+id = 15
+slug = "made-up-test-values"
+revision = 1
+kind = "rule"
+status = "trial"
+lang = "en"
+parent = "R15"
+default = "on"
+authority = ["personal-info"]
+constitution = ">=1"
+level = "project"
+check = "none"
+uses = ["instructions", "review"]
+
+[title]
+en = "Use only reserved domains and documentation addresses in test data"
+
+[text.statement]
+en = "In test data, use as domains only ones under `example.test`, and as IP addresses only ones from 192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24 and 2001:db8::/32."
+
+[text.reason]
+en = '''
+This repository is public; these domains and ranges are reserved for examples and can never be real.
+'''
+
+[text.verification]
+en = '''
+Violated when test data holds another domain or IP address.
+'''

@@ -1,0 +1,29 @@
+id = 11
+slug = "check-sums-up-ci"
+revision = 1
+kind = "rule"
+status = "trial"
+lang = "en"
+parent = "R15"
+default = "on"
+authority = ["discriminating-checks"]
+constitution = ">=1"
+level = "project"
+check = "none"
+uses = ["instructions", "review"]
+
+[title]
+en = "Let check, and only check, sum up every job of CI"
+
+[text.statement]
+en = "In `.github/workflows/ci.yml`, list every other job in the `needs` of the job `check`, let `check` pass only when each of them succeeded or was skipped because `changes` said it need not run, and name no other job `check`."
+
+[text.reason]
+en = '''
+`check` is the one result a pull request is judged by; a job it does not need, or a second job of that name, could fail without it.
+'''
+
+[text.verification]
+en = '''
+Violated when `ci.yml` has a job missing from the `needs` of `check`, when `check` passes although such a job failed, or when another job is named `check`.
+'''

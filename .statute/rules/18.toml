@@ -1,0 +1,31 @@
+id = 18
+slug = "report-judge-lines"
+revision = 1
+kind = "rule"
+status = "trial"
+lang = "en"
+parent = "R78"
+default = "on"
+authority = ["evidence.grounds"]
+constitution = ">=1"
+level = "project"
+check = "none"
+uses = ["instructions"]
+
+[title]
+en = "Give the judge lines in a worker report"
+
+[text.statement]
+en = "As a worker here, give in your report the `judge: N ok, M failed` line of each judge shard of the CI run on your pull request, or say that CI skipped the judge."
+
+[text.reason]
+en = '''
+The judge is the end-to-end check of fleet's behavior; its lines show the lead what it covered without opening the run.
+'''
+
+[text.verification]
+en = '''
+CI runs the judge in three shards, each printing its own `judge:` line.
+
+Violated when a worker's report on a pull request lacks a shard's line and does not say that CI skipped the judge.
+'''

@@ -1,0 +1,31 @@
+id = 1
+slug = "no-new-coupling"
+revision = 1
+kind = "rule"
+status = "trial"
+lang = "en"
+parent = "R83"
+default = "on"
+authority = ["simplicity"]
+constitution = ">=1"
+level = "project"
+check = "none"
+uses = ["instructions", "review"]
+
+[title]
+en = "Add no new dependence of fleet on git, GitHub, Linear or Slack"
+
+[text.statement]
+en = "Add to fleet no new dependence on git, GitHub, Linear or Slack: no new call to `git`, `gh`, `atb`, `fednet` or the services behind them, no new step that uses them in a built-in prompt, and no feature that fails without them; fixing a call that is already there adds none."
+
+[text.reason]
+en = '''
+fleet is to become a multi-agent framework that needs only herdr, with git, GitHub, Linear and Slack (through fednet) optional. Each new dependence on them moves it away from that goal.
+'''
+
+[text.verification]
+en = '''
+Code-hosting workflow stays out of fleet: a command such as `fleet merge` or `fleet ci watch` is such a dependence, and so is a new merge or CI step in the lead's built-in prompt; the merge and CI steps already there are not extended. Merging and watching CI belong to the user's own workflow or to tools outside fleet.
+
+Violated when a change adds such a call, such a prompt step, or a feature that fails when git, GitHub, Linear or Slack is absent.
+'''
