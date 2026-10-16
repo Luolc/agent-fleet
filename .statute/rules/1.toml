@@ -1,8 +1,9 @@
 id = 1
 slug = "no-new-coupling"
-revision = 1
+revision = 2
 kind = "rule"
-status = "trial"
+status = "superseded"
+superseded-by = 20
 lang = "en"
 parent = "R83"
 default = "on"

@@ -1,6 +1,6 @@
 id = 2
 slug = "reduce-existing-coupling"
-revision = 1
+revision = 2
 kind = "rule"
 status = "trial"
 lang = "en"
@@ -20,7 +20,7 @@ en = "When a change to fleet rewrites code that depends on git, GitHub, Linear o
 
 [text.reason]
 en = '''
-fleet is to need only herdr. The dependence already there comes out a step at a time, in the changes that touch it, rather than in one large change.
+fleet's direction is to need only herdr. The dependence already there comes out a step at a time, in the changes that touch it, rather than in one large change.
 '''
 
 [text.verification]
