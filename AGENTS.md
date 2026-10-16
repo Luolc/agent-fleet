@@ -355,7 +355,7 @@ A lower-ranking provision or a principal may depart from a higher-ranking provis
 - R253 Where CI runs a repository's full set of checks on each change, leave the checks a change does not touch to CI instead of also running them locally before a push.
 - L10 The checks a change here touches, besides the commit hooks (`pre-commit run --all-files`), are:
 
-  - for any file outside `docs/` and the Markdown files: `scripts/check.sh` (gofmt, `go vet`, golangci-lint, `go test`, govulncheck, a static build, the design's line cap and the judge's shards), with `FLEET_CHECK_CORES=N` on a machine shared with others to limit it to N cores;
+  - for any file outside `docs/` and the Markdown files: `scripts/check.sh` (gofmt, `go vet`, golangci-lint, `go test`, govulncheck, a static build, the design's line cap, the judge's shards and the release guard's test `scripts/release-guard-test.sh`), with `FLEET_CHECK_CORES=N` on a machine shared with others to limit it to N cores;
   - for `docs/design.md` alone: `scripts/check-design-cap.sh`;
   - for `cmd/`, `internal/`, `go.mod`, `go.sum` or `judge/`: `judge/run.sh <binary>` against a binary built from the change (`go build -o <binary> ./cmd/fleet`); it needs docker, and `JUDGE_SUITES="<suite> ..."` runs only those suites.
 - L11 In `.github/workflows/ci.yml`, list every other job in the `needs` of the job `check`, let `check` pass only when each of them succeeded or was skipped because `changes` said it need not run, and name no other job `check`.

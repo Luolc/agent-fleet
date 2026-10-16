@@ -1057,9 +1057,9 @@ by = "default"
 
 [[rules]]
 rule = "L10"
-revision = 4
-sha256 = "619e8c3020771403632a1478dd174e0e1c634267758d638a3e84d4c260b87995"
-original-sha256 = "856c57ac8949653a86fe6a9e38c98c92d88f5cad4b84d927212de79ba53369aa"
+revision = 5
+sha256 = "7c5438809cd90c3a13a7eabec8350866dc47ec957edb70da3854c6486f10a810"
+original-sha256 = "9bc33f0a2d842589e0c4f81adde18c26f863d84430b90b574ec1ebdc7bbadf97"
 by = "default"
 
 [[rules]]
