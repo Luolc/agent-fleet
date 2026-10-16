@@ -8,7 +8,8 @@
 #   s-perm   a command confirmation (BLOCK): a helper (the `unblock` watch's
 #            worker, watch-unblock-<row id>), the lead told
 #   l-lead   a usage-limit menu (LIMIT): no key, no helper, the people asked;
-#            once it gets past the menu, the card is taken back
+#            once it gets past the menu, the card is taken back, and its
+#            next stop is asked about again
 #   s-new    a start left at an unknown screen an hour ago: a helper, the
 #            starter told; s-young, left there just now, is the starter's
 #   thread-s the home thread's agent, at its input box: left alone
@@ -172,6 +173,13 @@ has "unblock: l-lead's card is taken back from Slack" "$(cat /home/agent/screens
 check "unblock: l-lead's question is closed" "closed " "$(ledger "SELECT state FROM questions WHERE id = $qlimit")"
 check "unblock: the questions of the agents still stopped are not taken back" 1 \
   "$(grep -c 'client ask-close' /home/agent/screens-fednet.log)"
+# l-lead stops at a usage limit again: a new stop, asked about again.
+"${S[@]}" agent prompt l-lead "please LIMIT" --wait --until working --timeout 20000 >/dev/null
+"${S[@]}" agent wait l-lead --until blocked --timeout 20000 >/dev/null
+uwatch >/home/agent/unblock-again.out 2>&1; rc=$?
+check "unblock: the run after l-lead stopped again exits 0" 0 "$rc"
+check "unblock: l-lead's second stop is asked about on a new card" "2 1" \
+  "$(grep -c 'l-lead is stopped at a screen fleet never answers' /home/agent/screens-fednet.log) $(ledger "SELECT count(*) FROM questions WHERE asked_by = '$hlimit' AND state = 'pending'" | tr -d ' ')"
 # An unblock watch prompt with a slot the prompt does not have: no
 # helper and no ticket for a newly stopped agent; its home thread is told
 # once, naming the file and line, and the next run does not say it again.
@@ -198,7 +206,7 @@ uwatch >/home/agent/unblock5.out 2>&1; rc=$?
 check "unblock: the next run fails the same way" 1 "$rc"
 check "unblock: the thread is told once" 1 "$(grep -c "fleet's prompt config is broken" /home/agent/screens-fednet.log)"
 mv /home/agent/screens.json.keep "/home/agent/.config/$T/$SCOPE.json"
-for out in /home/agent/unblock1.out /home/agent/unblock2.out /home/agent/unblock3.out /home/agent/unblock-recovered.out /home/agent/unblock4.out /home/agent/unblock5.out; do
+for out in /home/agent/unblock1.out /home/agent/unblock2.out /home/agent/unblock3.out /home/agent/unblock-recovered.out /home/agent/unblock-again.out /home/agent/unblock4.out /home/agent/unblock5.out; do
   [ "$fail" = 0 ] || { echo "--- $out"; cat "$out"; }
 done
 "${S[@]}" server stop >/dev/null

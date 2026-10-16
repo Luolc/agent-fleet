@@ -211,7 +211,7 @@ func TestAHandsOffScreenIsAskedOnACardWithTheJobsEnd(t *testing.T) {
 		`at a usage limit. A person has to deal with it at the machine (agent r-lead in the herdr session fleet-main).\n\n` +
 		"The screen:\\n\\n```\\n"
 	if !strings.HasPrefix(got, want) || !strings.HasSuffix(got, `"options":[{"short":"I'll deal with it","long":"A person `+
-		`deals with the screen at the machine; fleet does not ask about it again.","recommended":true},{"short":"End job r",`+
+		`deals with the screen at the machine; fleet does not ask about this stop again.","recommended":true},{"short":"End job r",`+
 		"\"long\":\"The thread's agent ends job r by force (`fleet job end r --force`), its work as it stands.\"}]}") {
 		t.Errorf("card %s", got)
 	}
@@ -386,5 +386,66 @@ func TestARecoveredAgentsScreenCardsAreTakenBack(t *testing.T) {
 		return threads[key]
 	}); err != nil || len(threads) != 0 {
 		t.Errorf("questions the reminders read: %v, %v", threads, err)
+	}
+}
+
+// An agent that stops again after it recovered is asked about again,
+// whether or not the people answered the card of its first stop.
+func TestEachStopOfAnAgentIsAskedAbout(t *testing.T) {
+	bin := t.TempDir()
+	calls := filepath.Join(bin, "calls")
+	fake := "#!/bin/sh\necho \"$*\" >> " + calls + "\n" +
+		"echo '{\"id\":\"card-1\",\"channel\":\"C1\",\"ts\":\"1.0\",\"permalink\":\"https://slack.example.test/card-1\"}'\n"
+	if err := os.WriteFile(filepath.Join(bin, "fednet"), []byte(fake), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+":/usr/bin:/bin")
+	conn, err := db.OpenAt(filepath.Join(t.TempDir(), "screens.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	sc, err := config.ParseScope([]byte(`{"fednet": {"socket": "/run/fednet.sock"}}`), "/home/u")
+	if err != nil {
+		t.Fatal(err)
+	}
+	u := testWorkers(conn, sc)
+	row := stopRow{ID: 7, Name: "thread-c1", Role: "thread", Thread: "C1/1.0", State: "active"}
+	e := u.builtinWatch(config.BlockedScreens)
+	stillStopped := map[string]bool{"watch-unblock-7": true}
+	asks := func() int {
+		got, _ := os.ReadFile(calls)
+		return strings.Count(string(got), "client ask -socket")
+	}
+	for i, answered := range []bool{false, true} {
+		if err := u.handle(e, false, row, limitMenu); err != nil {
+			t.Fatal(err)
+		}
+		if answered {
+			if _, err := conn.Exec("UPDATE questions SET state = 'answered' WHERE state = 'pending'"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		// While it stays stopped, it is not asked about again.
+		if err := u.closeRecovered(stillStopped); err != nil {
+			t.Fatal(err)
+		}
+		if err := u.handle(e, false, row, limitMenu); err != nil {
+			t.Fatal(err)
+		}
+		if got := asks(); got != i+1 {
+			t.Fatalf("stop %d (answered %v): %d ask(s) while stopped", i+1, answered, got)
+		}
+		if err := u.closeRecovered(map[string]bool{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := u.handle(e, false, row, limitMenu); err != nil {
+		t.Fatal(err)
+	}
+	var pending int
+	if err := conn.QueryRow("SELECT count(*) FROM questions WHERE state = 'pending'").Scan(&pending); err != nil ||
+		asks() != 3 || pending != 1 {
+		t.Errorf("third stop: %d ask(s), %d pending, %v; want 3 and 1", asks(), pending, err)
 	}
 }

@@ -83,13 +83,14 @@ const (
 		"left at a screen for 10 minutes), thread agents included. The folder-trust dialog for " +
 		"the agent's own directory is answered as a start answers it, and nobody is told. A usage " +
 		"limit, a model switch, a usage reset or a purchase is never pressed: the people in the " +
-		"agent's home thread are asked, once. Any other screen gets a worker of the watch `unblock` " +
+		"agent's home thread are asked, once per stop. Any other screen gets a worker of the watch `unblock` " +
 		"(`watch-unblock-<row id>`), one at a time and at most 3 per agent, " +
 		"which presses keys as fleet's guidance says or writes a question that the next run asks " +
 		"the people; no worker is started while that question waits for an answer. Questions about " +
 		"a screen are reminded of like the others, but never time out; one is closed when the " +
 		"stopped agent's job ends, or once the agent is no longer stopped at a screen, snoozed or not, " +
-		"its card taken back from Slack (`fednet client ask-close`; a failure only warns). A worker's lead " +
+		"its card taken back from Slack (`fednet client ask-close`; a failure only warns), and its next " +
+		"stop is asked about again, whether or not the people answered. A worker's lead " +
 		"is told when a worker starts for it or the people are asked, and so is the starter of a lead or " +
 		"worker whose start stopped at the screen.\n\n" +
 		"Threads (only with a fednet socket): a live thread agent gone from herdr has its session " +
