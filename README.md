@@ -16,6 +16,43 @@ go build -o fleet ./cmd/fleet
 ./fleet --version
 ```
 
+## Install
+
+Each release has a static binary for linux and darwin on amd64 and arm64,
+and their SHA-256 sums in `SHA256SUMS`. To install v0.1.0 on linux/amd64:
+
+```sh
+v=0.1.0 bin=fleet-linux-amd64
+curl -fLO "https://github.com/Luolc/agent-fleet/releases/download/v$v/$bin"
+curl -fLO "https://github.com/Luolc/agent-fleet/releases/download/v$v/SHA256SUMS"
+grep " $bin\$" SHA256SUMS | sha256sum -c   # macOS: shasum -a 256 -c
+install -m 755 "$bin" ~/.local/bin/fleet
+fleet --version
+```
+
+With the Go version named in `go.mod`, this builds the same release instead:
+
+```sh
+go install github.com/Luolc/agent-fleet/cmd/fleet@v0.1.0
+```
+
+## Release
+
+1. Merge a PR that sets `const version` in `cmd/fleet/main.go` to the new
+   version, say `0.1.1`.
+2. Wait for `ci.yml`'s run on the push of the merge commit to `main` to
+   succeed on its first attempt:
+   `gh api 'repos/Luolc/agent-fleet/actions/runs?head_sha=<sha>&event=push&branch=main'`.
+   A commit whose run passed only on a rerun is not released; take a later
+   one.
+3. Tag that commit and push the tag:
+   `git tag v0.1.1 <sha> && git push origin v0.1.1`.
+
+The tag starts `.github/workflows/release.yml`, which checks the tag against
+step 1's `const version` with `scripts/release-guard.sh` and step 2 with
+[`release-ci-green`](https://github.com/Luolc/ci-actions), then builds the
+binaries and publishes the release; it releases nothing when a check fails.
+
 ## Check
 
 ```sh
@@ -23,7 +60,8 @@ scripts/check.sh
 ```
 
 This runs gofmt, `go vet`, golangci-lint, the tests, govulncheck, a static
-build, and the design doc's line cap. The linters are pinned in `tools/` and
+build, the design doc's line cap, the judge's shards and the release guard's
+test. The linters are pinned in `tools/` and
 run through `go tool`, so nothing needs installing beyond Go. Set
 `FLEET_CHECK_CORES=N` to limit the run to N cores.
 

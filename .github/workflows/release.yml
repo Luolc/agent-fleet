@@ -1,0 +1,103 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  # A PR that edits this file runs the build alone, with no checks and no
+  # release, since the workflow otherwise first runs on a tag.
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+
+concurrency:
+  group: release-${{ github.ref }}
+
+permissions: {}
+
+env:
+  GOTOOLCHAIN: local
+
+# A tag is released only when guard and ci-green pass. ci-green also stands
+# for "the commit is on main": it passes only for a commit with a push run
+# of ci.yml on main, and main takes no force-push. publish is the only job
+# that can write.
+jobs:
+  guard:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: tag is v plus const version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: scripts/release-guard.sh "$TAG"
+
+  ci-green:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40 # the action waits at most 30 minutes for the run
+    permissions:
+      actions: read # the ci.yml runs of the tagged commit
+    steps:
+      # Checks github.sha, the tagged commit.
+      - uses: Luolc/ci-actions/release-ci-green@263f19f98cd6efd5f088404135ac8022900f8cb8 # main, 2026-10-16
+
+  build:
+    needs: [guard, ci-green]
+    if: >-
+      ${{ !cancelled() && (github.event_name == 'pull_request' ||
+      (needs.guard.result == 'success' && needs.ci-green.result == 'success')) }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: build
+        run: |
+          mkdir dist
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+            CGO_ENABLED=0 GOOS=${target%/*} GOARCH=${target#*/} \
+              go build -trimpath -buildvcs=false -o "dist/fleet-${target%/*}-${target#*/}" ./cmd/fleet
+          done
+          dist/fleet-linux-amd64 --version
+          cd dist && sha256sum fleet-* > SHA256SUMS && cat SHA256SUMS
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    if: github.event_name == 'push'
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write # create the release
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist
+
+      # --verify-tag fails on a missing tag instead of creating one.
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          files=(dist/fleet-* dist/SHA256SUMS)
+          [ "${#files[@]}" -eq 5 ]
+          gh release create "$TAG" "${files[@]}" --repo "$GITHUB_REPOSITORY" --verify-tag --title "$TAG" --generate-notes
