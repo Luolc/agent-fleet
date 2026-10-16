@@ -1,5 +1,5 @@
 # Sourced by inside.sh: `inbox`, `thread post`, `thread end`, `thread
-# set-project`, `thread relate`, `ask-human` and `ask-thread` against the real herdr, with
+# set-project`, `thread relate`, `thread handoff`, `ask-human` and `ask-thread` against the real herdr, with
 # a fake atb and a fake fednet that log their arguments. Threads use the
 # scope `main` (a message without a scope): its ledger and the herdr session
 # fleet-main.
@@ -12,7 +12,8 @@ mkdir -p /home/agent/.config/$T /home/agent/fake-thread /home/agent/events
 echo '{"linear": {"team": "TH"}, "fednet": {"socket": "/home/agent/fednet.sock"}}' > "/home/agent/.config/$T/main.json"
 # The fake atb fails every call (exit 4) while /home/agent/linear-down exists;
 # `create` prints TH-5, `query` prints the team and project of an issue
-# when asked for them, else one earlier summary.
+# when asked for them, else one earlier summary; /home/agent/next-ticket,
+# when it exists, names the issue `create` prints instead.
 cat > /home/agent/fake-thread/atb <<'ATB'
 #!/bin/sh
 echo "$*" >> /home/agent/atb.log
@@ -30,7 +31,8 @@ if [ "$2" = release ] && [ -e /home/agent/release-down ]; then
   : > /home/agent/release-failed-once; echo "error: state update failed" >&2; exit 1
 fi
 case "$2" in
-  create) echo '{"identifier":"TH-5","url":"https://linear.example.test/TH-5"}' ;;
+  create) id=$(cat /home/agent/next-ticket 2>/dev/null || echo TH-5)
+    echo '{"identifier":"'"$id"'","url":"https://linear.example.test/'"$id"'"}' ;;
   comment) cp "$5" "/home/agent/comment-$3.md" ;;
   query)
     case "$3" in
@@ -41,13 +43,17 @@ esac
 ATB
 # The fake fednet logs a `react` apart, in /home/agent/react.log, and
 # fails (exit 4, one line on stderr) while
-# /home/agent/fednet-down exists; `ask` posts card-<n>, n the ref's id.
+# /home/agent/fednet-down exists; `ask` posts card-<n>, n the ref's id;
+# `routes` names #repo-example-target (C0HD), and `open-thread` opens
+# <channel>/1700000500.000.
 cat > /home/agent/fake-thread/fednet <<'FEDNET'
 #!/bin/sh
 [ "$2" = react ] && { echo "$*" >> /home/agent/react.log; exit 0; }
 echo "$*" >> /home/agent/fednet.log
 [ -e /home/agent/fednet-down ] && { echo "post: hub unreachable" >&2; exit 4; }
 [ "$2" = ask ] && { echo '{"id":"card-'"${8#*:}"'","channel":"C0","ts":"1.0","permalink":"https://slack.example.test/card-'"${8#*:}"'"}'; exit 0; }
+[ "$2" = routes ] && { echo '{"routes":[{"channel":"C0HD","name":"repo-example-target"}]}'; exit 0; }
+[ "$2" = open-thread ] && { echo "$6/1700000500.000"; exit 0; }
 echo m-posted
 FEDNET
 # A herdr shim that kills the hook (its parent) at `pane rename` while
@@ -805,3 +811,60 @@ out=$(inbox "$(event m22 C0LZ/3.3 'lazy 0xMSG22' '' '"channel_name":"repo-'"$R"'
 check "inbox: next start with the workspace gone, exit 0" 0 "$rc"
 check "inbox: the workspace and its shell tab restored" "shell c0lz-3-3" "$(lazy_tabs)"
 "${L[@]}" server stop >/dev/null
+
+# A thread agent hands work off to the channel of another repo: fleet opens
+# a thread there, starts its agent with the task, tells the first thread
+# and relates the two tickets.
+mkdir -p /home/agent/dev/example-target /home/agent/dev/example-unrouted
+KH=C0HS/1700000600.100
+AH=thread-c0hs-1700000600-100
+KD=C0HD/1700000500.000
+AD=thread-c0hd-1700000500-000
+rm -f /home/agent/fednet-down /home/agent/linear-down
+echo TH-6 > /home/agent/next-ticket
+out=$(inbox "$(event m30 "$KH" 'move this to the target repo 0xMSG30')" 2>&1); rc=$?
+check "handoff: the first thread's agent starts, exit 0" 0 "$rc"
+settled "$AH"
+echo TH-7 > /home/agent/next-ticket
+: > /home/agent/fednet.log
+: > /home/agent/atb.log
+htask=$(task handoff 'Import the target table 0xHAND1
+The people asked for it in C0HS/1700000600.100 at ts 1700000001.000.')
+out=$(PATH=/home/agent/fake-thread:$PATH env "${P}AGENT=$AH-lead" "${P}ROLE=lead" "${P}PARENT=$AH" "${P}SCOPE=main" \
+  "${P}JOB=x" "${P}ISSUE=" "${P}THREAD=" "$T" thread handoff --repo example-target --file "$htask" 2>&1); rc=$?
+check "handoff: exit 1 from a lead" 1 "$rc"
+has "handoff: a lead is pointed at its home thread's agent" "$out" "a lead does not hand work off"
+out=$(thra "$KH" TH-6 -- thread handoff --repo "$R" --file "$htask" 2>&1); rc=$?
+check "handoff: exit 1 to the thread's own channel" 1 "$rc"
+out=$(thra "$KH" TH-6 -- thread handoff --repo example-unrouted --file "$htask" 2>&1); rc=$?
+check "handoff: exit 1 to a channel fleet knows no id of" 1 "$rc"
+has "handoff: says fleet opens no channel" "$out" "fleet knows no id of #repo-example-unrouted" "fleet opens no channel"
+check "handoff: the refusals opened no thread and recorded nothing" "0 0 " \
+  "$(grep -c open-thread /home/agent/fednet.log) $(tledger "SELECT count(*) FROM handoffs")"
+out=$(thra "$KH" TH-6 -- thread handoff --repo example-target --file "$htask" 2>&1); rc=$?
+check "handoff: exit 0" 0 "$rc"
+[ "$rc" = 0 ] || printf '%s\n' "$out"
+has "handoff: reports the new thread" "$out" "handed off to thread $KD in #repo-example-target" "TH-7 is related to TH-6"
+has "handoff: the thread opens in the target channel with fleet's line" "$(cat /home/agent/fednet.log)" \
+  "client open-thread -socket /home/agent/fednet.sock -channel C0HD -- 从#repo-$R的线程 $KH 转来 ($AH)：Import the target table 0xHAND1"
+has "handoff: the first thread is told where the work went" "$(cat /home/agent/fednet.log)" \
+  "-thread $KH -- 已转到 #repo-example-target 的线程 $KD"
+check "handoff: the new thread's ticket is created, claimed for its agent, and related to the first one's" \
+  "linear create|linear claim TH-7 --agent $AD|linear relate TH-7 TH-6|" \
+  "$(sed -E 's/^(linear create|linear claim TH-7 --agent [^ ]*).*/\1/' /home/agent/atb.log | tr '\n' '|')"
+check "handoff: the new thread is recorded in the target's channel, with no message from a person" \
+  "repo-example-target|/home/agent/dev/example-target|TH-7| " \
+  "$(tledger "SELECT mapping, cwd, ticket, last_text || last_user || last_ts FROM threads WHERE thread = '$KD'")"
+check "handoff: the first thread keeps its ticket and its agent" "TH-6|active " \
+  "$(tledger "SELECT t.ticket, a.state FROM threads t, agents a WHERE t.thread = '$KH' AND a.name = '$AH'")"
+check "handoff: the new thread's agent runs in the target's checkout" /home/agent/dev/example-target "$(agent_field "$AD" cwd)"
+first=$(received "$AD")
+has "handoff: its first message is the task, from the first thread's agent" "$first" \
+  "[FROM: $AH]" "[HANDOFF from $AH in thread $KH]" "not a person's words" "0xHAND1"
+check "handoff: the task is headed by the first thread's agent, not by inbox" "[FROM: $AH]" "$(printf '%s\n' "$first" | head -1)"
+out=$(thra "$KH" TH-6 -- thread handoff --repo example-target --file "$htask" 2>&1); rc=$?
+check "handoff: again, exit 0" 0 "$rc"
+has "handoff: again, nothing done" "$out" "already handed off to thread $KD"
+check "handoff: again, one thread opened and one line posted" "1 1" \
+  "$(grep -c open-thread /home/agent/fednet.log) $(grep -c '已转到' /home/agent/fednet.log)"
+rm -f /home/agent/next-ticket

@@ -6,7 +6,7 @@ check "fake claude starts idle" idle "$(start_fake fake)"
 check "version: exit 0" 0 "$rc"
 "$T" --help >/dev/null 2>&1; rc=$?
 check "help: exit 0" 0 "$rc"
-for c in inbox "thread post" "thread progress" "thread end" "thread set-project" "thread relate" ask-human ask-thread "job start" "job list" "job end" spawn send done "worker end" status watch worktree "prompt show"; do
+for c in inbox "thread post" "thread progress" "thread end" "thread set-project" "thread relate" "thread handoff" ask-human ask-thread "job start" "job list" "job end" spawn send done "worker end" status watch worktree "prompt show"; do
   # shellcheck disable=SC2086
   out=$("$T" $c --help 2>&1); rc=$?
   case "$out" in *Exit*) states=yes ;; *) states=no ;; esac
@@ -15,7 +15,7 @@ done
 out=$("$T" job --help 2>&1); rc=$?
 has "job --help: lists start and list" "$out" start list
 out=$("$T" thread --help 2>&1); rc=$?
-has "thread --help: lists post, progress, end, set-project and relate" "$out" post progress end set-project relate
+has "thread --help: lists post, progress, end, set-project, relate and handoff" "$out" post progress end set-project relate handoff
 "$T" thread frobnicate >/dev/null 2>&1; rc=$?
 check "unknown thread subcommand: exit 1" 1 "$rc"
 out=$("$T" send 2>&1); rc=$?

@@ -17,7 +17,7 @@ import (
 	"github.com/Luolc/agent-fleet/internal/exit"
 )
 
-const schemaVersion = 17
+const schemaVersion = 18
 
 // Version 1: the `agents` table. Ended rows are kept as history, so `name`
 // is unique only among rows that have not ended.
@@ -291,8 +291,25 @@ const schemaV17 = `
 ALTER TABLE questions ADD COLUMN answer TEXT NOT NULL DEFAULT '';
 `
 
+// Version 18: `handoffs`, one row per `fleet thread handoff`: the thread
+// it came from, the thread agent that made it, the target's mapping, the
+// task as given, the thread fleet opened for it (empty until it is
+// opened) and when the last step was done (null until then).
+const schemaV18 = `
+CREATE TABLE handoffs (
+    id          INTEGER PRIMARY KEY,
+    from_thread TEXT    NOT NULL,
+    by          TEXT    NOT NULL,
+    mapping     TEXT    NOT NULL,
+    task        TEXT    NOT NULL,
+    to_thread   TEXT    NOT NULL DEFAULT '',
+    created_at  INTEGER NOT NULL,
+    done_at     INTEGER
+);
+`
+
 // migrations[v] upgrades a ledger at version v to v+1.
-var migrations = [schemaVersion]string{schema, schemaV2, schemaV3, schemaV4, schemaV5, schemaV6, schemaV7, schemaV8, schemaV9, schemaV10, schemaV11, schemaV12, schemaV13, schemaV14, schemaV15, schemaV16, schemaV17}
+var migrations = [schemaVersion]string{schema, schemaV2, schemaV3, schemaV4, schemaV5, schemaV6, schemaV7, schemaV8, schemaV9, schemaV10, schemaV11, schemaV12, schemaV13, schemaV14, schemaV15, schemaV16, schemaV17, schemaV18}
 
 // Path is where the ledger of `scope` lives:
 // `$XDG_STATE_HOME/fleet/<scope>.db`, with `~/.local/state` when

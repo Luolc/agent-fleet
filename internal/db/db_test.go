@@ -530,3 +530,36 @@ func TestAVersion16LedgerKeepsItsCardsWithNoAnswer(t *testing.T) {
 		t.Errorf("answer %q, outcome %s, version %d", answer, outcome, version)
 	}
 }
+
+func TestAVersion17LedgerGetsAnEmptyHandoffsTable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fleet.db")
+	conn, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range append(migrations[:17:17],
+		"INSERT INTO threads (thread, slug, channel, created_at) VALUES ('C1/1.1', 'c1-1-1', 'C1', 1)",
+		"PRAGMA user_version = 17") {
+		if _, err := conn.Exec(step); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	conn, err = OpenAt(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	var version, threads, handoffs int64
+	if err := conn.QueryRow("SELECT (SELECT count(*) FROM threads), (SELECT count(*) FROM handoffs)").Scan(&threads, &handoffs); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if threads != 1 || handoffs != 0 || version != schemaVersion {
+		t.Errorf("threads %d, handoffs %d, version %d", threads, handoffs, version)
+	}
+}
