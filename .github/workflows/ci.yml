@@ -79,18 +79,22 @@ jobs:
           [ -n "$version" ] || { echo "no statute version in statute-checks.toml" >&2; exit 1; }
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
-      - name: statute cache
-        id: statute-cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cargo/bin/statute
-          key: statute-${{ runner.os }}-${{ steps.statute.outputs.version }}
-
       - name: install statute
-        if: steps.statute-cache.outputs.cache-hit != 'true'
         env:
           VERSION: ${{ steps.statute.outputs.version }}
-        run: cargo install statute --version "$VERSION" --locked
+          TARGET: statute-x86_64-unknown-linux-musl
+        run: |
+          dir=$(mktemp -d)
+          base="https://github.com/Luolc/agent-constitution/releases/download/statute-v${VERSION}"
+          curl --fail --silent --show-error --location --output "$dir/$TARGET.tar.gz" "$base/$TARGET.tar.gz"
+          curl --fail --silent --show-error --location --output "$dir/$TARGET.sha256" "$base/$TARGET.sha256"
+          (cd "$dir" && sha256sum --check --strict "$TARGET.sha256")
+          mkdir "$dir/unpacked"
+          tar -xzf "$dir/$TARGET.tar.gz" -C "$dir/unpacked" statute
+          mkdir -p "$HOME/.local/bin"
+          install -m 0755 "$dir/unpacked/statute" "$HOME/.local/bin/statute"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/statute" --version
 
       - name: pre-commit
         env:
