@@ -40,8 +40,8 @@ const (
 // of a job that is no longer open: it stays pending as the thread's,
 // unless dropped: closed as on watch's own forced end, because the job
 // ended after watch told its lead that a question expired, or because it
-// is a screen question, whose agent went with the job.
-// A card is reminded of with its link; snoozeUntil is when a snoozed card
+// is a screen question, whose agent went with the job. A card is
+// reminded of with its link; snoozeUntil is when a snoozed card
 // came or comes back (0 for none), from which its reminders and its
 // timeout count; forwarded is a lead's question a pending card of the
 // thread agent's asks the people for.
