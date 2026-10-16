@@ -226,3 +226,43 @@ func TestAHandoffIsRefusedBeforeAnythingForOtherCallersItsOwnChannelAndAnUnknown
 		t.Errorf("%d deliveries", len(*got))
 	}
 }
+
+// A thread without its ticket yet leaves the handoff unfinished: the
+// next run, once both have one, relates them and opens nothing more.
+func TestAHandoffRunAgainRelatesTheTicketsOnceBothThreadsHaveOne(t *testing.T) {
+	conn, task, bin := handoffSetup(t)
+	fail := false
+	got := fakeHandoffRoute(t, &fail)
+	if _, err := conn.Exec("UPDATE threads SET ticket = '' WHERE thread = ?1", handoffFrom); err != nil {
+		t.Fatal(err)
+	}
+	if code, err := ThreadHandoff(nil, ThreadHandoffArgs{Repo: "example-b", File: task}); err != nil || code != exit.Ok {
+		t.Fatalf("first run: exit %d, %v", code, err)
+	}
+	if atbLog, _ := os.ReadFile(filepath.Join(bin, "atb.log")); len(atbLog) != 0 {
+		t.Errorf("first run: atb calls %q", atbLog)
+	}
+	if _, err := conn.Exec("UPDATE threads SET ticket = 'EX-1' WHERE thread = ?1", handoffFrom); err != nil {
+		t.Fatal(err)
+	}
+	if code, err := ThreadHandoff(nil, ThreadHandoffArgs{Repo: "example-b", File: task}); err != nil || code != exit.Ok {
+		t.Fatalf("second run: exit %d, %v", code, err)
+	}
+	if atbLog, _ := os.ReadFile(filepath.Join(bin, "atb.log")); string(atbLog) != "linear relate EX-2 EX-1\n" {
+		t.Errorf("second run: atb calls %q", atbLog)
+	}
+	opened, posted := 0, 0
+	for _, call := range fednetCalls(t, bin) {
+		if strings.HasPrefix(call, "client open-thread ") {
+			opened++
+		}
+		if strings.HasPrefix(call, "client post ") {
+			posted++
+		}
+	}
+	var done int
+	if err := conn.QueryRow("SELECT count(*) FROM handoffs WHERE done_at IS NOT NULL").Scan(&done); err != nil ||
+		opened != 1 || posted != 1 || len(*got) != 1 || done != 1 {
+		t.Errorf("%d opened, %d posted, %d deliveries, %d done, %v", opened, posted, len(*got), done, err)
+	}
+}

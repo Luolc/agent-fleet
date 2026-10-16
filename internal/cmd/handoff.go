@@ -42,7 +42,8 @@ const (
 		"words, never recorded as the latest message a person posted there. Then it posts one " +
 		"line to your thread, `已转到 #<channel> 的线程 <key>`, and relates the two threads' " +
 		"tickets (`atb linear relate`), taking both from the ledger; your ticket is not otherwise " +
-		"touched. A thread without a ticket is said on stderr and not related.\n\n" +
+		"touched. While a thread has no ticket the two are not related, said on stderr, and the " +
+		"handoff stays unfinished: running it again once both have one relates them.\n\n" +
 		"Each step done is recorded (table `steps`, `handoff:<id>`), so running it again with the " +
 		"same task to the same target continues where it stopped and never opens a second thread; " +
 		"once every step is done, it does nothing. A run killed between opening the thread and " +
@@ -280,6 +281,11 @@ func (ho *handoff) finish(h *herdr.Herdr) (exit.Code, error) {
 	if err != nil {
 		return 0, again(err)
 	}
+	if related == "" {
+		fmt.Fprintf(os.Stdout, "handed off to thread %s in #%s: its agent has the task, and your thread was told; "+
+			"the tickets are not related yet, run thread handoff again once both threads have one\n", ho.to, ho.mapping)
+		return exit.Ok, nil
+	}
 	if _, err := ho.conn.Exec("UPDATE handoffs SET done_at = ?1 WHERE id = ?2", db.Now(), ho.id); err != nil {
 		return 0, exit.Database(err)
 	}
@@ -289,11 +295,13 @@ func (ho *handoff) finish(h *herdr.Herdr) (exit.Code, error) {
 }
 
 // relate is the step that relates the new thread's ticket to the
-// caller's thread's, both read from the ledger; a thread without one is
-// said on stderr and the step left undone. Returns what to report.
+// caller's thread's, both read from the ledger, and returns what to
+// report. A thread without one is said on stderr and the step left
+// undone, returning "", so the handoff stays unfinished and a rerun
+// relates them.
 func (ho *handoff) relate(key string) (string, error) {
 	if ho.cfg.LinearTeam == "" {
-		return "", nil
+		return "; thread tickets are off for this scope", nil
 	}
 	to, err := threadByKey(ho.conn, ho.to)
 	if err != nil {
