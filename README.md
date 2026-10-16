@@ -19,8 +19,8 @@ go build -o fleet ./cmd/fleet
 ## Install
 
 Each release has a binary for linux and darwin on amd64 and arm64, built
-without cgo (static on linux; on darwin it links only the system's
-libSystem), and their SHA-256 sums in `SHA256SUMS`. To install v0.1.0 on
+without cgo (static on linux; on darwin it links only system libraries),
+and their SHA-256 sums in `SHA256SUMS`. To install v0.1.0 on
 linux/amd64:
 
 ```sh
