@@ -112,7 +112,8 @@ exit 0
 `
 }
 
-// threadFednet is a fake fednet: every call logged; every call fails
+// threadFednet is a fake fednet: every call logged, `react` apart in
+// <dir>/reacts and failing while <dir>/react-down exists; every call fails
 // while <dir>/fednet-down exists; `open-thread` prints the key of a new
 // thread in the channel it is given; `routes` prints <dir>/routes.json,
 // or no routes without it; `ask` keeps the card in <dir>/card.json and
@@ -121,6 +122,11 @@ exit 0
 // exists; `ask-close` prints nothing.
 const threadFednet = `#!/bin/sh
 dir="$(dirname "$0")/.."
+if [ "$2" = react ]; then
+  echo "fednet $*" >> "$dir/reacts"
+  [ -e "$dir/fednet-down" ] || [ -e "$dir/react-down" ] && { echo "react: missing_scope: reactions:write" >&2; exit 1; }
+  exit 0
+fi
 echo "fednet $*" >> "$dir/calls"
 [ -e "$dir/fednet-down" ] && { echo "post: hub unreachable" >&2; exit 4; }
 [ "$2" = open-thread ] && { echo "$6/1700000099.000"; exit 0; }

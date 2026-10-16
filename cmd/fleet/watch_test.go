@@ -349,7 +349,7 @@ const t0 int64 = 1_800_000_000
 
 // watchThreadWorld is a watch world with a fednet socket configured, a fake
 // fednet and a fake atb next to the fake herdr. The fake fednet logs its
-// argv to <dir>/fednet.log; `read-thread <key>` answers one message whose
+// argv to <dir>/fednet.log, a `react`'s to <dir>/react.log; `read-thread <key>` answers one message whose
 // ts is in <dir>/threads/<key with / as _> (exit 1 without one), and
 // `post` prints a msg_id, but exits with the code in <dir>/mention-exit,
 // when there is one, for a post with -mention; `delete` exits with the
@@ -365,6 +365,7 @@ func watchThreadWorld(t *testing.T) *watchWorld {
 	fake := filepath.Join(w.dir, "fake-herdr")
 	fednet := `#!/bin/sh
 dir='` + w.dir + `'
+[ "$2" = react ] && { printf '%s\n' "$*" >> "$dir/react.log"; [ -e "$dir/fednet-down" ] && exit 4; exit 0; }
 printf '%s\n' "$*" >> "$dir/fednet.log"
 [ -e "$dir/fednet-down" ] && { echo "hub unreachable" >&2; exit 4; }
 case "$2" in

@@ -166,6 +166,7 @@ func AskHuman(h *herdr.Herdr, args AskHumanArgs) (exit.Code, error) {
 		return 0, err
 	}
 	defer conn.Close()
+	defer markThread(conn, cfg.FednetSocket, me.Thread)
 	if args.Close != 0 {
 		return withdraw(conn, cfg.FednetSocket, me, args.Close, args.Note)
 	}
@@ -287,6 +288,8 @@ func askThread(h *herdr.Herdr, me *identity.Identity, file string, card bool) (e
 	if err != nil {
 		return 0, err
 	}
+	// A home thread opened for the job is new, with no mark yet.
+	defer markThread(conn, cfg.FednetSocket, thread)
 	id, err := pendingQuestion(conn, job, thread, me.Agent, text, 0, card)
 	if err != nil {
 		return 0, err
@@ -646,7 +649,7 @@ func openHomeThread(conn *sql.DB, cfg *config.Scope, row *jobRow) (string, error
 		if _, err := q.Exec("UPDATE jobs SET home_thread = ?1 WHERE job = ?2 AND state = 'open'", thread, row.Job); err != nil {
 			return exit.Database(err)
 		}
-		return nil
+		return wantLook(q, thread, true)
 	})
 }
 

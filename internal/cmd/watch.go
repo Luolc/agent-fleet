@@ -270,6 +270,8 @@ func Watch(h *herdr.Herdr) (exit.Code, error) {
 		fmt.Fprintf(os.Stderr, "note: fednet.socket is not configured for scope %s; the thread and question rules are off\n", scope)
 	} else if err := r.threads(threads, all); err != nil {
 		return 0, err
+	} else if err := r.marks(); err != nil {
+		return 0, err
 	}
 	if err := r.commandWatches(); err != nil {
 		return 0, err

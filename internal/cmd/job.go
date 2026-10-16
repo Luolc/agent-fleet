@@ -577,6 +577,7 @@ func JobStart(h *herdr.Herdr, args JobStartArgs) (exit.Code, error) {
 		return startFailed(c.id.Agent, err, code, created, hint)
 	}
 	fmt.Fprintf(os.Stdout, "started %s in job %s (%s)\n", c.id.Agent, job, c.cwd)
+	markThread(conn, c.sc.FednetSocket, c.me.Thread)
 	return code, nil
 }
 

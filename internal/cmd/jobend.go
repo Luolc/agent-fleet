@@ -569,6 +569,9 @@ func reclaimJob(h *herdr.Herdr, conn *sql.DB, sc *config.Scope, job string) (int
 	if err != nil {
 		return 0, nil, err
 	}
+	if open != nil {
+		markThread(conn, sc.FednetSocket, open.HomeThread)
+	}
 	return ended, pending, nil
 }
 
@@ -855,6 +858,7 @@ func jobEndByLead(h *herdr.Herdr, args JobEndArgs) (exit.Code, error) {
 	}); err != nil {
 		return 0, err
 	}
+	markThread(conn, sc.FednetSocket, e.job.HomeThread)
 	// Last, so the lead's own pane goes with it.
 	if err := runStep(conn, key, "close-workspace", func() error {
 		_, err := closeWorkspaces(h, job)
