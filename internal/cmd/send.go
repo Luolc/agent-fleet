@@ -27,9 +27,10 @@ const (
 		"There is no automatic resend: exit 2 means the outcome is unknown, not that the " +
 		"message was lost.\n\n" +
 		"A thread agent's message that reaches a lead answers the lead's questions pending in " +
-		"the thread agent's thread (`fleet ask-human`): the thread agent has settled them, by " +
-		"itself or with the people. A ledger that cannot be updated is said on stderr; the " +
-		"exit code stays the delivery's.\n\n" +
+		"the thread agent's thread (`fleet ask-thread`): the thread agent has settled them, by " +
+		"itself or with the people; but not one a card of the thread agent's still asks the " +
+		"people for (`fleet ask-human --for`), which that card's answer settles. A ledger that " +
+		"cannot be updated is said on stderr; the exit code stays the delivery's.\n\n" +
 		"Exit: 0 when herdr reported agent_prompted; 1 for an empty body, a forged header or a " +
 		"missing FLEET_AGENT; 2 when herdr gave no clear signal (timeout, stalled); 3 when " +
 		"the target is blocked (its visible screen is printed so you can see what is in the " +
@@ -114,8 +115,10 @@ func Send(h *herdr.Herdr, args SendArgs) (exit.Code, error) {
 }
 
 // answerLead marks the questions `lead` asked in `thread` and that are
-// still pending answered. A failure is only said: the message is out, and
-// a nonzero exit would have the thread agent send it again.
+// still pending answered, but those a card of the thread agent's still
+// asks the people for: that card's answer settles them. A failure is only
+// said: the message is out, and a nonzero exit would have the thread
+// agent send it again.
 func answerLead(thread, lead string) {
 	if thread == "" {
 		return
@@ -127,7 +130,8 @@ func answerLead(thread, lead string) {
 		}
 		defer conn.Close()
 		res, err := conn.Exec("UPDATE questions SET state = 'answered', answered_at = ?1 "+
-			"WHERE thread = ?2 AND asked_by = ?3 AND state = 'pending'", db.Now(), thread, lead)
+			"WHERE thread = ?2 AND asked_by = ?3 AND state = 'pending' AND NOT EXISTS (SELECT 1 FROM questions c "+
+			"WHERE c.for_question = questions.id AND c.state = 'pending')", db.Now(), thread, lead)
 		if err != nil {
 			return exit.Database(err)
 		}

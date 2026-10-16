@@ -86,13 +86,18 @@ const (
 		"(started for it when none is live) gets each job's state and is asked for progress; " +
 		"with none, a live thread agent is asked why it has not ended.\n\n" +
 		"Questions: the people are reminded of a thread's pending questions in one post listing " +
-		"them, at each of `reminders` (30m, 3h, 24h) after the oldest, mentioning the person who " +
+		"them (a card with its link), at each of `reminders` (30m, 3h, 24h) after the oldest, " +
+		"a snoozed card left out until it comes back and counted from then, mentioning the person who " +
 		"last wrote in the thread (without the mention when fednet refuses it); once it is posted, " +
 		"the reminders before it are deleted from the thread. Leads' questions, which went to " +
 		"the thread agent and never to the people, are left out of that post: at the same times " +
-		"the live thread agent, if any, gets one message listing them instead. A thread agent's question " +
-		"pending for `thread_question` (72h) is closed and its session reclaimed. A lead's question " +
-		"pending for `lead_question` (72h): the lead is told its job ends in 30 minutes; if the job " +
+		"the live thread agent, if any, gets one message listing them instead, but for those a card " +
+		"of the thread agent's asks the people for. A thread agent's question " +
+		"pending for `thread_question` (72h) is closed and its session reclaimed. Every card fleet " +
+		"closes a question of, and every card asked for a lead's question it closes, is taken back " +
+		"from Slack (`fednet client ask-close`; a failure only warns). A lead's question " +
+		"pending for `lead_question` (72h; while a card asks the people for it and is snoozed, not " +
+		"before the card is back, and counted from then): the lead is told its job ends in 30 minutes; if the job " +
 		"is still open then, watch reclaims it as `job end --force` does and posts the Linear steps " +
 		"not done to the thread, closing the job's pending questions, as it does for a job that " +
 		"ended any other way after its lead was told. A lead's question still " +

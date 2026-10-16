@@ -3,14 +3,15 @@
 # this suite starts and stops), with a fake fednet whose `read-thread`
 # answers the newest message's time from a file per thread, and the clock
 # moved through <prefix>WATCH_NOW. The fake's `post` refuses -mention in
-# Q4's thread as a hub older than its client does, and `delete` deletes.
+# Q4's thread as a hub older than its client does, `delete` deletes, `ask`
+# posts a card linked by its ref and `ask-close` takes it back.
 # Six threads, each started by `inbox` (a message from U0ABC):
-# Q1 has its thread agent's own question (reminders, then the session
-# reclaimed); Q2 a job (asked about each quiet spell, then why it has not
+# Q1 has its thread agent's own question, a card (reminders, then the
+# session reclaimed and the card taken back); Q2 a job (asked about each quiet spell, then why it has not
 # ended, then reclaimed when idle); Q3 a lead's question (its thread agent
 # reminded, never the people; the job ended by force); Q4 a thread agent
-# that asks and vanishes (the session ended as broken off, the people
-# reminded); Q5 a job whose thread agent ended (watch starts one to ask
+# that asks in plain text as an older prompt does, posted as a card, and
+# vanishes (the session ended as broken off, the people reminded); Q5 a job whose thread agent ended (watch starts one to ask
 # about it); Q6 a job its lead ended with its question pending (the
 # question moves to the thread: its agent told and reminded, closed without
 # reclaiming).
@@ -39,7 +40,8 @@ case "$2" in
       exit 2 ;;
     esac
     echo "m-$(wc -l < "$d/fednet.log")" ;;
-  delete) ;;
+  delete|ask-close) ;;
+  ask) echo '{"id":"card-'"$8"'","channel":"C0","ts":"1.0","permalink":"https://slack.example.test/'"$8"'"}' ;;
 esac
 FEDNET
 printf '#!/bin/sh\necho "$*" >> /home/agent/quiet/atb.log\n' > "$QB/atb"
@@ -86,8 +88,8 @@ for q in 1 2 3 4 5 6; do
   check "watch threads: inbox starts the agent of Q$q" "0 $(qname "$key")" "$rc $(qfield "$(qname "$key")" name)"
   [ "$rc" = 0 ] || cat /home/agent/quiet/inbox$q.out
 done
-printf 'Which month should the import cover? 0xQW1\n' > "$QD/q1.md"
-qthr "$Q1" -- ask-human --file "$QD/q1.md" >/dev/null 2>&1
+printf '{"question": "Which month should the import cover? 0xQW1"}\n' > "$QD/q1.json"
+qthr "$Q1" -- ask-human --card "$QD/q1.json" >/dev/null 2>&1
 check "watch threads: Q1's agent asked" "pending " "$(qledger "SELECT state FROM questions WHERE thread = '$Q1'")"
 for q in 2 3 5 6; do
   key=C070$q/$q.$q
@@ -96,10 +98,10 @@ for q in 2 3 5 6; do
   [ "$rc" = 0 ] || printf '%s\n' "$out"
 done
 printf 'Merge the import? 0xQW3\n' > "$QD/q3.md"
-qlead q3 "$Q3" -- ask-human --file "$QD/q3.md" >/dev/null 2>&1
+qlead q3 "$Q3" -- ask-thread --card "$QD/q3.md" >/dev/null 2>&1
 check "watch threads: q3's lead asked" "pending " "$(qledger "SELECT state FROM questions WHERE job = 'q3'")"
 printf 'Which schema should the follow-up use? 0xQW6\n' > "$QD/q6.md"
-qlead q6 "$Q6" -- ask-human --file "$QD/q6.md" >/dev/null 2>&1
+qlead q6 "$Q6" -- ask-thread --card "$QD/q6.md" >/dev/null 2>&1
 printf 'Done; the schema question is for the follow-up. 0xQ6DONE\n' > "$QD/report6.md"
 qlead q6 "$Q6" -- job end --report-file "$QD/report6.md" >/dev/null 2>&1
 check "watch threads: q6 ended by its lead, its question pending" "ended pending " \
@@ -142,7 +144,7 @@ has "watch threads: and the refusal names it" "$out" "question from q6-lead, pen
 qwatch 30
 check "watch threads: at 30m one reminder for Q1, mentioning who wrote last" 1 \
   "$(grep -c "thread $Q1 -mention U0ABC -- Reminder 1 of 3" "$QD/fednet.log")"
-has "watch threads: the reminder lists the question" "$(cat "$QD/fednet.log")" "- from $(qname "$Q1"): Which month should the import cover? 0xQW1"
+has "watch threads: the reminder links the card" "$(cat "$QD/fednet.log")" "- from $(qname "$Q1"), card #1: https://slack.example.test/quiet:1"
 lacks "watch threads: the people are not reminded of a lead's question (0xQW3)" "$(cat "$QD/fednet.log")" "0xQW3"
 lacks "watch threads: the people are not reminded of a lead's question (0xQW6)" "$(cat "$QD/fednet.log")" "0xQW6"
 has "watch threads: Q3's agent is reminded of the lead's question" "$(qreceived "$(qname "$Q3")")" \
@@ -154,7 +156,7 @@ q1first=$(qreminder "$Q1")
 check "watch threads: and kept as the thread's reminder" "$q1first|posted " "$(qledger "SELECT msg_id || '|' || state FROM reminders WHERE thread = '$Q1'")"
 lacks "watch threads: the first reminder deletes nothing" "$(cat "$QD/fednet.log")" "client delete"
 has "watch threads: Q4's question is reminded of with its agent gone" "$(cat "$QD/fednet.log")" \
-  "-thread $Q4 -- Reminder 1 of 3" "0xQW4"
+  "-thread $Q4 -- Reminder 1 of 3" "card #4: https://slack.example.test/quiet:4"
 has "watch threads: Q4's older hub gets its reminder without the mention" "$(cat "$QD/watch-30.out")" \
   "the reminder in thread $Q4 is posted without mentioning anyone" "the hub runs an older fednet than this client"
 has "watch threads: Q2's agent asked about the quiet with its job's state" "$(qreceived "$(qname "$Q2")")" \
@@ -201,6 +203,7 @@ check "watch threads: Q6's agent is reminded of the moved question three times t
 qwatch 4320
 check "watch threads: at 72h the thread agent's question is closed" "closed " "$(qledger "SELECT state FROM questions WHERE thread = '$Q1'")"
 has "watch threads: and its session asked to end" "$(qreceived "$(qname "$Q1")")" "[FROM: watch]" "rule \`thread question timeout\`" "--asked-to-end"
+has "watch threads: and its card taken back" "$(cat "$QD/fednet.log")" "client ask-close -socket /home/agent/quiet/fednet.sock -note fleet closed this question -- card-quiet:1"
 has "watch threads: the lead of the unanswered question is told its job ends" "$(qreceived q3-lead)" \
   "[FROM: watch]" "rule \`lead question timeout\`" "Job q3 is ended by force at"
 check "watch threads: at 72h the moved question is closed, Q6's session kept" "closed none " \

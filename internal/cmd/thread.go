@@ -281,9 +281,9 @@ func tempFile(content string) (string, func(), error) {
 }
 
 // inboundMessage is what a thread agent is given: a message from a
-// person, as `fleet inbox` got it, or (`Question` set) a question from
-// an agent for the people in the thread, from `fleet ask-human` or the
-// job's conclusion.
+// person, as `fleet inbox` got it, a press on a card (`Answer` set), or
+// (`Question` set) a question from an agent for the people in the
+// thread, from `fleet ask-thread` or the job's conclusion.
 type inboundMessage struct {
 	Thread, Text, User, TS, Context string
 	// Mapping is the thread's mapping as the message gives it (empty for
@@ -293,6 +293,11 @@ type inboundMessage struct {
 	// conclusion, which needs no answer.
 	Question   string
 	Conclusion bool
+	// QuestionID is the ledger's id of a lead's question or of the
+	// question a press answers.
+	QuestionID int64
+	// Answer marks a press on a card of the thread agent's, Text its JSON.
+	Answer bool
 	// Watch marks a notice from `fleet watch`, delivered as it is.
 	Watch bool
 	// Screen marks a question `watch` asks about an agent stopped at a
@@ -310,7 +315,7 @@ func (m inboundMessage) channel() string {
 // fromFleet is whether the message came from an agent or from watch, not
 // from a person in the thread.
 func (m inboundMessage) fromFleet() bool {
-	return m.Question != "" || m.Watch
+	return m.Question != "" || m.Watch || m.Answer
 }
 
 // sender is the header name the message is delivered under.
@@ -335,6 +340,12 @@ func (m inboundMessage) body() string {
 	if m.Watch {
 		return m.Text
 	}
+	if m.Answer {
+		return fmt.Sprintf("[ANSWER #%d]\nA press on the card of your question #%d in thread %s. %s; at the least, act on "+
+			"its outcome: answered (the choice and the note), snoozed (it comes back at snooze_until), closed (no need to "+
+			"answer: drop it or ask another way), resurfaced (back in front of the people: wait).\n\n%s\n",
+			m.QuestionID, m.QuestionID, m.Thread, seePrompt, m.Text)
+	}
 	if m.Conclusion {
 		return fmt.Sprintf("Conclusion of a job from %s for the people in thread %s. %s; at the least, post it to "+
 			"the thread with `fleet thread post`.\n\n%s", m.Question, m.Thread, seePrompt, m.Text)
@@ -350,9 +361,10 @@ func (m inboundMessage) body() string {
 			m.Question, m.Thread, m.Text)
 	}
 	if m.Question != "" {
-		return fmt.Sprintf("[QUESTION from %s]\nYours to decide: answer it yourself, look it up, or ask the people in "+
-			"thread %s; fleet has posted nothing. %s; at the least, once you have the answer, send it with `fleet send "+
-			"%s --file <file>`.\n\n%s\n", m.Question, m.Thread, seePrompt, m.Question, m.Text)
+		return fmt.Sprintf("[QUESTION #%d from %s]\nYours to settle, in thread %s; fleet has posted nothing. %s; at the "+
+			"least, answer it with `fleet send %s --file <file>`, or ask the people with `fleet ask-human --card <file> "+
+			"--for %d` (this card or one of your own), whose answers reach %s too.\n\n%s\n",
+			m.QuestionID, m.Question, m.Thread, seePrompt, m.Question, m.QuestionID, m.Question, m.Text)
 	}
 	return fmt.Sprintf("Message in thread %s from %s at %s:\n\n%s\n", m.Thread, m.User, m.TS, m.Text)
 }
@@ -364,6 +376,9 @@ func (m inboundMessage) trigger() string {
 	}
 	if m.Conclusion {
 		return "the conclusion of a job from " + m.Question
+	}
+	if m.Answer {
+		return fmt.Sprintf("a press on the card of question #%d", m.QuestionID)
 	}
 	if m.Question != "" {
 		return "a question from " + m.Question

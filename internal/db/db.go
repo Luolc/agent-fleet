@@ -17,7 +17,7 @@ import (
 	"github.com/Luolc/agent-fleet/internal/exit"
 )
 
-const schemaVersion = 15
+const schemaVersion = 16
 
 // Version 1: the `agents` table. Ended rows are kept as history, so `name`
 // is unique only among rows that have not ended.
@@ -267,8 +267,25 @@ const schemaV15 = `
 ALTER TABLE agents ADD COLUMN light INTEGER NOT NULL DEFAULT 0;
 `
 
+// Version 16: question cards. `card` marks a question asked as a card
+// (its text the card's JSON): a thread agent's, posted through `fednet
+// client ask`, or a lead's, handed to the thread agent; `card_id` and
+// `permalink` are where fednet posted it; `for_question` is the lead's
+// question a thread agent's card asks for; `outcome` is the last press
+// on the card (`answered`, `snoozed`, `closed`, `resurfaced`), or
+// `withdrawn` when the agent took it back; `snooze_until` is when a
+// snoozed card comes back.
+const schemaV16 = `
+ALTER TABLE questions ADD COLUMN card INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE questions ADD COLUMN card_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE questions ADD COLUMN permalink TEXT NOT NULL DEFAULT '';
+ALTER TABLE questions ADD COLUMN for_question INTEGER;
+ALTER TABLE questions ADD COLUMN outcome TEXT NOT NULL DEFAULT '';
+ALTER TABLE questions ADD COLUMN snooze_until INTEGER;
+`
+
 // migrations[v] upgrades a ledger at version v to v+1.
-var migrations = [schemaVersion]string{schema, schemaV2, schemaV3, schemaV4, schemaV5, schemaV6, schemaV7, schemaV8, schemaV9, schemaV10, schemaV11, schemaV12, schemaV13, schemaV14, schemaV15}
+var migrations = [schemaVersion]string{schema, schemaV2, schemaV3, schemaV4, schemaV5, schemaV6, schemaV7, schemaV8, schemaV9, schemaV10, schemaV11, schemaV12, schemaV13, schemaV14, schemaV15, schemaV16}
 
 // Path is where the ledger of `scope` lives:
 // `$XDG_STATE_HOME/fleet/<scope>.db`, with `~/.local/state` when

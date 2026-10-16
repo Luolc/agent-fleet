@@ -9,6 +9,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/Luolc/agent-fleet/internal/config"
 	"github.com/Luolc/agent-fleet/internal/db"
@@ -25,8 +28,22 @@ const (
 		"a thread this machine owns. The file is one JSON object: `msg_id` and `payload`; a " +
 		"payload of type `message` carries `thread` (CHANNEL/TS), `text`, `user`, `ts`, for a " +
 		"new thread the channel's `context`, and three optional fields: `trigger` (`dm` for a " +
-		"direct message to the bot), `channel_name` and `scope`. Any other payload type is " +
-		"ignored, exit 0.\n\n" +
+		"direct message to the bot), `channel_name` and `scope`. A payload of type `answer` is a " +
+		"press on a question card (below). Any other payload type is ignored, exit 0.\n\n" +
+		"An answer's `answer` is fednet's JSON, its `question_id` the ref fleet asked with, " +
+		"`<scope>:<question id>`, and `card_id` the card's; one whose ref is not fleet's, or whose " +
+		"question the scope's ledger has not with that card, is ignored, exit 0. Once its msg_id is " +
+		"reserved, the press is recorded on the question: `answered` and `closed` (a person's) " +
+		"answer it, and the lead's question it was asked for (`fleet ask-human --for`); `snoozed` " +
+		"keeps it pending until `snooze_until`, `resurfaced` counts its reminders again. Then " +
+		"`[ANSWER #<id>]` and the answer, its `question_id` the question's id, go to the thread's " +
+		"agent as a message does (one is started when none is live), and, for a card asked for a " +
+		"lead's question, to that lead under that question's id, when it is live. A press on a " +
+		"question fleet has closed (taken back, or given up on by `fleet watch`) is recorded and " +
+		"given to no agent. Messages in a thread answer only the questions fleet posted there as " +
+		"text (a watch worker's, a screen's) and the questions of a lead whose job has ended that " +
+		"no pending card asks for: only a press answers a card, and only the thread agent an " +
+		"open job's lead's question.\n\n" +
 		"Which messages fleet serves, by channel: `<repo prefix><R>` (thread agents run in the " +
 		"main checkout <checkouts>/<R>), `<initiative prefix><I>` (in <initiatives>/<I>/, the " +
 		"checkout of the initiative's repo) and direct messages (in the general initiative's " +
@@ -110,6 +127,9 @@ type event struct {
 		// Scope is the fleet the hub routes the channel to; absent means
 		// the default.
 		Scope string `json:"scope"`
+		// Answer is a press on a question card, in a payload of type
+		// `answer`.
+		Answer json.RawMessage `json:"answer"`
 	} `json:"payload"`
 }
 
@@ -184,6 +204,9 @@ func Inbox(args InboxArgs) (exit.Code, error) {
 	if err != nil {
 		return 0, err
 	}
+	if e.Payload.Type == "answer" {
+		return inboxAnswer(e)
+	}
 	if e.Payload.Type != "message" {
 		fmt.Fprintf(os.Stdout, "ignored %s: a %s, not a message\n", e.MsgID, e.Payload.Type)
 		return exit.Ok, nil
@@ -222,12 +245,8 @@ func Inbox(args InboxArgs) (exit.Code, error) {
 	}
 	msg := inboundMessage{Thread: e.Payload.Thread, Text: e.Payload.Text, User: e.Payload.User, TS: e.Payload.TS,
 		Context: e.Payload.Context, Mapping: mapping}
-	// A person's message in the thread answers what was pending there.
-	if res, err := conn.Exec("UPDATE questions SET state = 'answered', answered_at = ?1 WHERE thread = ?2 AND state = 'pending'",
-		db.Now(), msg.Thread); err != nil {
-		return 0, exit.Database(err)
-	} else if n, _ := res.RowsAffected(); n > 0 {
-		fmt.Fprintf(os.Stdout, "%d pending question(s) in thread %s answered\n", n, msg.Thread)
+	if err := answerByMessage(conn, msg.Thread); err != nil {
+		return 0, err
 	}
 	code, dropped, err := route(h, conn, scope, cfg, msg)
 	if err != nil || code != exit.Ok {
@@ -347,4 +366,248 @@ func startThread(h *herdr.Herdr, conn *sql.DB, scope string, cfg *config.Scope, 
 	s.checkoutNote = syncCheckout(s.cwd)
 	code, err = s.start()
 	return code, false, err
+}
+
+// answerByMessage marks answered the thread's pending questions a
+// person's message answers: those fleet posted as text (a watch worker's,
+// a screen's, watch's own at a watch's `max`, and a thread agent's from
+// before cards), and a lead's whose job has ended (moved to the thread,
+// its lead gone), unless a card asks the people for it. Only a press
+// answers a card, and only the thread agent an open job's lead's
+// question.
+func answerByMessage(conn *sql.DB, thread string) error {
+	var ids []any
+	err := eachRow(conn, "SELECT id, job, asked_by, card, job != '' AND NOT EXISTS (SELECT 1 FROM jobs j WHERE "+
+		"j.job = q.job AND j.state = 'open' AND j.started_at <= q.asked_at), EXISTS (SELECT 1 FROM questions c "+
+		"WHERE c.for_question = q.id AND c.state = 'pending') FROM questions q WHERE thread = ?1 AND state = 'pending'",
+		func(rows *sql.Rows) error {
+			var q question
+			if err := rows.Scan(&q.id, &q.job, &q.askedBy, &q.card, &q.moved, &q.forwarded); err != nil {
+				return err
+			}
+			if !q.byLead() && !q.card || q.byLead() && q.moved && !q.forwarded {
+				ids = append(ids, q.id)
+			}
+			return nil
+		}, thread)
+	if err != nil || len(ids) == 0 {
+		return err
+	}
+	if _, err := conn.Exec("UPDATE questions SET state = 'answered', answered_at = ?1 WHERE id IN (?"+
+		strings.Repeat(", ?", len(ids)-1)+")", append([]any{db.Now()}, ids...)...); err != nil {
+		return exit.Database(err)
+	}
+	fmt.Fprintf(os.Stdout, "%d pending question(s) in thread %s answered\n", len(ids), thread)
+	return nil
+}
+
+// cardAnswer is fednet's answer to a press on a card, as it reaches the
+// agents: `question_id` is the recipient's own question.
+type cardAnswer struct {
+	QuestionID  any             `json:"question_id"`
+	CardID      string          `json:"card_id"`
+	Outcome     string          `json:"outcome"`
+	Choice      json.RawMessage `json:"choice,omitempty"`
+	Note        string          `json:"note,omitempty"`
+	SnoozeUntil string          `json:"snooze_until,omitempty"`
+	By          string          `json:"by,omitempty"`
+	At          string          `json:"at"`
+}
+
+// as is the answer's JSON with `id` as its question_id.
+func (a cardAnswer) as(id int64) (string, error) {
+	a.QuestionID = id
+	var b strings.Builder
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(a); err != nil {
+		return "", exit.Environmentf("cannot write the answer: %v", err)
+	}
+	return strings.TrimSpace(b.String()), nil
+}
+
+// answeredCard is the question a press answers, as the ledger has it.
+type answeredCard struct {
+	id                    int64
+	thread, cardID, state string
+	forQuestion           sql.NullInt64
+}
+
+// inboxAnswer takes a press on a card to the ledger, then to the thread's
+// agent and, for a card asked for a lead's question, to that lead. The
+// card's ref is `<scope>:<id>`; a ref fleet did not make, a question the
+// ledger does not have, or one whose card is another, is ignored.
+func inboxAnswer(e *event) (exit.Code, error) {
+	var a cardAnswer
+	if err := json.Unmarshal(e.Payload.Answer, &a); err != nil {
+		return 0, exit.Refusedf("answer %s is not an answer: %v", e.MsgID, err)
+	}
+	scope, conn, q, err := answeredQuestion(e.MsgID, a)
+	if err != nil || conn == nil {
+		return exit.Ok, err
+	}
+	defer conn.Close()
+	state, err := reserveMessage(conn, e.MsgID, q.thread)
+	if err != nil {
+		return 0, err
+	}
+	if state != "reserved" {
+		fmt.Fprintf(os.Stdout, "message %s was already %s\n", e.MsgID, state)
+		return exit.Ok, nil
+	}
+	if err := recordAnswer(conn, q, a); err != nil {
+		return 0, err
+	}
+	if q.state == "closed" {
+		fmt.Fprintf(os.Stdout, "question #%d is closed: its %s is recorded and given to no agent\n", q.id, a.Outcome)
+		return exit.Ok, setMessage(conn, e.MsgID, "dropped")
+	}
+	if err := deliverAnswer(conn, scope, "answer:"+e.MsgID, q, a); err != nil {
+		return 0, err
+	}
+	fmt.Fprintf(os.Stdout, "question #%d: %s, given to the agent of thread %s\n", q.id, a.Outcome, q.thread)
+	return exit.Ok, setMessage(conn, e.MsgID, "delivered")
+}
+
+// answeredQuestion finds the question an answer is for, by its ref
+// `<scope>:<id>` and its card: the scope, its ledger and the question, or
+// no ledger when the answer is not for one of the scope's questions.
+func answeredQuestion(msgID string, a cardAnswer) (string, *sql.DB, answeredCard, error) {
+	ref, _ := a.QuestionID.(string)
+	scope, idText, _ := strings.Cut(ref, ":")
+	id, err := strconv.ParseInt(idText, 10, 64)
+	if _, serr := identity.CheckScope(scope); err != nil || serr != nil || scope == "" {
+		fmt.Fprintf(os.Stdout, "ignored %s: question %q is not one of fleet's\n", msgID, ref)
+		return "", nil, answeredCard{}, nil
+	}
+	path, err := db.Path(scope)
+	if err != nil || !exists(path) {
+		if err == nil {
+			fmt.Fprintf(os.Stdout, "ignored %s: scope %s has no ledger\n", msgID, scope)
+		}
+		return "", nil, answeredCard{}, err
+	}
+	conn, err := db.OpenAt(path)
+	if err != nil {
+		return "", nil, answeredCard{}, err
+	}
+	q := answeredCard{id: id}
+	err = conn.QueryRow("SELECT thread, card_id, state, for_question FROM questions WHERE id = ?1 AND card = 1", id).
+		Scan(&q.thread, &q.cardID, &q.state, &q.forQuestion)
+	if errors.Is(err, sql.ErrNoRows) || err == nil && q.cardID != a.CardID {
+		_ = conn.Close()
+		fmt.Fprintf(os.Stdout, "ignored %s: scope %s has no question #%d with card %s\n", msgID, scope, id, a.CardID)
+		return "", nil, answeredCard{}, nil
+	}
+	if err != nil {
+		_ = conn.Close()
+		return "", nil, answeredCard{}, exit.Database(err)
+	}
+	return scope, conn, q, nil
+}
+
+// deliverAnswer gives the answer to the thread's agent, then to the lead
+// whose question the card asks for, each a step recorded under `key`.
+func deliverAnswer(conn *sql.DB, scope, key string, q answeredCard, a cardAnswer) error {
+	cfg, err := config.LoadScope(scope)
+	if err != nil {
+		return err
+	}
+	session := identity.Session(scope)
+	h := herdr.New(&session)
+	err = runStep(conn, key, "thread", func() error {
+		text, err := a.as(q.id)
+		if err != nil {
+			return err
+		}
+		code, _, err := route(h, conn, scope, cfg, inboundMessage{Thread: q.thread, Text: text, Answer: true, QuestionID: q.id})
+		if err == nil && code != exit.Ok {
+			err = exit.New(code, fmt.Sprintf("the answer to question #%d did not reach the agent of thread %s (exit %d)", q.id, q.thread, code))
+		}
+		return err
+	})
+	if err != nil || !q.forQuestion.Valid {
+		return err
+	}
+	return runStep(conn, key, "lead", func() error { return answerToLead(h, conn, q, a) })
+}
+
+// recordAnswer writes the press on the question's row, and on the lead's
+// question it asks for: a submit or a person's close answers both; a
+// snooze keeps them pending until the card comes back, from when their
+// reminders count again.
+func recordAnswer(conn *sql.DB, q answeredCard, a cardAnswer) error {
+	type stmt struct {
+		query string
+		args  []any
+	}
+	var stmts []stmt
+	switch a.Outcome {
+	case "answered", "closed":
+		stmts = append(stmts, stmt{"UPDATE questions SET state = CASE WHEN state = 'closed' THEN state ELSE 'answered' END, " +
+			"answered_at = COALESCE(answered_at, ?1), outcome = ?2, snooze_until = NULL WHERE id = ?3",
+			[]any{db.Now(), a.Outcome, q.id}})
+		if q.state != "closed" && q.forQuestion.Valid {
+			stmts = append(stmts, stmt{"UPDATE questions SET state = 'answered', answered_at = ?1 WHERE id = ?2 AND state = 'pending'",
+				[]any{db.Now(), q.forQuestion.Int64}})
+		}
+	case "snoozed":
+		// A time fleet cannot read leaves the card unsnoozed for watch;
+		// refusing would have fednet run the hook again for good.
+		until := sql.NullInt64{}
+		if t, err := time.Parse(time.RFC3339, a.SnoozeUntil); err == nil {
+			until = sql.NullInt64{Int64: t.Unix(), Valid: true}
+		} else {
+			fmt.Fprintf(os.Stderr, "fleet: the snooze of question #%d has a snooze_until that is not RFC 3339 (%q); "+
+				"it is recorded without one\n", q.id, a.SnoozeUntil)
+		}
+		stmts = append(stmts, stmt{"UPDATE questions SET outcome = ?1, snooze_until = ?2, reminders = 0 WHERE id = ?3",
+			[]any{a.Outcome, until, q.id}})
+	default:
+		stmts = append(stmts, stmt{"UPDATE questions SET outcome = ?1, reminders = 0 WHERE id = ?2", []any{a.Outcome, q.id}})
+	}
+	for _, st := range stmts {
+		if _, err := conn.Exec(st.query, st.args...); err != nil {
+			return exit.Database(err)
+		}
+	}
+	return nil
+}
+
+// answerToLead gives the press to the lead whose question the card asks
+// for, under that question's id; a lead no longer live is told nothing.
+func answerToLead(h *herdr.Herdr, conn *sql.DB, q answeredCard, a cardAnswer) error {
+	var lead, asker string
+	err := conn.QueryRow("SELECT q.asked_by, COALESCE((SELECT name FROM agents WHERE name = q.asked_by AND role = 'lead' "+
+		"AND state != 'ended'), '') FROM questions q WHERE q.id = ?1", q.forQuestion.Int64).Scan(&asker, &lead)
+	if err != nil {
+		return exit.Database(err)
+	}
+	if lead == "" {
+		fmt.Fprintf(os.Stdout, "%s is not live: the answer to its question #%d goes only to the thread's agent\n", asker,
+			q.forQuestion.Int64)
+		return nil
+	}
+	text, err := a.as(q.forQuestion.Int64)
+	if err != nil {
+		return err
+	}
+	body, err := WithHeader(inboxSender, fmt.Sprintf("[ANSWER #%d]\nA press on the card your home thread's agent "+
+		"posted in thread %s for your question #%d. Act on its outcome: answered (the choice and the note), snoozed "+
+		"(it comes back at snooze_until), closed (no need to answer: drop it or ask another way), resurfaced (back in "+
+		"front of the people: wait).\n\n%s\n", q.forQuestion.Int64, q.thread, q.forQuestion.Int64, text))
+	if err != nil {
+		return err
+	}
+	code, err := Deliver(h, lead, body)
+	switch {
+	case err != nil:
+		return err
+	case code == exit.NotFound:
+		fmt.Fprintf(os.Stdout, "%s is gone: the answer to its question #%d goes only to the thread's agent\n", lead,
+			q.forQuestion.Int64)
+	case code != exit.Ok:
+		return exit.New(code, fmt.Sprintf("the answer to question #%d did not reach %s (exit %d)", q.forQuestion.Int64, lead, code))
+	}
+	return nil
 }

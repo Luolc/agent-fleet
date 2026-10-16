@@ -1117,7 +1117,7 @@ func TestJobStartWithoutARoleStartsASingleRepoJobWithNoHomeThread(t *testing.T) 
 	argv, _ := os.ReadFile(filepath.Join(w.dir, "argv"))
 	for _, want := range []string{"agent\nprompt\nitem-2-lead\n[FROM: fleet]\nYou are a lead run by fleet",
 		"\n## Latest message from a person in the home thread\n\nNone: this job has no home thread.",
-		"Your first `fleet ask-human` opens a thread in the channel #repo-example-dataset, or in #x-repo-general when",
+		"Your first `fleet ask-thread` opens a thread in the channel #repo-example-dataset, or in #x-repo-general when",
 		"\n## Your task\n\nFind out why main is red\n"} {
 		if !strings.Contains(string(argv), want) {
 			t.Errorf("delivered argv = %q, want %q in it", argv, want)

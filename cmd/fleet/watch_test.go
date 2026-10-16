@@ -688,6 +688,95 @@ func TestWatchRemindsOfAThreadAgentsQuestionThenReclaimsTheSession(t *testing.T)
 	}
 }
 
+// A lead's question whose card is snoozed does not time out while it is,
+// and counts from when the card comes back.
+func TestWatchCountsALeadsQuestionFromItsSnoozedCard(t *testing.T) {
+	w := watchThreadWorld(t)
+	w.exec("INSERT INTO threads (thread, slug, created_at) VALUES ('C3/3.0', 'c3-3-0', 0)",
+		"INSERT INTO jobs (job, lead_cwd, home_thread, state, started_at) VALUES ('k', '/c', 'C3/3.0', 'open', 0)",
+		fmt.Sprintf("INSERT INTO questions (job, thread, asked_by, text, state, asked_at) VALUES ('k', 'C3/3.0', 'k-lead', 'Merge it?', 'pending', %d)", t0),
+		fmt.Sprintf("INSERT INTO questions (job, thread, asked_by, text, state, asked_at, card, card_id, permalink, for_question, snooze_until) "+
+			"VALUES ('', 'C3/3.0', 'thread-c3', '{\"question\": \"Merge it?\"}', 'pending', %d, 1, 'card-9', "+
+			"'https://slack.example.test/card-9', 1, %d)", t0+3600, t0+70*3600))
+	w.insert(watchRow{name: "k-lead", role: "lead", job: "k", parent: "thread-c3"})
+	w.herdrList("k-lead idle 2")
+	w.screen("k-lead", claude("⏺ Waiting", "1s", "2hr 59m"))
+	w.lastMessage("C3/3.0", t0)
+	w.watchAt(72*time.Hour, 0)
+	if got := len(w.prompts()); got != 0 {
+		t.Errorf("the lead was told at 72h: %q", w.prompts())
+	}
+	w.watchAt(141*time.Hour, 0)
+	if got := len(w.prompts()); got != 0 {
+		t.Errorf("the lead was told before 72h after the card came back: %q", w.prompts())
+	}
+	w.watchAt(142*time.Hour, 0)
+	if prompts := w.prompts(); len(prompts) != 1 || prompts[0][0] != "k-lead" || !strings.Contains(prompts[0][1], "rule `lead question timeout`") {
+		t.Errorf("%q", prompts)
+	}
+}
+
+// A snoozed card is left out of the reminder of the thread's other
+// questions.
+func TestWatchLeavesASnoozedCardOutOfTheReminder(t *testing.T) {
+	w := watchThreadWorld(t)
+	w.exec("INSERT INTO threads (thread, slug, created_at) VALUES ('C1/1.0', 'c1-1-0', 0)",
+		fmt.Sprintf("INSERT INTO questions (job, thread, asked_by, text, state, asked_at) VALUES "+
+			"('', 'C1/1.0', 'watch-fix-p1', 'Rebase or close PR 9?', 'pending', %d)", t0),
+		fmt.Sprintf("INSERT INTO questions (job, thread, asked_by, text, state, asked_at, card, card_id, permalink, snooze_until) VALUES "+
+			"('', 'C1/1.0', 'thread-c1', '{\"question\": \"Which month?\"}', 'pending', %d, 1, 'card-2', "+
+			"'https://slack.example.test/card-2', %d)", t0, t0+10*3600))
+	w.lastMessage("C1/1.0", t0)
+	w.watchAt(30*time.Minute, 0)
+	got := w.log("fednet.log")
+	if !strings.Contains(got, "Reminder 1 of 3: 1 question(s) here still wait for an answer") ||
+		!strings.Contains(got, "- from watch-fix-p1: Rebase or close PR 9?") || strings.Contains(got, "card #2") {
+		t.Errorf("%s", got)
+	}
+}
+
+// A card is reminded of with its link, not while it is snoozed; once it
+// is back its reminders and its timeout count from then, and the timeout
+// takes it back from Slack.
+func TestWatchRemindsOfACardWithItsLinkButNotWhileSnoozed(t *testing.T) {
+	w := watchThreadWorld(t)
+	w.exec("INSERT INTO threads (thread, slug, created_at) VALUES ('C1/1.0', 'c1-1-0', 0)",
+		"INSERT INTO agents (name, role, thread, pane_id, state, started_at) VALUES ('thread-c1', 'thread', 'C1/1.0', 'p1', 'active', 0)",
+		fmt.Sprintf("INSERT INTO questions (job, thread, asked_by, text, state, asked_at, card, card_id, permalink) VALUES "+
+			"('', 'C1/1.0', 'thread-c1', '{\"question\": \"Which month?\"}', 'pending', %d, 1, 'card-1', "+
+			"'https://slack.example.test/card-1')", t0))
+	w.herdrList("thread-c1 idle 1")
+	w.lastMessage("C1/1.0", t0)
+	w.watchAt(30*time.Minute, 0)
+	if got := w.log("fednet.log"); !strings.Contains(got, "Reminder 1 of 3: 1 question(s) here still wait for an answer, "+
+		"the first asked 30m ago: | - from thread-c1, card #1: https://slack.example.test/card-1 |") {
+		t.Errorf("%s", got)
+	}
+	// Snoozed for ten hours, as inbox records it.
+	w.exec(fmt.Sprintf("UPDATE questions SET snooze_until = %d, reminders = 0", t0+10*3600))
+	w.watchAt(3*time.Hour, 0)
+	w.watchAt(10*time.Hour+29*time.Minute, 0)
+	if got := strings.Count(w.log("fednet.log"), "-- Reminder"); got != 1 {
+		t.Errorf("%d reminders while snoozed: %s", got, w.log("fednet.log"))
+	}
+	w.watchAt(10*time.Hour+30*time.Minute, 0)
+	if got := w.log("fednet.log"); strings.Count(got, "-- Reminder 1 of 3") != 2 {
+		t.Errorf("%s", got)
+	}
+	// 72 hours after it was asked it is not closed: it came back at 10h.
+	w.watchAt(72*time.Hour, 0)
+	if got := w.query("SELECT state FROM questions"); got != "pending" {
+		t.Errorf("question %s at 72h", got)
+	}
+	w.watchAt(82*time.Hour, 0)
+	if got := w.query("SELECT state FROM questions"); got != "closed" {
+		t.Errorf("question %s at 82h", got)
+	}
+	if got := w.log("fednet.log"); !strings.Contains(got, "client ask-close -socket /run/example/fednet.sock -note fleet closed this question -- card-1") {
+		t.Errorf("%s", got)
+	}
+}
+
 // A session that started without its ticket (Linear down) has nothing to
 // release when watch reclaims it, though its thread has a ticket.
 func TestWatchReclaimsASessionWithoutItsTicketWithoutLinear(t *testing.T) {
@@ -777,7 +866,11 @@ func TestWatchEndsAJobWhoseLeadsQuestionGoesUnanswered(t *testing.T) {
 		"INSERT INTO jobs (job, lead_cwd, home_thread, state, started_at) VALUES ('k', '/c', 'C3/3.0', 'open', 0)",
 		"INSERT INTO jobs (job, lead_cwd, home_thread, state, started_at) VALUES ('m', '/c', 'C3/3.0', 'open', 0)",
 		fmt.Sprintf("INSERT INTO questions (job, thread, asked_by, text, state, asked_at) VALUES "+
-			"('k', 'C3/3.0', 'k-lead', 'Merge it?', 'pending', %d), ('m', 'C3/3.0', 'm-lead', 'Which host?', 'pending', %d)", t0, t0+3600))
+			"('k', 'C3/3.0', 'k-lead', 'Merge it?', 'pending', %d), ('m', 'C3/3.0', 'm-lead', 'Which host?', 'pending', %d)", t0, t0+3600),
+		// The thread agent's card for k's question, posted three hours later.
+		fmt.Sprintf("INSERT INTO questions (job, thread, asked_by, text, state, asked_at, card, card_id, permalink, for_question) "+
+			"VALUES ('', 'C3/3.0', 'thread-c3', '{\"question\": \"Merge it?\"}', 'pending', %d, 1, 'card-9', "+
+			"'https://slack.example.test/card-9', 1)", t0+3*3600))
 	w.insert(watchRow{name: "k-lead", role: "lead", job: "k", parent: "thread-c3"})
 	w.exec("UPDATE agents SET issue = 'EX-20' WHERE name = 'k-lead'")
 	w.herdrList("k-lead idle 2")
@@ -785,10 +878,11 @@ func TestWatchEndsAJobWhoseLeadsQuestionGoesUnanswered(t *testing.T) {
 	w.lastMessage("C3/3.0", t0+3600)
 
 	// Watch was down for three days. The leads' questions went to the
-	// thread agent, never to the people: nothing is posted, and with no
-	// live thread agent nobody is reminded.
+	// thread agent, never to the people: only the card is reminded of, and
+	// with no live thread agent nobody else is.
 	w.watchAt(72*time.Hour, 0)
-	if got := w.log("fednet.log"); strings.Contains(got, "Reminder") || strings.Contains(got, "Merge it?") {
+	if got := w.log("fednet.log"); strings.Contains(got, "from k-lead") || strings.Contains(got, "from m-lead") ||
+		strings.Contains(got, "Merge it?") || !strings.Contains(got, "- from thread-c3, card #3: https://slack.example.test/card-9") {
 		t.Errorf("%s", got)
 	}
 	prompts := w.prompts()
@@ -809,8 +903,13 @@ func TestWatchEndsAJobWhoseLeadsQuestionGoesUnanswered(t *testing.T) {
 	if got := w.query("SELECT state || ' ' || outcome FROM jobs WHERE job = 'k'"); got != "ended abandoned" {
 		t.Errorf("job k %s", got)
 	}
-	if got := w.query("SELECT group_concat(asked_by || ' ' || state, ', ') FROM questions"); got != "k-lead closed, m-lead pending" {
+	if got := w.query("SELECT group_concat(asked_by || ' ' || state, ', ') FROM questions"); got != "k-lead closed, m-lead pending, thread-c3 closed" {
 		t.Errorf("questions: %s", got)
+	}
+	// The card asked for the closed question is taken back from Slack.
+	if got := w.log("fednet.log"); strings.Count(got, "client ask-close") != 1 ||
+		!strings.Contains(got, "client ask-close -socket /run/example/fednet.sock -note fleet closed this question -- card-9") {
+		t.Errorf("%s", got)
 	}
 	if got := w.log("fednet.log"); !strings.Contains(got, "-- Job k was ended by force: its lead's question had no answer for 3d00h, "+
 		"and the job was not ended within 30m of the lead being told. Linear steps not done: | - comment the report on work order EX-20 "+

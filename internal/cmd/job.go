@@ -41,7 +41,7 @@ const (
 		"is required), under the name `fleet`: the lead's FLEET_PARENT, the sender of its first " +
 		"message and the source of the claims. Such a job has no home thread; the lead's " +
 		"first message says so in place of the latest message, and its first `fleet " +
-		"ask-human` opens one (see `fleet ask-human --help`). The scope is --scope or " +
+		"ask-thread` opens one (see `fleet ask-thread --help`). The scope is --scope or " +
 		"FLEET_SCOPE, as for any caller. Leads and workers are refused.\n\n" +
 		"No " +
 		"worktree is made; agents open theirs with `fleet worktree` (`--detach <ref>` for a " +
@@ -628,13 +628,13 @@ func latestMessageSection(m *threadMessage) (string, error) {
 
 // noHomeThreadSection takes the place of the latest message for a job
 // started by a caller without FLEET_ROLE (single-repo, no thread): it says there is
-// no home thread until the lead asks, and where `ask-human` opens one: in
+// no home thread until the lead asks, and where `ask-thread` opens one: in
 // the repo's channel, else the general initiative's.
 func noHomeThreadSection(channel, general string) string {
 	return "\n## Latest message from a person in the home thread\n\n" +
 		"None: this job has no home thread. A caller outside fleet's threads started it (a timer or a shell; " +
 		"FLEET_PARENT=" + plainStarter + " stands for it), not a thread agent, so the task below is all there is, " +
-		"and no person follows the job until you ask. Your first `fleet ask-human` opens a thread in the channel #" +
+		"and no person follows the job until you ask. Your first `fleet ask-thread` opens a thread in the channel #" +
 		channel + ", or in #" + general + " when fleet knows no thread of #" + channel + "; it becomes the job's " +
 		"home thread, and its thread agent asks the people and passes their answers on. Until then `fleet job end` " +
 		"posts the conclusion nowhere.\n"
