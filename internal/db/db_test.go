@@ -494,3 +494,39 @@ func TestAVersion15LedgerKeepsItsQuestionsAsText(t *testing.T) {
 		t.Errorf("card %d, card_id %q, state %s, version %d", card, cardID, state, version)
 	}
 }
+
+// A card a version-16 binary recorded reads as one with no answer kept.
+func TestAVersion16LedgerKeepsItsCardsWithNoAnswer(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fleet.db")
+	conn, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range append(migrations[:16:16],
+		"INSERT INTO questions (job, thread, asked_by, text, state, asked_at, card, card_id, outcome) VALUES "+
+			"('', 'C1/1.1', 'thread-c1', '{\"question\": \"Which?\"}', 'answered', 1, 1, 'card-1', 'answered')",
+		"PRAGMA user_version = 16") {
+		if _, err := conn.Exec(step); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	conn, err = OpenAt(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	var version int64
+	var answer, outcome string
+	if err := conn.QueryRow("SELECT answer, outcome FROM questions").Scan(&answer, &outcome); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if answer != "" || outcome != "answered" || version != schemaVersion {
+		t.Errorf("answer %q, outcome %s, version %d", answer, outcome, version)
+	}
+}

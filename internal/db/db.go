@@ -17,7 +17,7 @@ import (
 	"github.com/Luolc/agent-fleet/internal/exit"
 )
 
-const schemaVersion = 16
+const schemaVersion = 17
 
 // Version 1: the `agents` table. Ended rows are kept as history, so `name`
 // is unique only among rows that have not ended.
@@ -284,8 +284,15 @@ ALTER TABLE questions ADD COLUMN outcome TEXT NOT NULL DEFAULT '';
 ALTER TABLE questions ADD COLUMN snooze_until INTEGER;
 `
 
+// Version 17: `answer`, the last press on a card as the agents get it
+// (fednet's JSON, its question_id the question's id), so the next worker
+// of a watch reads what the people chose and wrote.
+const schemaV17 = `
+ALTER TABLE questions ADD COLUMN answer TEXT NOT NULL DEFAULT '';
+`
+
 // migrations[v] upgrades a ledger at version v to v+1.
-var migrations = [schemaVersion]string{schema, schemaV2, schemaV3, schemaV4, schemaV5, schemaV6, schemaV7, schemaV8, schemaV9, schemaV10, schemaV11, schemaV12, schemaV13, schemaV14, schemaV15, schemaV16}
+var migrations = [schemaVersion]string{schema, schemaV2, schemaV3, schemaV4, schemaV5, schemaV6, schemaV7, schemaV8, schemaV9, schemaV10, schemaV11, schemaV12, schemaV13, schemaV14, schemaV15, schemaV16, schemaV17}
 
 // Path is where the ledger of `scope` lives:
 // `$XDG_STATE_HOME/fleet/<scope>.db`, with `~/.local/state` when

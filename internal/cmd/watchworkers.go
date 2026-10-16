@@ -164,9 +164,10 @@ func (w *workers) subjectOf(row stopRow) (workerSubject, error) {
 	return s, nil
 }
 
-// askFor asks the people the question the worker `row` wrote: about the
-// stopped agent, for the `unblock` watch's workers while that agent is
-// live; else in the subject's thread, or on stderr without one.
+// askFor asks the people the question the worker `row` wrote, on a card
+// (questionCard): about the stopped agent, for the `unblock` watch's
+// workers while that agent is live; else in the subject's thread, or on
+// stderr without one.
 func (w *workers) askFor(row stopRow, live map[string]stopRow, question string) error {
 	s, err := w.subjectOf(row)
 	if err != nil {
@@ -177,32 +178,41 @@ func (w *workers) askFor(row stopRow, live map[string]stopRow, question string) 
 		if !ok {
 			return nil
 		}
-		text := fmt.Sprintf("%s (%s) is stopped at a screen that fleet's guidance does not cover, so its helper "+
-			"%s asks:\n\n%s", stopped.Name, stopped.who(), row.Name, question)
+		header := fmt.Sprintf("%s (%s) is stopped at a screen that fleet's guidance does not cover; its helper %s "+
+			"asks this.", stopped.Name, stopped.who(), row.Name)
 		if issue, _ := helperIssue(w.conn, []string{row.Name}); issue != "" {
-			text += "\n\nTicket: " + issue
+			header += "\n\nTicket: " + issue
 		}
-		if err := w.ask(stopped, row.Name, text); err != nil {
+		card, err := questionCard(question, header)
+		if err != nil {
+			return err
+		}
+		if err := w.ask(stopped, row.Name, card); err != nil {
 			return err
 		}
 		w.tell(stopped, "its helper asked the people in the home thread what to press")
 		return nil
 	}
-	text := fmt.Sprintf("%s, the worker of fleet watch `%s` for subject `%s`, asks:\n\n%s", row.Name, s.Watch, s.Key,
-		question)
+	header := fmt.Sprintf("%s, the worker of fleet watch `%s` for subject `%s`, asks this.", row.Name, s.Watch, s.Key)
 	thread, err := w.subjectThread(subject{Key: s.Key, Job: s.Job, Thread: s.Thread, Agent: s.Agent})
 	if err != nil {
 		return err
 	}
 	if thread == "" || w.cfg.FednetSocket == "" {
-		fmt.Fprintf(os.Stderr, "fleet watch: no thread to ask the people in for %s; its question: %s\n", row.Name, text)
+		fmt.Fprintf(os.Stderr, "fleet watch: no thread to ask the people in for %s; its question: %s\n\n%s\n", row.Name,
+			header, question)
 		return nil
 	}
-	if err := w.post(thread, s.Job, row.Name, text); err != nil {
+	card, err := questionCard(question, header)
+	if err != nil {
+		return err
+	}
+	link, err := w.askCard(thread, s.Job, row.Name, card)
+	if err != nil {
 		return err
 	}
 	fmt.Fprintf(os.Stdout, "watch %s: %s asked the people in thread %s\n", s.Watch, row.Name, thread)
-	msg := inboundMessage{Thread: thread, Text: text, Question: row.Name, Worker: true}
+	msg := inboundMessage{Thread: thread, Text: cardText(link, card), Question: row.Name, Worker: true}
 	if code, err := toThread(w.h, w.conn, w.scope, w.cfg, msg); err != nil || code != exit.Ok {
 		fmt.Fprintf(os.Stderr, "fleet watch: %s: the question is posted, but did not reach the agent of thread %s "+
 			"(exit %d): %v\n", row.Name, thread, code, err)
@@ -225,7 +235,8 @@ func (w *workers) screenWorker(s workerSubject) bool {
 // still working. One done with its turn (herdr idle or done), stopped at
 // a screen itself, working for helperSecs, gone from herdr, or left
 // `starting` by a start that failed is closed and its row ended, after
-// `ask` is given the question it wrote, if any.
+// `ask` is given the question it wrote, if any; a card fednet refused is
+// returned once the worker is closed.
 func (w *workers) closeDone(row stopRow, ask func(question string) error) (busy bool, err error) {
 	agent, present := w.inHerdr[row.Name]
 	if present && row.State == "active" && agent.Status != "idle" && agent.Status != "done" &&
@@ -236,8 +247,13 @@ func (w *workers) closeDone(row stopRow, ask func(question string) error) (busy 
 	if row.legacy() {
 		file = filepath.Join(w.legacyDir, row.Name+"-question.md")
 	}
+	// A card fednet refused is refused again: the worker is closed all
+	// the same, and the error is the run's.
+	var refused error
 	if question, err := os.ReadFile(file); err == nil && strings.TrimSpace(string(question)) != "" {
-		if err := ask(strings.TrimSpace(string(question))); err != nil {
+		if err := ask(strings.TrimSpace(string(question))); errors.Is(err, errCardRefused) {
+			refused = err
+		} else if err != nil {
 			return false, err
 		}
 	}
@@ -253,7 +269,7 @@ func (w *workers) closeDone(row stopRow, ask func(question string) error) (busy 
 		return false, err
 	}
 	fmt.Fprintf(os.Stdout, "watch: closed %s (herdr status %q)\n", row.Name, agent.Status)
-	return false, nil
+	return false, refused
 }
 
 // questionFile is where the worker `name` writes its question.

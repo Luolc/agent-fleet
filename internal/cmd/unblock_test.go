@@ -79,12 +79,35 @@ func TestTheUnblockWorkerGetsTheScreenTheGuidanceAndThePeoplesAnswer(t *testing.
 		t.Fatal(err)
 	}
 	for _, want := range []string{"Ticket: SC-9, labelled blocked-screen; record on it with `atb linear comment SC-9",
-		"Act on it only when it plainly answers this screen's question", "Otherwise press nothing and write the question again",
+		"act on it only when it plainly answers this screen's question", "otherwise press nothing and write the question again",
 		"## Earlier", "Asked at 2023-11-14T22:13:20Z (answered):\n\n> Press 1 to run rm -rf build?",
 		`{"user":"U0ABC","ts":"1700000100.000","text":"yes, press 1"}`} {
 		if !strings.Contains(got, want) {
 			t.Errorf("%q not in the prompt with an answer", want)
 		}
+	}
+	// A question asked on a card comes with the last press on it, and
+	// with no message from the thread: a message answers no card.
+	if _, err := conn.Exec(`DELETE FROM questions`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`INSERT INTO questions (job, thread, asked_by, text, state, asked_at, answered_at, card, card_id, answer)
+		VALUES ('s', 'C1/1.0', 'watch-unblock-7', '{"question": "Press 1?"}', 'answered', 1700000000, 1700000100, 1, 'card-1',
+		'{"question_id":1,"card_id":"card-1","outcome":"answered","choice":{"index":1,"short":"No"},"note":"press 2","at":"x"}')`); err != nil {
+		t.Fatal(err)
+	}
+	got, err = u.helperPrompt(row, bashPrompt, "SC-9")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"## Earlier", "Asked at 2023-11-14T22:13:20Z (answered):\n\n> {\"question\": \"Press 1?\"}",
+		"The last press on its card:\n\n{\"question_id\":1,\"card_id\":\"card-1\",\"outcome\":\"answered\",\"choice\":{\"index\":1,\"short\":\"No\"},\"note\":\"press 2\""} {
+		if !strings.Contains(got, want) {
+			t.Errorf("%q not in the prompt with a press", want)
+		}
+	}
+	if strings.Contains(got, "yes, press 1") {
+		t.Errorf("the thread's message is in the prompt of a card's press")
 	}
 }
 
@@ -126,7 +149,8 @@ func TestATrustDialogTheRuleDoesNotGetPastStartsNoHelper(t *testing.T) {
 func TestAScreenOfALeadWithoutAHomeThreadOpensOne(t *testing.T) {
 	bin := t.TempDir()
 	calls := filepath.Join(bin, "calls")
-	fake := "#!/bin/sh\necho \"$*\" >> " + calls + "\n[ \"$2\" = open-thread ] && { echo \"$6/1700000099.000\"; exit 0; }\necho m-posted\n"
+	fake := "#!/bin/sh\necho \"$*\" >> " + calls + "\n[ \"$2\" = open-thread ] && { echo \"$6/1700000099.000\"; exit 0; }\n" +
+		"echo '{\"id\":\"card-1\",\"channel\":\"C0123\",\"ts\":\"1.0\",\"permalink\":\"https://slack.example.test/card-1\"}'\n"
 	if err := os.WriteFile(filepath.Join(bin, "fednet"), []byte(fake), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -150,17 +174,45 @@ func TestAScreenOfALeadWithoutAHomeThreadOpensOne(t *testing.T) {
 	}
 	u := testWorkers(conn, sc)
 	row := stopRow{ID: 7, Name: "r-lead", Role: "lead", Job: "r", Parent: plainStarter, State: "active"}
-	if err := u.ask(row, "watch-unblock-7", "r-lead is at a usage limit; wait for the reset?"); err != nil {
+	if err := u.ask(row, "watch-unblock-7", `{"question": "r-lead is at a usage limit; wait for the reset?"}`); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := os.ReadFile(calls)
 	if !strings.HasPrefix(string(got), "client open-thread -socket /run/fednet.sock -channel C0123 -- Thread of job r in example-dataset") ||
-		!strings.Contains(string(got), "client post -socket /run/fednet.sock -thread C0123/1700000099.000 -- r-lead is at a usage limit") {
+		!strings.Contains(string(got), "client ask -socket /run/fednet.sock -thread C0123/1700000099.000 -ref main:1 -card ") {
 		t.Errorf("fednet calls = %q", got)
 	}
 	var home, asked string
 	if err := conn.QueryRow("SELECT j.home_thread, q.thread FROM jobs j, questions q WHERE j.job = 'r'").Scan(&home, &asked); err != nil ||
 		home != "C0123/1700000099.000" || asked != home {
 		t.Errorf("home thread %q, question in %q, %v", home, asked, err)
+	}
+}
+
+// A screen only a person deals with is asked about on a card; for an
+// agent of a job the people may also have the job ended.
+func TestAHandsOffScreenIsAskedOnACardWithTheJobsEnd(t *testing.T) {
+	sc, err := config.ParseScope([]byte(`{}`), "/home/u")
+	if err != nil {
+		t.Fatal(err)
+	}
+	u := testWorkers(nil, sc)
+	lead := stopRow{ID: 7, Name: "r-lead", Role: "lead", Job: "r", State: "active"}
+	got, err := u.screenCard(lead, "r-lead is stopped at a screen fleet never answers", "r-lead (the lead of job r) is "+
+		"stopped at a usage limit.", limitMenu)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"question":"r-lead is stopped at a screen fleet never answers","context":"r-lead (the lead of job r) is stopped ` +
+		`at a usage limit. A person has to deal with it at the machine (agent r-lead in the herdr session fleet-main).\n\n` +
+		"The screen:\\n\\n```\\n"
+	if !strings.HasPrefix(got, want) || !strings.HasSuffix(got, `"options":[{"short":"I'll deal with it","long":"A person `+
+		`deals with the screen at the machine; fleet does not ask about it again.","recommended":true},{"short":"End job r",`+
+		"\"long\":\"The thread's agent ends job r by force (`fleet job end r --force`), its work as it stands.\"}]}") {
+		t.Errorf("card %s", got)
+	}
+	thread := stopRow{ID: 8, Name: "thread-c1", Role: "thread", Thread: "C1/1.0", State: "active"}
+	if got, err := u.screenCard(thread, "t", "w", limitMenu); err != nil || strings.Contains(got, `"options"`) {
+		t.Errorf("a thread agent's card %s, %v", got, err)
 	}
 }

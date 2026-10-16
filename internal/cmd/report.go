@@ -26,10 +26,10 @@ const (
 		"the total. For each: questions asked, answered, pending and closed (given up on by `fleet " +
 		"watch`: its job ended by force, or no answer within its limit), and the median and longest " +
 		"wait of the answered ones.\n\n" +
-		"A question on a card (`fleet ask-human --card`) is answered when a person submits or closes " +
-		"the card; a lead's question (`fleet ask-thread`) when the thread agent sends that lead a " +
-		"message or the card asked for it is answered. A question fleet posted as text (a watch " +
-		"worker's, a screen's), and a lead's whose job ended with no card asking for it, is " +
+		"A question on a card (`fleet ask-human --card`, and every question `fleet watch` asks) is " +
+		"answered when a person submits or closes the card; a lead's question (`fleet ask-thread`) " +
+		"when the thread agent sends that lead a message or the card asked for it is answered. A " +
+		"question an older fleet posted as text, and a lead's whose job ended with no card asking for it, is " +
 		"answered when the next message a person posts in its thread arrives, which marks every " +
 		"such question pending there answered: the wait runs to that " +
 		"message, which is not necessarily the answer to the question.\n\n" +

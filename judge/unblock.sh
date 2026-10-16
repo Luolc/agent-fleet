@@ -32,12 +32,15 @@ echo "$*" >> /home/agent/screens-atb.log
 exit 0
 ATB
 # The fake fednet logs every call; `read-thread` answers a message posted
-# just now, so no thread is quiet and the thread rules stay out of the way.
+# just now, so no thread is quiet and the thread rules stay out of the way;
+# `ask` logs the card too and posts card-<n>, n the ref's id.
 cat > /home/agent/fake-screens/fednet <<'FEDNET'
 #!/bin/sh
 printf '%s\n--\n' "$*" >> /home/agent/screens-fednet.log
 case "$2" in
   read-thread) printf '{"messages":[{"ts":"%s.000100","user":"U0ABC","text":"b"}]}\n' "$(date +%s)" ;;
+  ask) printf 'card %s\n--\n' "$(cat "${10}")" >> /home/agent/screens-fednet.log
+    echo '{"id":"card-'"${8#*:}"'","channel":"C0","ts":"1.0","permalink":"https://slack.example.test/card-'"${8#*:}"'"}' ;;
   *) echo m-posted ;;
 esac
 FEDNET
@@ -101,8 +104,11 @@ check "unblock: the helper runs in the scope's own directory, outside every chec
 check "unblock: the helper's scratch variable is the directory it runs in" "${P}SCRATCH=$hcwd" \
   "$(proc_env "$hperm" | grep -o "${P}SCRATCH=[^ ]*")"
 check "unblock: the usage-limit menu is left as it is" blocked "$(agent_field l-lead agent_status)"
-has "unblock: the people are asked about the usage limit in the home thread" "$(cat /home/agent/screens-fednet.log)" \
-  "$KS" "l-lead (the lead of job l) is stopped at a screen fleet never answers" "usage limit"
+has "unblock: the people are asked about the usage limit on a card in the home thread" "$(cat /home/agent/screens-fednet.log)" \
+  "client ask -socket /home/agent/screens.sock -thread $KS -ref $SCOPE:" \
+  "l-lead (the lead of job l) is stopped at a screen fleet never answers" "usage limit" \
+  '{"short":"I'"'"'ll deal with it",' '"recommended":true},{"short":"End job l",'
+lacks "unblock: nothing is posted as text" "$(cat /home/agent/screens-fednet.log)" "client post"
 check "unblock: the question waits for them, from the agent's helper name" "pending|$KS " \
   "$(ledger "SELECT state, thread FROM questions WHERE asked_by = '$hlimit'")"
 settled thread-s
@@ -132,16 +138,22 @@ check "unblock: the helper's question waits for the people" "pending " \
   "$(ledger "SELECT state FROM questions WHERE asked_by = '$hperm'")"
 check "unblock: the usage limit is asked about once" 1 "$(grep -c 'fleet never answers' /home/agent/screens-fednet.log)"
 
-# The people answer; the next run gives the answer to a new helper.
-sqlite3 "$DB" >/dev/null <<SQL
-UPDATE questions SET state = 'answered', answered_at = $(date +%s) WHERE asked_by = '$hperm';
-INSERT INTO threads (thread, slug, created_at, last_text, last_user, last_ts)
-    VALUES ('$KS', 'c0scr', $now, 'yes, press 1 0xANSWER', 'U0ABC', '1700000100.000');
-SQL
+# The people press an answer on the card; the next run gives it to a new
+# helper.
+qid=$(sqlite3 "$DB" "SELECT id FROM questions WHERE asked_by = '$hperm'")
+printf '{"msg_id":"ua1","payload":{"type":"answer","answer":{"question_id":"%s:%s","card_id":"card-%s","outcome":"answered","choice":{"index":0,"short":"Press 1"},"note":"yes, press 1 0xANSWER","by":"U0ABC","at":"2026-10-16T10:00:00-07:00"}}}\n' \
+  "$SCOPE" "$qid" "$qid" > /home/agent/unblock-answer.json
+PATH=/home/agent/fake-screens:$PATH "$T" inbox /home/agent/unblock-answer.json >/home/agent/unblock-answer.out 2>&1; rc=$?
+check "unblock: the press is taken: exit 0, the question answered" "0 answered " \
+  "$rc $(ledger "SELECT state FROM questions WHERE asked_by = '$hperm'")"
+settled thread-s
+has "unblock: the home thread's agent gets the press, naming who asked" "$(received thread-s)" "[ANSWER #$qid]" \
+  "for $hperm (question #$qid), not one of yours" "0xANSWER"
 uwatch >/home/agent/unblock3.out 2>&1; rc=$?
 check "unblock: third run exit 0" 0 "$rc"
 has "unblock: a new helper once the people answered" "$(helpers)" "$hperm"
-has "unblock: it gets their question and answer" "$(received "$hperm")" "## Earlier" "0xQUESTION" "0xANSWER"
+has "unblock: it gets their question and the press" "$(received "$hperm")" "## Earlier" "0xQUESTION" \
+  "The last press on its card:" '"choice":{"index":0,"short":"Press 1"},"note":"yes, press 1 0xANSWER"'
 check "unblock: it keeps the first helper's ticket" "SC-9|2 " \
   "$(ledger "SELECT issue, (SELECT count(*) FROM agents WHERE name = '$hperm') FROM agents WHERE name = '$hperm' AND state != 'ended'")"
 check "unblock: no second ticket for s-perm" 1 "$(grep -c 'title s-perm stopped' /home/agent/screens-atb.log)"

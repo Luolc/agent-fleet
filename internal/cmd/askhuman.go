@@ -177,7 +177,11 @@ func AskHuman(h *herdr.Herdr, args AskHumanArgs) (exit.Code, error) {
 func askCard(conn *sql.DB, socket string, me *identity.Identity, args AskHumanArgs) (exit.Code, error) {
 	cardFile := args.Card
 	if args.File != "" {
-		card, err := textCard(args.File)
+		text, err := readCard(args.File)
+		if err != nil {
+			return 0, err
+		}
+		card, err := textCard(text, "")
 		if err != nil {
 			return 0, err
 		}
@@ -307,31 +311,72 @@ const (
 	maxTitle  = 140
 )
 
-// textCard is the card a thread agent's plain-text question is posted as
-// (an older prompt's `ask-human --file`, deprecated): its first line as
-// the question, or textTitle when that line is too long, the whole text
-// as the context, no options. fednet checks the rest, and refuses a text
-// over its limit for a context.
-func textCard(path string) (string, error) {
-	text, err := readCard(path)
-	if err != nil {
-		return "", err
+// cardOption is an option of a card fleet writes itself.
+type cardOption struct {
+	Short       string `json:"short"`
+	Long        string `json:"long,omitempty"`
+	Recommended bool   `json:"recommended,omitempty"`
+}
+
+// encodeCard is the JSON of a card fleet writes itself; fednet checks it.
+func encodeCard(question, context string, options []cardOption) (string, error) {
+	var b strings.Builder
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(struct {
+		Question string       `json:"question"`
+		Context  string       `json:"context,omitempty"`
+		Options  []cardOption `json:"options,omitempty"`
+	}{question, context, options}); err != nil {
+		return "", exit.Environmentf("cannot write the card: %v", err)
 	}
+	return strings.TrimSpace(b.String()), nil
+}
+
+// textCard is the card a plain-text question is asked on: its first line
+// as the question, or textTitle when that line is too long, `header` (if
+// any) and the whole text as the context, no options. fednet checks the
+// rest, and refuses a text over its limit for a context.
+func textCard(text, header string) (string, error) {
 	title, _, _ := strings.Cut(strings.TrimSpace(text), "\n")
 	title = strings.TrimSpace(title)
 	if utf8.RuneCountInString(title) > maxTitle {
 		title = textTitle
 	}
+	if header != "" {
+		text = header + "\n\n" + text
+	}
+	return encodeCard(title, text, nil)
+}
+
+// questionCard is the card a watch worker's question is asked on: the
+// card its question file holds, `header` put before its context, or for
+// a file that holds no card, textCard of its text.
+func questionCard(text, header string) (string, error) {
+	var card map[string]json.RawMessage
+	if json.Unmarshal([]byte(text), &card) != nil || card == nil {
+		return textCard(text, header)
+	}
+	var context string
+	if raw, ok := card["context"]; ok && json.Unmarshal(raw, &context) != nil {
+		// Not a string: fednet refuses it as it is.
+		return text, nil
+	}
+	if context != "" {
+		header += "\n\n" + context
+	}
+	raw, err := json.Marshal(header)
+	if err != nil {
+		return "", exit.Environmentf("cannot write the card: %v", err)
+	}
+	card["context"] = raw
 	var b strings.Builder
 	enc := json.NewEncoder(&b)
 	enc.SetEscapeHTML(false)
-	if err := enc.Encode(struct {
-		Question string `json:"question"`
-		Context  string `json:"context"`
-	}{title, text}); err != nil {
+	if err := enc.Encode(card); err != nil {
 		return "", exit.Environmentf("cannot write the card: %v", err)
 	}
-	return b.String(), nil
+	return strings.TrimSpace(b.String()), nil
 }
 
 // notAsker refuses the callers `command` is not for: a worker, and for

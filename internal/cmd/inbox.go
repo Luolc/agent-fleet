@@ -40,10 +40,12 @@ const (
 		"agent as a message does (one is started when none is live), and, for a card asked for a " +
 		"lead's question, to that lead under that question's id, when it is live. A press on a " +
 		"question fleet has closed (taken back, or given up on by `fleet watch`) is recorded and " +
-		"given to no agent. Messages in a thread answer only the questions fleet posted there as " +
-		"text (a watch worker's, a screen's) and the questions of a lead whose job has ended that " +
-		"no pending card asks for: only a press answers a card, and only the thread agent an " +
-		"open job's lead's question.\n\n" +
+		"given to no agent. A press on a card fleet posted for a watch worker, a screen or a " +
+		"watch's `max` reaches the thread's agent naming who asked, and is kept on the question " +
+		"for the next worker (`fleet watch --help`). Messages in a thread answer only the " +
+		"questions an older fleet posted there as text and the questions of a lead whose job has " +
+		"ended that no pending card asks for: only a press answers a card, and only the thread " +
+		"agent an open job's lead's question.\n\n" +
 		"Which messages fleet serves, by channel: `<repo prefix><R>` (thread agents run in the " +
 		"main checkout <checkouts>/<R>), `<initiative prefix><I>` (in <initiatives>/<I>/, the " +
 		"checkout of the initiative's repo) and direct messages (in the general initiative's " +
@@ -369,12 +371,11 @@ func startThread(h *herdr.Herdr, conn *sql.DB, scope string, cfg *config.Scope, 
 }
 
 // answerByMessage marks answered the thread's pending questions a
-// person's message answers: those fleet posted as text (a watch worker's,
-// a screen's, watch's own at a watch's `max`, and a thread agent's from
-// before cards), and a lead's whose job has ended (moved to the thread,
-// its lead gone), unless a card asks the people for it. Only a press
-// answers a card, and only the thread agent an open job's lead's
-// question.
+// person's message answers: those an older fleet posted as text (a watch
+// worker's, a screen's, watch's own at a watch's `max`, a thread
+// agent's), and a lead's whose job has ended (moved to the thread, its
+// lead gone), unless a card asks the people for it. Only a press answers
+// a card, and only the thread agent an open job's lead's question.
 func answerByMessage(conn *sql.DB, thread string) error {
 	var ids []any
 	err := eachRow(conn, "SELECT id, job, asked_by, card, job != '' AND NOT EXISTS (SELECT 1 FROM jobs j WHERE "+
@@ -428,9 +429,9 @@ func (a cardAnswer) as(id int64) (string, error) {
 
 // answeredCard is the question a press answers, as the ledger has it.
 type answeredCard struct {
-	id                    int64
-	thread, cardID, state string
-	forQuestion           sql.NullInt64
+	id                             int64
+	thread, cardID, state, askedBy string
+	forQuestion                    sql.NullInt64
 }
 
 // inboxAnswer takes a press on a card to the ledger, then to the thread's
@@ -492,8 +493,8 @@ func answeredQuestion(msgID string, a cardAnswer) (string, *sql.DB, answeredCard
 		return "", nil, answeredCard{}, err
 	}
 	q := answeredCard{id: id}
-	err = conn.QueryRow("SELECT thread, card_id, state, for_question FROM questions WHERE id = ?1 AND card = 1", id).
-		Scan(&q.thread, &q.cardID, &q.state, &q.forQuestion)
+	err = conn.QueryRow("SELECT thread, card_id, state, asked_by, for_question FROM questions WHERE id = ?1 AND card = 1", id).
+		Scan(&q.thread, &q.cardID, &q.state, &q.askedBy, &q.forQuestion)
 	if errors.Is(err, sql.ErrNoRows) || err == nil && q.cardID != a.CardID {
 		_ = conn.Close()
 		fmt.Fprintf(os.Stdout, "ignored %s: scope %s has no question #%d with card %s\n", msgID, scope, id, a.CardID)
@@ -520,7 +521,11 @@ func deliverAnswer(conn *sql.DB, scope, key string, q answeredCard, a cardAnswer
 		if err != nil {
 			return err
 		}
-		code, _, err := route(h, conn, scope, cfg, inboundMessage{Thread: q.thread, Text: text, Answer: true, QuestionID: q.id})
+		msg := inboundMessage{Thread: q.thread, Text: text, Answer: true, QuestionID: q.id}
+		if (question{askedBy: q.askedBy}).byHelper() {
+			msg.AskedBy = q.askedBy
+		}
+		code, _, err := route(h, conn, scope, cfg, msg)
 		if err == nil && code != exit.Ok {
 			err = exit.New(code, fmt.Sprintf("the answer to question #%d did not reach the agent of thread %s (exit %d)", q.id, q.thread, code))
 		}
@@ -532,16 +537,20 @@ func deliverAnswer(conn *sql.DB, scope, key string, q answeredCard, a cardAnswer
 	return runStep(conn, key, "lead", func() error { return answerToLead(h, conn, q, a) })
 }
 
-// recordAnswer writes the press on the question's row, and on the lead's
-// question it asks for: a submit or a person's close answers both; a
-// snooze keeps them pending until the card comes back, from when their
-// reminders count again.
+// recordAnswer writes the press on the question's row, kept as its
+// answer, and on the lead's question it asks for: a submit or a person's
+// close answers both; a snooze keeps them pending until the card comes
+// back, from when their reminders count again.
 func recordAnswer(conn *sql.DB, q answeredCard, a cardAnswer) error {
 	type stmt struct {
 		query string
 		args  []any
 	}
-	var stmts []stmt
+	answer, err := a.as(q.id)
+	if err != nil {
+		return err
+	}
+	stmts := []stmt{{"UPDATE questions SET answer = ?1 WHERE id = ?2", []any{answer, q.id}}}
 	switch a.Outcome {
 	case "answered", "closed":
 		stmts = append(stmts, stmt{"UPDATE questions SET state = CASE WHEN state = 'closed' THEN state ELSE 'answered' END, " +

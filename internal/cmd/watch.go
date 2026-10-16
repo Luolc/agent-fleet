@@ -63,7 +63,22 @@ const (
 		"Workers: the workers watch started (`watch-<watch>-<key>`, in the `threads` workspace, with " +
 		"no job and the parent `watch`) that finished their turn, or worked for 30 minutes, are " +
 		"closed; the question one wrote in its question file is asked in the thread of its " +
-		"subject, or printed on stderr without one.\n\n" +
+		"subject, or printed on stderr without one. It is asked on a card: a file holding a card's " +
+		"JSON (as `fleet ask-human --card` takes it) as it is, a line naming the worker put before " +
+		"its context; any other text as the context of a card without options. A card fednet " +
+		"refuses (over a limit, say) is not asked: the worker is closed all the same, and the error " +
+		"is the run's.\n\n" +
+		"Questions fleet asks (a worker's, a screen's, one at a watch's `max`) are cards, posted " +
+		"with `fednet client ask`, and only a press on one answers it, never a message in the " +
+		"thread. Each press is kept on its question and reaches the thread's agent, naming who " +
+		"asked. By outcome: `answered`, and `closed` (a person's close), answer it, so the next " +
+		"worker of the subject, or the next helper of the stopped agent, starts on the next run " +
+		"that is due, the question and the press in its first message; `snoozed` keeps it pending, " +
+		"so no worker starts and it is not reminded of until it comes back; `resurfaced` counts its " +
+		"reminders again. A screen only a person deals with is asked about with the options " +
+		"`I'll deal with it` (recommended) and, for an agent of a job, `End job <job>`; a subject " +
+		"at `max` with `Leave it` (recommended) and `Look into it`. What a choice asks beyond " +
+		"that is the thread agent's to do.\n\n" +
 		"Screens: then every live agent stopped at a screen (herdr status blocked, or a start " +
 		"left at a screen for 10 minutes), thread agents included. The folder-trust dialog for " +
 		"the agent's own directory is answered as a start answers it, and nobody is told. A usage " +
