@@ -1,0 +1,31 @@
+id = 21
+slug = "release-by-version-tag"
+revision = 1
+kind = "rule"
+status = "trial"
+lang = "en"
+parent = "R268"
+default = "on"
+authority = ["division-of-instructions.project-instructions"]
+constitution = ">=1"
+level = "project"
+check = "none"
+uses = ["instructions", "review"]
+
+[title]
+en = "Release fleet only by pushing the tag of the version in `cmd/fleet/main.go`"
+
+[text.statement]
+en = "Release fleet only by pushing to `Luolc/agent-fleet` the tag `v<version>`, where `<version>` is the value of `const version` in `cmd/fleet/main.go` at the tagged commit."
+
+[text.reason]
+en = '''
+A rule about releases, such as one that sets which versions may be released and who may release them, needs to know where a project's version is written and which act releases it. This rule names both for fleet: the version is `const version` in `cmd/fleet/main.go`, the number `fleet --version` prints, and the release is the push of its tag. It grants no authority: whether a given release needs a person's yes is for {@rule:R32} and the rules that refine it to say.
+'''
+
+[text.verification]
+en = '''
+A release is any act that makes a version of fleet available, as {@rule:R32} has it. Creating a GitHub Release from that tag is part of the release the tag push starts, not a release of its own.
+
+Violated when a version of fleet is made available by an act other than pushing its tag, such as a GitHub Release created from another tag or a binary published by hand, or when a tag `v<version>` is pushed to `Luolc/agent-fleet` on a commit whose `const version` in `cmd/fleet/main.go` is not `<version>`.
+'''
