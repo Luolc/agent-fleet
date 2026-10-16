@@ -717,7 +717,7 @@ func (r *watchRun) closeQuestions(qs []question) error {
 		}
 		ids = append(ids, q.id)
 	}
-	return closeCards(r.conn, r.cfg.FednetSocket, ids)
+	return closeCards(r.conn, r.cfg.FednetSocket, ids, "fleet closed this question")
 }
 
 // cardLink is the reminder's line for a card: its link, else its

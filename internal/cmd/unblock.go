@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -186,7 +187,7 @@ func (w *workers) unblock() error {
 			still[screenWorkers(row.ID)[0]] = true
 		}
 	}
-	if err := w.dropUnposted(still); err != nil {
+	if err := w.closeRecovered(still); err != nil {
 		return err
 	}
 	if !due {
@@ -214,33 +215,72 @@ func (w *workers) unblockRow(e config.Entry, due bool, row stopRow) bool {
 	return err != nil || stopped
 }
 
-// dropUnposted closes the screen questions whose card was never posted
-// when their agent is no longer stopped at a screen (`still` has the
+// recoveredNote is what a screen's card shows once fleet takes it back.
+const recoveredNote = "fleet closed this question: the agent is no longer stopped at the screen, so it needs no answer"
+
+// closeRecovered closes the screen questions still pending, snoozed or
+// not, when their agent is no longer stopped at a screen (`still` has the
 // names they are asked under for the agents that are), or its row has
-// ended: there is no screen left to ask about.
-func (w *workers) dropUnposted(still map[string]bool) error {
-	var ids []any
-	err := eachRow(w.conn, "SELECT id, asked_by FROM questions WHERE state = 'pending' AND asked_by LIKE ?1 AND "+
-		unposted, func(rows *sql.Rows) error {
-		var id int64
-		var by string
-		if err := rows.Scan(&id, &by); err != nil {
-			return err
-		}
-		if !still[by] {
-			ids = append(ids, id)
-		}
-		return nil
-	}, workerPrefix+screenWatch+"-%")
+// ended: there is no screen left to ask about. A posted card is taken
+// back from Slack; a failure there only warns. The steps that asked the
+// people about such an agent are cleared too, answered or not, so its
+// next stop is asked about again.
+func (w *workers) closeRecovered(still map[string]bool) error {
+	if err := w.clearAsked(still); err != nil {
+		return err
+	}
+	var ids []int64
+	err := eachRow(w.conn, "SELECT id, asked_by FROM questions WHERE state = 'pending' AND asked_by LIKE ?1",
+		func(rows *sql.Rows) error {
+			var id int64
+			var by string
+			if err := rows.Scan(&id, &by); err != nil {
+				return err
+			}
+			if !still[by] {
+				ids = append(ids, id)
+			}
+			return nil
+		}, workerPrefix+screenWatch+"-%")
 	if err != nil || len(ids) == 0 {
 		return err
 	}
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		args[i] = id
+	}
 	if _, err := w.conn.Exec("UPDATE questions SET state = 'closed' WHERE id IN (?"+strings.Repeat(", ?", len(ids)-1)+")",
-		ids...); err != nil {
+		args...); err != nil {
 		return exit.Database(err)
 	}
-	fmt.Fprintf(os.Stdout, "unblock: closed %d unposted screen question(s): their agent is no longer stopped\n", len(ids))
-	return nil
+	fmt.Fprintf(os.Stdout, "unblock: closed %d screen question(s): their agent is no longer stopped\n", len(ids))
+	return closeCards(w.conn, w.cfg.FednetSocket, ids, recoveredNote)
+}
+
+// askSteps are the steps of askOnce, one ask per stop of an agent.
+var askSteps = []any{"ask-hands-off", "ask-helpers"}
+
+// clearAsked deletes the askSteps of the agents not in `still`.
+func (w *workers) clearAsked(still map[string]bool) error {
+	var keys []any
+	err := eachRow(w.conn, "SELECT DISTINCT key FROM steps WHERE key LIKE 'unblock:%' AND step IN (?1, ?2)",
+		func(rows *sql.Rows) error {
+			var key string
+			if err := rows.Scan(&key); err != nil {
+				return err
+			}
+			id, err := strconv.ParseInt(strings.TrimPrefix(key, "unblock:"), 10, 64)
+			if err == nil && !still[screenWorkers(id)[0]] {
+				keys = append(keys, key)
+			}
+			return nil
+		}, askSteps...)
+	if err != nil || len(keys) == 0 {
+		return err
+	}
+	_, err = w.conn.Exec("DELETE FROM steps WHERE step IN (?, ?) AND key IN (?"+strings.Repeat(", ?", len(keys)-1)+")",
+		append(slices.Clone(askSteps), keys...)...)
+	return dbErr(err)
 }
 
 // stopped is the screen of `row` when its agent is stopped at one.
@@ -334,7 +374,8 @@ func fenced(text string) string {
 }
 
 // askOnce asks the people about `row` once for its `step`, on `card`: a
-// retry after a failure asks again, a step done is never repeated.
+// retry after a failure asks again, a step done is not repeated until the
+// agent is found no longer stopped (clearAsked).
 func (u *workers) askOnce(row stopRow, step, card string) error {
 	asked := false
 	err := runStep(u.conn, fmt.Sprintf("unblock:%d", row.ID), step, func() error {
@@ -373,7 +414,7 @@ func (u *workers) screenCard(row stopRow, title, why, screen string) (string, er
 	if row.Job != "" {
 		options = []cardOption{
 			{Short: "I'll deal with it", Long: "A person deals with the screen at the machine; fleet does not ask " +
-				"about it again.", Recommended: true},
+				"about this stop again.", Recommended: true},
 			{Short: "End job " + row.Job, Long: fmt.Sprintf("The thread's agent ends job %s by force (`fleet job end "+
 				"%s --force`), its work as it stands.", row.Job, row.Job)},
 		}
