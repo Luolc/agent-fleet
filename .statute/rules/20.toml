@@ -1,0 +1,31 @@
+id = 20
+slug = "seek-dependency-free-route"
+revision = 1
+kind = "rule"
+status = "trial"
+lang = "en"
+parent = "R83"
+default = "on"
+authority = ["simplicity"]
+constitution = ">=1"
+level = "project"
+check = "none"
+uses = ["instructions", "review"]
+
+[title]
+en = "Look for a way without git, GitHub, Linear or Slack before adding a dependence of fleet on them"
+
+[text.statement]
+en = "Before a change adds to fleet a new dependence on git, GitHub, Linear or Slack (a new call to `git`, `gh`, `atb`, `fednet` or the services behind them, a new step that uses them in a built-in prompt, or a feature that fails without them), look for a way to reach the same goal without it, take that way when one exists, and say in the pull request description which ways you looked at and why each falls short; a feature a principal asked for is still built when it needs such a dependence."
+
+[text.reason]
+en = '''
+fleet's direction is a multi-agent framework that needs only herdr, with git, GitHub, Linear and Slack (through fednet) optional. It is a direction, not a requirement: while fleet is under development, features that need these services are built, and looking for a way without them first keeps each new dependence a choice made on purpose.
+'''
+
+[text.verification]
+en = '''
+Fixing a call that is already there adds no dependence.
+
+Violated when a change adds such a dependence and its pull request description does not say which ways without it were looked at and why each falls short, or when it adds one although a way it names reaches the same goal without it, or when a feature a principal asked for is dropped or cut short only to avoid such a dependence.
+'''

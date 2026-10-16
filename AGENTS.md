@@ -333,13 +333,13 @@ A lower-ranking provision or a principal may depart from a higher-ranking provis
 - R250 Put into a repository's commit hooks only checks that finish in seconds, such as formatting, lint, a secret scan and validating or building the repository's own sources, aiming at no more than 5 seconds for all of them; never run tests in the hooks, whether unit, integration or end-to-end, nor checks that need a heavy toolchain or outside state, and leave those to the checks before a push and to CI.
 - R256 Once you have rewritten the pushed history of a branch that others work on, tell each of them, before your task ends, to clone again or to reset to the new history before they go on.
 - R87 Write no history in a code comment: not what was tried, reverted or discussed, nor why another way was not taken.
-- L1 Add to fleet no new dependence on git, GitHub, Linear or Slack: no new call to `git`, `gh`, `atb`, `fednet` or the services behind them, no new step that uses them in a built-in prompt, and no feature that fails without them; fixing a call that is already there adds none.
 - L2 When a change to fleet rewrites code that depends on git, GitHub, Linear or Slack, make the rewritten code depend on them less where the change can do so within its own goal.
 - L3 In `cmd/fleet/`, let `main` dispatch on the first argument and give each subcommand its own `flag.FlagSet` from Go's standard library, with no third-party command-line package.
 - L4 Put every Go package other than the `fleet` binary in `cmd/fleet/` under `internal/`.
 - L5 Pin each Go tool the checks use in a module file of its own, `tools/<tool>.mod`, and run it with `go tool -modfile=tools/<tool>.mod <tool>`.
 - L8 Pin the Go version in `go.mod` with a single `go` line and no `toolchain` line.
 - L9 Raise the `go` line of `go.mod` only to a Go version already installed where the checks run, so the installed Go is raised first.
+- L20 Before a change adds to fleet a new dependence on git, GitHub, Linear or Slack (a new call to `git`, `gh`, `atb`, `fednet` or the services behind them, a new step that uses them in a built-in prompt, or a feature that fails without them), look for a way to reach the same goal without it, take that way when one exists, and say in the pull request description which ways you looked at and why each falls short; a feature a principal asked for is still built when it needs such a dependence.
 - R57 Make every non-trivial change on a branch of its own and bring it into the main branch only through a reviewed pull request.
 - R60 As the reviewer of a change, never alter what it contains: do not edit it, commit to it or push to its branch.
 - R61 Name in every review verdict the exact version of the change you reviewed.
