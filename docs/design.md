@@ -31,7 +31,7 @@ A **channel** decides where a thread belongs (its *mapping*), by the scope's set
 - `internal/identity`: the caller's identity from the `FLEET_*` variables; `FLEET_THREAD` is injected only into a thread agent's pane.
 - `internal/exit`: the exit-code contract and the failure type every command returns.
 - `internal/cliargs`: the clap-like behaviors `flag` lacks (flags after positionals, a string flag that records whether it was given).
-- `.github/workflows/release.yml`: a pushed `v*` tag is released only when it is `v` plus `const version` in `cmd/fleet/main.go` (`scripts/release-guard.sh`) and the tagged commit's `ci.yml` push run on `main` succeeded on its first attempt (`release-ci-green` of `Luolc/ci-actions`, which also means the commit is on `main`); the release has a static binary for linux and darwin on amd64 and arm64, with `SHA256SUMS`. fleet itself does not call GitHub for this. The steps are in the [README's Release section](../README.md#release).
+- Releases: the version is `const version` in `cmd/fleet/main.go`, and a release is a `v<version>` tag pushed to `Luolc/agent-fleet`, from which `.github/workflows/release.yml` creates the GitHub Release. It does so only when the tag is `v` plus `const version` at the tagged commit (`scripts/release-guard.sh`) and that commit's `ci.yml` push run on `main` succeeded on its first attempt (`release-ci-green` of `Luolc/ci-actions`, which also means the commit is on `main`); the release has a static binary for linux and darwin on amd64 and arm64, with `SHA256SUMS`. fleet itself does not call GitHub for this. The steps are in the [README's Release section](../README.md#release).
 
 ## Invariants
 
