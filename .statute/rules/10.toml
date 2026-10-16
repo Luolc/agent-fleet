@@ -1,6 +1,6 @@
 id = 10
 slug = "touched-checks"
-revision = 4
+revision = 5
 kind = "rule"
 status = "trial"
 lang = "en"
@@ -19,7 +19,7 @@ en = "The checks a change touches, by what it changes"
 en = '''
 The checks a change here touches, besides the commit hooks (`pre-commit run --all-files`), are:
 
-- for any file outside `docs/` and the Markdown files: `scripts/check.sh` (gofmt, `go vet`, golangci-lint, `go test`, govulncheck, a static build, the design's line cap and the judge's shards), with `FLEET_CHECK_CORES=N` on a machine shared with others to limit it to N cores;
+- for any file outside `docs/` and the Markdown files: `scripts/check.sh` (gofmt, `go vet`, golangci-lint, `go test`, govulncheck, a static build, the design's line cap, the judge's shards and the release guard's test `scripts/release-guard-test.sh`), with `FLEET_CHECK_CORES=N` on a machine shared with others to limit it to N cores;
 - for `docs/design.md` alone: `scripts/check-design-cap.sh`;
 - for `cmd/`, `internal/`, `go.mod`, `go.sum` or `judge/`: `judge/run.sh <binary>` against a binary built from the change (`go build -o <binary> ./cmd/fleet`); it needs docker, and `JUDGE_SUITES="<suite> ..."` runs only those suites.
 '''
