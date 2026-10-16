@@ -39,10 +39,12 @@ case "$2" in
     esac ;;
 esac
 ATB
-# The fake fednet fails (exit 4, one line on stderr) while
+# The fake fednet logs a `react` apart, in /home/agent/react.log, and
+# fails (exit 4, one line on stderr) while
 # /home/agent/fednet-down exists; `ask` posts card-<n>, n the ref's id.
 cat > /home/agent/fake-thread/fednet <<'FEDNET'
 #!/bin/sh
+[ "$2" = react ] && { echo "$*" >> /home/agent/react.log; exit 0; }
 echo "$*" >> /home/agent/fednet.log
 [ -e /home/agent/fednet-down ] && { echo "post: hub unreachable" >&2; exit 4; }
 [ "$2" = ask ] && { echo '{"id":"card-'"${8#*:}"'","channel":"C0","ts":"1.0","permalink":"https://slack.example.test/card-'"${8#*:}"'"}'; exit 0; }
@@ -115,6 +117,9 @@ check "inbox: agent row active with the thread and ticket" "thread||$K|TH-5|acti
 check "inbox: thread row with its ticket and one session" "c0123-1700000000-123|C0123|TH-5|1 " \
   "$(tledger "SELECT slug, channel, ticket, sessions FROM threads WHERE thread = '$K'")"
 check "inbox: message delivered in the ledger" "delivered " "$(tledger "SELECT state FROM inbox WHERE msg_id = 'm1'")"
+check "inbox: the thread's root marked busy, fleet's other two marks taken off, and eyes on" \
+  "client react -socket /home/agent/fednet.sock $K hourglass_flowing_sand|client react -socket /home/agent/fednet.sock -remove $K question|client react -socket /home/agent/fednet.sock -remove $K white_check_mark|client react -socket /home/agent/fednet.sock $K eyes|" \
+  "$(tr '\n' '|' < /home/agent/react.log)"
 settled "$A"
 
 # The same event again (fednet retrying) does nothing.
@@ -139,6 +144,21 @@ check "inbox: still one agent for the thread" "1 " \
 check "inbox: the reserved message is delivered" "delivered " "$(tledger "SELECT state FROM inbox WHERE msg_id = 'm2'")"
 settled "$A"
 
+# A person archives the thread: fleet takes its eyes off, once, and tells
+# no agent; the same reaction again changes nothing.
+: > /home/agent/react.log
+: > /home/agent/atb.log
+for r in r1 r2; do
+  printf '{"msg_id":"%s","payload":{"type":"reaction","thread":"%s","user":"U0ABC","reaction":"package"}}\n' "$r" "$K" \
+    > "/home/agent/events/$r.json"
+  inbox "/home/agent/events/$r.json" >/dev/null 2>&1; rc=$?
+  check "inbox: a package reaction ($r), exit 0" 0 "$rc"
+done
+check "inbox: a package reaction takes fleet's eyes off once" \
+  "client react -socket /home/agent/fednet.sock -remove $K eyes|" "$(tr '\n' '|' < /home/agent/react.log)"
+check "inbox: a reaction calls no atb" "" "$(cat /home/agent/atb.log)"
+: > /home/agent/react.log
+
 # The thread agent works its ticket, then ends the session.
 : > /home/agent/atb.log
 out=$(thra "$K" TH-5 -- thread set-project 'Example project' 2>&1); rc=$?
@@ -153,6 +173,7 @@ out=$(as item-1-lead lead thread-1 item-1 -- thread end --summary-file /home/age
 check "thread end: exit 1 from a lead" 1 "$rc"
 : > /home/agent/atb.log
 : > /home/agent/fednet.log
+: > /home/agent/react.log
 printf 'Started nothing; the thread was a question. 0xSUMMARY\n' > /home/agent/summary.md
 out=$(thra "$K" TH-5 -- thread end --summary-file /home/agent/summary.md 2>&1); rc=$?
 check "thread end: exit 0" 0 "$rc"
@@ -167,6 +188,9 @@ check "thread end: one closing line posted to the thread, the ticket linked" \
 check "thread end: every step recorded, the closing line between Linear and the row" "comment release footer end-row " \
   "$(tledger "SELECT step FROM steps WHERE key = 'thread-end:' || (SELECT max(id) FROM agents WHERE name = '$A') ORDER BY id")"
 check "thread end: row ended" "ended " "$(tledger "SELECT state FROM agents WHERE name = '$A'")"
+check "thread end: the thread's root marked done once nothing waits" \
+  "client react -socket /home/agent/fednet.sock $K white_check_mark|client react -socket /home/agent/fednet.sock -remove $K question|client react -socket /home/agent/fednet.sock -remove $K hourglass_flowing_sand|" \
+  "$(tr '\n' '|' < /home/agent/react.log)"
 check "thread end: tab closed last, the agent is gone" agent_not_found "$(agent_field "$A" agent_status)"
 # The workspace stays: its `shell` tab runs no agent.
 

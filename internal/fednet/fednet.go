@@ -3,8 +3,8 @@
 // `delete` for the reminder a newer one replaces, `progress` for a thread
 // agent's progress card, `read-thread` for when a thread last had a
 // message, `open-thread` and `routes` for the home thread of a job that
-// has none, and `ask` and `ask-close` for a thread agent's question
-// cards.
+// has none, `ask` and `ask-close` for a thread agent's question cards,
+// and `react` for the status emoji on a thread's root message.
 package fednet
 
 import (
@@ -247,6 +247,25 @@ func AskClose(socket, id, note string) (code int, reason string, err error) {
 	}
 	_, stderr, code, err := relay("fednet client ask-close", append(args, "--", id))
 	return code, firstLine(stderr), err
+}
+
+// React is `fednet client react -socket <socket> [-remove] <thread>
+// <name>`: the bot's reaction `name` (an emoji name without colons) added
+// to the thread's root message, or with remove taken off it; fednet counts
+// one already there, or already gone, as done. A non-zero exit is an
+// environment failure with fednet's status and its first line of stderr,
+// which says why (a scope the bot lacks, say).
+func React(socket, thread, name string, remove bool) error {
+	const op = "fednet client react"
+	args := []string{"client", "react", "-socket", socket}
+	if remove {
+		args = append(args, "-remove")
+	}
+	_, stderr, code, err := relay(op, append(args, thread, name))
+	if err == nil && code != 0 {
+		err = exit.Environmentf("%s failed (exit status: %d): %s", op, code, firstLine(stderr))
+	}
+	return err
 }
 
 func hidden(op string, argv []string) error {

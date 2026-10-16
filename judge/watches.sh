@@ -47,6 +47,7 @@ exit 0
 SOURCE
 cat > "$CB/fednet" <<'FEDNET'
 #!/bin/sh
+[ "$2" = react ] && { echo "$*" >> /home/agent/cfgw/react.log; exit 0; }
 d=/home/agent/cfgw
 echo "$*" >> "$d/fednet.log"
 case "$2" in

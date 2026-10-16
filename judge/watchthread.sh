@@ -26,6 +26,7 @@ mkdir -p "$QB" "$QD/threads" /home/agent/.config/$T /home/agent/events /home/age
 echo '{"fednet": {"socket": "/home/agent/quiet/fednet.sock"}}' > "/home/agent/.config/$T/quiet.json"
 cat > "$QB/fednet" <<'FEDNET'
 #!/bin/sh
+[ "$2" = react ] && { echo "$*" >> /home/agent/quiet/react.log; exit 0; }
 d=/home/agent/quiet
 echo "$*" >> "$d/fednet.log"
 case "$2" in
