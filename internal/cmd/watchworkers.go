@@ -278,9 +278,11 @@ func (w *workers) questionFile(name string) string {
 }
 
 // pendingFrom is whether a question from one of `askers` waits for the
-// people; answeredAt is when the latest of them was answered (0: none).
+// people, a card only once it is posted; answeredAt is when the latest of
+// them was answered (0: none).
 func pendingFrom(conn *sql.DB, askers []string) (pending bool, answeredAt int64, err error) {
-	query := "SELECT state, COALESCE(answered_at, 0) FROM questions WHERE asked_by IN (?" +
+	query := "SELECT CASE WHEN card = 1 AND card_id = '' AND state = 'pending' THEN 'unposted' ELSE state END, " +
+		"COALESCE(answered_at, 0) FROM questions WHERE asked_by IN (?" +
 		strings.Repeat(", ?", len(askers)-1) + ")"
 	err = eachRow(conn, query, func(rows *sql.Rows) error {
 		var state string

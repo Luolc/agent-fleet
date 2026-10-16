@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Luolc/agent-fleet/internal/atb"
 	"github.com/Luolc/agent-fleet/internal/config"
@@ -306,11 +307,25 @@ func (u *workers) askOnce(row stopRow, step, card string) error {
 
 // screenCard is the card the people are asked on about `row`, stopped at
 // a screen a person has to deal with: `title`, then `why`, where to find
-// the agent and its screen. For an agent of a job, the people may also
-// have the thread's agent end the job.
+// the agent and the last 15 lines of its screen, its earliest lines left
+// out, and counted, while the context is over fednet's limit. For an
+// agent of a job, the people may also have the thread's agent end the
+// job.
 func (u *workers) screenCard(row stopRow, title, why, screen string) (string, error) {
-	context := fmt.Sprintf("%s A person has to deal with it at the machine (agent %s in the herdr session %s).\n\n"+
-		"The screen:\n\n%s", why, row.Name, identity.Session(u.scope), fenced(tail(screen, 15)))
+	shown := lines(tail(screen, 15))
+	var context string
+	for left := 0; left <= len(shown); left++ {
+		omitted := ""
+		if left > 0 {
+			omitted = fmt.Sprintf(" (its first %d line(s) left out)", left)
+		}
+		context = fmt.Sprintf("%s A person has to deal with it at the machine (agent %s in the herdr session %s).\n\n"+
+			"The screen%s:\n\n%s", why, row.Name, identity.Session(u.scope), omitted,
+			fenced(strings.Join(shown[left:], "\n")))
+		if utf8.RuneCountInString(context) <= maxContext {
+			break
+		}
+	}
 	var options []cardOption
 	if row.Job != "" {
 		options = []cardOption{
@@ -372,8 +387,11 @@ var errCardRefused = errors.New("fednet refused the card")
 // askCard asks the people in `thread` on `card` (its JSON), a question
 // pending from `asker` for `job` (empty for none), and returns the card's
 // link; a card asked before that still waits is not posted again. A card
-// fednet did not post closes its question, so nothing waits on it and
-// the next try asks anew.
+// whose post failed stays pending without a card_id, which no rule waits
+// on (pendingFrom), and the next try posts it under the same ref, so a
+// post fednet made but did not report makes no second card; another
+// card of the asker's that never got posted is closed. A card fednet
+// refused closes its question: it would be refused again.
 func (r *watchRun) askCard(thread, job, asker, card string) (string, error) {
 	if r.cfg.FednetSocket == "" {
 		return "", exit.Refusedf("fednet.socket is not configured for scope %s, so %s cannot ask the people", r.scope, asker)
@@ -389,6 +407,10 @@ func (r *watchRun) askCard(thread, job, asker, card string) (string, error) {
 	if cardID != "" {
 		return link, nil
 	}
+	if _, err := r.conn.Exec("UPDATE questions SET state = 'closed' WHERE thread = ?1 AND asked_by = ?2 AND card = 1 "+
+		"AND card_id = '' AND state = 'pending' AND id != ?3", thread, asker, id); err != nil {
+		return "", exit.Database(err)
+	}
 	path, remove, err := tempFile(card + "\n")
 	if err != nil {
 		return "", err
@@ -399,16 +421,17 @@ func (r *watchRun) askCard(thread, job, asker, card string) (string, error) {
 		_, err = r.conn.Exec("UPDATE questions SET card_id = ?1, permalink = ?2 WHERE id = ?3", posted.ID, posted.Permalink, id)
 		return posted.Permalink, dbErr(err)
 	}
-	if _, cerr := r.conn.Exec("UPDATE questions SET state = 'closed' WHERE id = ?1", id); cerr != nil {
-		return "", exit.Database(cerr)
-	}
 	switch {
 	case err != nil:
 		return "", err
 	case code == 2:
+		if _, err := r.conn.Exec("UPDATE questions SET state = 'closed' WHERE id = ?1", id); err != nil {
+			return "", exit.Database(err)
+		}
 		return "", fmt.Errorf("%w, question #%d is closed: %s", errCardRefused, id, strings.TrimSpace(string(stderr)))
 	}
-	return "", exit.Environmentf("fednet client ask failed (exit status %d): %s", code, strings.TrimSpace(string(stderr)))
+	return "", exit.Environmentf("fednet client ask failed (exit status %d), question #%d is posted on the next try: %s",
+		code, id, strings.TrimSpace(string(stderr)))
 }
 
 // cardText is a card fleet posted, as the thread's agent is told of it:

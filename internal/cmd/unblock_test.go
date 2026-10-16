@@ -1,10 +1,13 @@
 package cmd
 
 import (
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/Luolc/agent-fleet/internal/config"
 	"github.com/Luolc/agent-fleet/internal/db"
@@ -214,5 +217,96 @@ func TestAHandsOffScreenIsAskedOnACardWithTheJobsEnd(t *testing.T) {
 	thread := stopRow{ID: 8, Name: "thread-c1", Role: "thread", Thread: "C1/1.0", State: "active"}
 	if got, err := u.screenCard(thread, "t", "w", limitMenu); err != nil || strings.Contains(got, `"options"`) {
 		t.Errorf("a thread agent's card %s, %v", got, err)
+	}
+}
+
+// A card whose post failed is posted on the next try under the same ref,
+// and nothing waits on it meanwhile: the screen is asked about again.
+func TestAFailedAskIsPostedNextRunUnderTheSameRef(t *testing.T) {
+	bin := t.TempDir()
+	calls := filepath.Join(bin, "calls")
+	fake := "#!/bin/sh\necho \"$*\" >> " + calls + "\n[ -f " + filepath.Join(bin, "down") + " ] && { echo 'hub unreachable' >&2; exit 5; }\n" +
+		"echo '{\"id\":\"card-1\",\"channel\":\"C1\",\"ts\":\"1.0\",\"permalink\":\"https://slack.example.test/card-1\"}'\n"
+	if err := os.WriteFile(filepath.Join(bin, "fednet"), []byte(fake), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, "down"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+":/usr/bin:/bin")
+	conn, err := db.OpenAt(filepath.Join(t.TempDir(), "screens.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	sc, err := config.ParseScope([]byte(`{"fednet": {"socket": "/run/fednet.sock"}}`), "/home/u")
+	if err != nil {
+		t.Fatal(err)
+	}
+	u := testWorkers(conn, sc)
+	row := stopRow{ID: 7, Name: "thread-c1", Role: "thread", Thread: "C1/1.0", State: "active"}
+	e := u.builtinWatch(config.BlockedScreens)
+	if err := u.handle(e, false, row, limitMenu); err == nil || !strings.Contains(err.Error(), "exit status 5") {
+		t.Fatalf("first run: %v", err)
+	}
+	if err := os.Remove(filepath.Join(bin, "down")); err != nil {
+		t.Fatal(err)
+	}
+	if err := u.handle(e, false, row, limitMenu); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(calls)
+	if strings.Count(string(got), "client ask -socket /run/fednet.sock -thread C1/1.0 -ref main:1 ") != 2 {
+		t.Errorf("fednet calls = %q", got)
+	}
+	var rows, id int
+	var state, cardID string
+	if err := conn.QueryRow("SELECT count(*), max(id), state, card_id FROM questions").Scan(&rows, &id, &state, &cardID); err != nil ||
+		rows != 1 || id != 1 || state != "pending" || cardID != "card-1" {
+		t.Errorf("%d question(s), #%d %s %q, %v", rows, id, state, cardID, err)
+	}
+}
+
+// fleet's screen lines are left out, earliest first, until the context
+// fits fednet's limit, and the card says how many.
+func TestAWideScreenIsCutToFitTheCard(t *testing.T) {
+	sc, err := config.ParseScope([]byte(`{}`), "/home/u")
+	if err != nil {
+		t.Fatal(err)
+	}
+	u := testWorkers(nil, sc)
+	var screen strings.Builder
+	for i := range 15 {
+		fmt.Fprintf(&screen, "%02d %s\n", i, strings.Repeat("x", 300))
+	}
+	row := stopRow{ID: 7, Name: "r-lead", Role: "lead", Job: "r", State: "active"}
+	got, err := u.screenCard(row, "t", "why.", screen.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var card struct{ Context string }
+	if err := json.Unmarshal([]byte(got), &card); err != nil {
+		t.Fatal(err)
+	}
+	if n := utf8.RuneCountInString(card.Context); n > maxContext || !strings.Contains(card.Context, "The screen (its first 6 "+
+		"line(s) left out):") || strings.Contains(card.Context, "05 x") || !strings.Contains(card.Context, "06 x") {
+		t.Errorf("%d runes: %s", n, card.Context)
+	}
+}
+
+// The line fleet puts before a worker's question never takes a text that
+// fits over fednet's limit; a text over it alone is left for fednet.
+func TestTheHeaderNeverTakesAWorkersTextOverTheLimit(t *testing.T) {
+	fits := strings.Repeat("y", maxContext-10)
+	if got := withHeader("watch-x asks this.", fits); got != fits {
+		t.Errorf("header kept over the limit: %d runes", utf8.RuneCountInString(got))
+	}
+	short := "Press 1?"
+	if got := withHeader("watch-x asks this.", short); got != "watch-x asks this.\n\nPress 1?" {
+		t.Errorf("%q", got)
+	}
+	over := strings.Repeat("y", maxContext+1)
+	if got := withHeader("h", over); got != "h\n\n"+over {
+		t.Errorf("a text over the limit was changed")
 	}
 }

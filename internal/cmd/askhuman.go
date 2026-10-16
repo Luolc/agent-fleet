@@ -305,10 +305,13 @@ func askThread(h *herdr.Herdr, me *identity.Identity, file string, card bool) (e
 }
 
 // textTitle is a plain-text question's header on its card when its first
-// line does not fit, and maxTitle is fednet's limit on a card's question.
+// line does not fit; maxTitle and maxContext are fednet's limits on a
+// card's question and context, which fleet heeds only in what it writes
+// itself.
 const (
-	textTitle = "agent 有一个问题，详见下方"
-	maxTitle  = 140
+	textTitle  = "agent 有一个问题，详见下方"
+	maxTitle   = 140
+	maxContext = 3000
 )
 
 // cardOption is an option of a card fleet writes itself.
@@ -343,10 +346,24 @@ func textCard(text, header string) (string, error) {
 	if utf8.RuneCountInString(title) > maxTitle {
 		title = textTitle
 	}
-	if header != "" {
-		text = header + "\n\n" + text
+	return encodeCard(title, withHeader(header, text), nil)
+}
+
+// withHeader is `context` with fleet's `header` before it, or `context`
+// alone when the header would take it over fednet's limit: what fleet
+// adds never gets a text refused that fits on its own.
+func withHeader(header, context string) string {
+	if header == "" {
+		return context
 	}
-	return encodeCard(title, text, nil)
+	if context == "" {
+		return header
+	}
+	joined := header + "\n\n" + context
+	if utf8.RuneCountInString(joined) > maxContext && utf8.RuneCountInString(context) <= maxContext {
+		return context
+	}
+	return joined
 }
 
 // questionCard is the card a watch worker's question is asked on: the
@@ -362,10 +379,7 @@ func questionCard(text, header string) (string, error) {
 		// Not a string: fednet refuses it as it is.
 		return text, nil
 	}
-	if context != "" {
-		header += "\n\n" + context
-	}
-	raw, err := json.Marshal(header)
+	raw, err := json.Marshal(withHeader(header, context))
 	if err != nil {
 		return "", exit.Environmentf("cannot write the card: %v", err)
 	}
