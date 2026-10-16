@@ -1,0 +1,31 @@
+id = 21
+slug = "patch-releases"
+revision = 1
+kind = "rule"
+status = "trial"
+lang = "en"
+parent = "R78"
+default = "on"
+authority = ["relaxations.project-overrides", "must-ask.irreversible-effects", "must-ask.loosening-guards", "advance-authorization.listed-items", "advance-authorization.as-written"]
+constitution = ">=1"
+level = "project"
+check = "none"
+uses = ["instructions", "review"]
+
+[title]
+en = "A release of fleet that breaks nothing raises only the patch number, and the lead of a job may make it"
+
+[text.statement]
+en = "When the lead of a job judges that no change since the last release of fleet is a breaking change, it may raise only the patch number and push that release's tag without asking a person; the first release of fleet, and raising the minor or major number, need a person's yes for that version, given at the time or written down in advance."
+
+[text.reason]
+en = '''
+The owner asked for this rule. It is a declaration under {@constitution:relaxations.project-overrides}: for this project only, and under the conditions written here, it relaxes the default item that {@rule:R32} adds to {@constitution:must-ask}, and {@constitution:must-ask.irreversible-effects} as far as the release itself is such an effect, moving to {@constitution:decide-yourself} a patch release whose changes the releasing lead judges free of breaking changes. It relaxes {@constitution:must-ask.irreversible-effects} for that release only, not for any other act. The release item makes releases go through a principal, so it is a guard ({@constitution:guards}), and loosening it goes through a principal too ({@constitution:must-ask.loosening-guards}): the change that adds this rule, or a new revision of it, is merged only once a competent principal for this project has approved it on that change. In this repository's instructions the rule is the owner's advance authorization of one class of releases, written there as {@constitution:advance-authorization.listed-items} requires; it counts only as written and within its conditions ({@constitution:advance-authorization.as-written}). A minor or major version tells the users of fleet that something they rely on may have changed, and the first release sets the version they start from; whether either is right stays the owner's call, so the relaxation does not reach them. Only the lead of a job may make these releases, so that one agent answers for each.
+'''
+
+[text.verification]
+en = '''
+The version is `const version` in `cmd/fleet/main.go`; the release is pushing the tag `v<version>` to `Luolc/agent-fleet`, after which the release workflow creates the GitHub Release and attaches the binaries. A patch release raises only the patch number of the highest version of fleet already released. A breaking change is one after which something that users, scripts or other programs rely on (a command, flag, output format, exit status, configuration key or file location) behaves differently or is gone. An agent unsure whether a change breaks something treats it as breaking. A release outside these conditions (the first release, one pushed by an agent other than the lead of a job, one raising the minor or major number, or one whose changes the releasing lead did not judge free of breaking changes) needs a person's yes.
+
+Violated when a change raises the minor or major number of fleet without a person's word for that version, when the first release of fleet is made without a person's word for that version, when a patch release ships a change its releasing lead knew, judged or was unsure to be breaking, or when a release this authorization does not cover is made without a person's yes.
+'''
