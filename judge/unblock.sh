@@ -7,7 +7,8 @@
 #            by rule, nobody told
 #   s-perm   a command confirmation (BLOCK): a helper (the `unblock` watch's
 #            worker, watch-unblock-<row id>), the lead told
-#   l-lead   a usage-limit menu (LIMIT): no key, no helper, the people asked
+#   l-lead   a usage-limit menu (LIMIT): no key, no helper, the people asked;
+#            once it gets past the menu, the card is taken back
 #   s-new    a start left at an unknown screen an hour ago: a helper, the
 #            starter told; s-young, left there just now, is the starter's
 #   thread-s the home thread's agent, at its input box: left alone
@@ -157,6 +158,19 @@ has "unblock: it gets their question and the press" "$(received "$hperm")" "## E
 check "unblock: it keeps the first helper's ticket" "SC-9|2 " \
   "$(ledger "SELECT issue, (SELECT count(*) FROM agents WHERE name = '$hperm') FROM agents WHERE name = '$hperm' AND state != 'ended'")"
 check "unblock: no second ticket for s-perm" 1 "$(grep -c 'title s-perm stopped' /home/agent/screens-atb.log)"
+# l-lead gets past its usage limit; the next run takes back the card it
+# was asked about, and nothing waits on it any more.
+qlimit=$(sqlite3 "$DB" "SELECT id FROM questions WHERE asked_by = '$hlimit'")
+"${S[@]}" agent send-keys l-lead Enter >/dev/null
+"${S[@]}" agent wait l-lead --until idle --until done --timeout 20000 >/dev/null
+uwatch >/home/agent/unblock-recovered.out 2>&1; rc=$?
+check "unblock: the run after l-lead recovered exits 0" 0 "$rc"
+has "unblock: l-lead's card is taken back from Slack" "$(cat /home/agent/screens-fednet.log)" \
+  "client ask-close -socket /home/agent/screens.sock -note fleet closed this question: the agent is no longer stopped" \
+  "-- card-$qlimit"
+check "unblock: l-lead's question is closed" "closed " "$(ledger "SELECT state FROM questions WHERE id = $qlimit")"
+check "unblock: the questions of the agents still stopped are not taken back" 1 \
+  "$(grep -c 'client ask-close' /home/agent/screens-fednet.log)"
 # An unblock watch prompt with a slot the prompt does not have: no
 # helper and no ticket for a newly stopped agent; its home thread is told
 # once, naming the file and line, and the next run does not say it again.
@@ -183,7 +197,7 @@ uwatch >/home/agent/unblock5.out 2>&1; rc=$?
 check "unblock: the next run fails the same way" 1 "$rc"
 check "unblock: the thread is told once" 1 "$(grep -c "fleet's prompt config is broken" /home/agent/screens-fednet.log)"
 mv /home/agent/screens.json.keep "/home/agent/.config/$T/$SCOPE.json"
-for out in /home/agent/unblock1.out /home/agent/unblock2.out /home/agent/unblock3.out /home/agent/unblock4.out /home/agent/unblock5.out; do
+for out in /home/agent/unblock1.out /home/agent/unblock2.out /home/agent/unblock3.out /home/agent/unblock-recovered.out /home/agent/unblock4.out /home/agent/unblock5.out; do
   [ "$fail" = 0 ] || { echo "--- $out"; cat "$out"; }
 done
 "${S[@]}" server stop >/dev/null

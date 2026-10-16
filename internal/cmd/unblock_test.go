@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/Luolc/agent-fleet/internal/config"
@@ -308,5 +309,82 @@ func TestTheHeaderNeverTakesAWorkersTextOverTheLimit(t *testing.T) {
 	over := strings.Repeat("y", maxContext+1)
 	if got := withHeader("h", over); got != "h\n\n"+over {
 		t.Errorf("a text over the limit was changed")
+	}
+}
+
+// Once the agent is no longer stopped, its screen's questions are closed
+// and their posted cards taken back, snoozed or not, even where fednet
+// fails; nothing then waits on them.
+func TestARecoveredAgentsScreenCardsAreTakenBack(t *testing.T) {
+	bin := t.TempDir()
+	calls := filepath.Join(bin, "calls")
+	fake := "#!/bin/sh\necho \"$*\" >> " + calls + "\ncase \"$*\" in *card-2) echo 'no such card' >&2; exit 1;; esac\n"
+	if err := os.WriteFile(filepath.Join(bin, "fednet"), []byte(fake), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+":/usr/bin:/bin")
+	conn, err := db.OpenAt(filepath.Join(t.TempDir(), "screens.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	sc, err := config.ParseScope([]byte(`{"fednet": {"socket": "/run/fednet.sock"}}`), "/home/u")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range []string{
+		"INSERT INTO jobs (job, repo, lead_cwd, state, started_at, home_thread) VALUES ('r', 'example-dataset', '/home/u/dev/example-dataset', 'open', 0, 'C1/1.0')",
+		"INSERT INTO agents (name, role, job, parent, state, started_at) VALUES ('r-lead', 'lead', 'r', 'thread-c1', 'active', 0)",
+		"INSERT INTO questions (job, thread, asked_by, text, state, asked_at, card, card_id) VALUES " +
+			"('r', 'C1/1.0', 'watch-unblock-1', '{\"question\": \"limit\"}', 'pending', 0, 1, 'card-1'), " +
+			"('r', 'C1/1.0', 'watch-unblock-1', '{\"question\": \"again\"}', 'pending', 0, 1, 'card-2'), " +
+			"('r', 'C1/1.0', 'watch-unblock-1', '{\"question\": \"unposted\"}', 'pending', 0, 1, ''), " +
+			"('', 'C1/1.0', 'thread-c1', '{\"question\": \"its own\"}', 'pending', 0, 1, 'card-4')",
+		"UPDATE questions SET snooze_until = 1800000000 WHERE id = 2",
+	} {
+		if _, err := conn.Exec(stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	u := testWorkers(conn, sc)
+	u.start = time.Now()
+	// While it is stopped, nothing is taken back.
+	if err := u.closeRecovered(map[string]bool{"watch-unblock-1": true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(calls); !os.IsNotExist(err) {
+		t.Fatalf("fednet called while the agent is stopped: %v", err)
+	}
+	if err := u.unblock(); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(calls)
+	note := "-note " + recoveredNote + " -- "
+	if want := "client ask-close -socket /run/fednet.sock " + note + "card-1\nclient ask-close -socket /run/fednet.sock " +
+		note + "card-2\n"; string(got) != want {
+		t.Errorf("fednet calls = %q", got)
+	}
+	var states string
+	if err := conn.QueryRow("SELECT group_concat(state, ' ') FROM (SELECT state FROM questions ORDER BY id)").Scan(&states); err != nil ||
+		states != "closed closed closed pending" {
+		t.Errorf("states %q, %v", states, err)
+	}
+	if _, err := conn.Exec("UPDATE questions SET state = 'closed' WHERE id = 4"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec("UPDATE jobs SET state = 'ended'"); err != nil {
+		t.Fatal(err)
+	}
+	if err := stillWaiting(conn, "C1/1.0"); err != nil {
+		t.Errorf("thread end is held: %v", err)
+	}
+	threads := map[string]*watchedThread{}
+	if err := readQuestions(conn, func(key string) *watchedThread {
+		if threads[key] == nil {
+			threads[key] = &watchedThread{}
+		}
+		return threads[key]
+	}); err != nil || len(threads) != 0 {
+		t.Errorf("questions the reminders read: %v, %v", threads, err)
 	}
 }

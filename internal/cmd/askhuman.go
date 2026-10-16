@@ -472,9 +472,9 @@ func withdraw(conn *sql.DB, socket string, me *identity.Identity, id int64, note
 
 // closeCards takes back from Slack the cards of the questions `ids`, which
 // fleet is closing, and those asked for them that still wait, which it
-// closes too, so nobody presses a card no agent waits on. A failure is
-// only a warning: the questions close all the same.
-func closeCards(conn *sql.DB, socket string, ids []int64) error {
+// closes too, so nobody presses a card no agent waits on; each card shows
+// `note`. A failure is only a warning: the questions close all the same.
+func closeCards(conn *sql.DB, socket string, ids []int64, note string) error {
 	if len(ids) == 0 {
 		return nil
 	}
@@ -507,7 +507,7 @@ func closeCards(conn *sql.DB, socket string, ids []int64) error {
 			fmt.Fprintf(os.Stderr, "fleet: warning: the card of question #%d stays in Slack: no fednet socket\n", c.id)
 			continue
 		}
-		code, reason, err := fednet.AskClose(socket, c.cardID, "fleet closed this question")
+		code, reason, err := fednet.AskClose(socket, c.cardID, note)
 		switch {
 		case err != nil:
 			fmt.Fprintf(os.Stderr, "fleet: warning: the card of question #%d stays in Slack: %v\n", c.id, err)

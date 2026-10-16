@@ -88,7 +88,8 @@ const (
 		"which presses keys as fleet's guidance says or writes a question that the next run asks " +
 		"the people; no worker is started while that question waits for an answer. Questions about " +
 		"a screen are reminded of like the others, but never time out; one is closed when the " +
-		"stopped agent's job ends. A worker's lead " +
+		"stopped agent's job ends, or once the agent is no longer stopped at a screen, snoozed or not, " +
+		"its card taken back from Slack (`fednet client ask-close`; a failure only warns). A worker's lead " +
 		"is told when a worker starts for it or the people are asked, and so is the starter of a lead or " +
 		"worker whose start stopped at the screen.\n\n" +
 		"Threads (only with a fednet socket): a live thread agent gone from herdr has its session " +

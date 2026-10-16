@@ -186,7 +186,7 @@ func (w *workers) unblock() error {
 			still[screenWorkers(row.ID)[0]] = true
 		}
 	}
-	if err := w.dropUnposted(still); err != nil {
+	if err := w.closeRecovered(still); err != nil {
 		return err
 	}
 	if !due {
@@ -214,33 +214,41 @@ func (w *workers) unblockRow(e config.Entry, due bool, row stopRow) bool {
 	return err != nil || stopped
 }
 
-// dropUnposted closes the screen questions whose card was never posted
-// when their agent is no longer stopped at a screen (`still` has the
+// recoveredNote is what a screen's card shows once fleet takes it back.
+const recoveredNote = "fleet closed this question: the agent is no longer stopped at the screen, so it needs no answer"
+
+// closeRecovered closes the screen questions still pending, snoozed or
+// not, when their agent is no longer stopped at a screen (`still` has the
 // names they are asked under for the agents that are), or its row has
-// ended: there is no screen left to ask about.
-func (w *workers) dropUnposted(still map[string]bool) error {
-	var ids []any
-	err := eachRow(w.conn, "SELECT id, asked_by FROM questions WHERE state = 'pending' AND asked_by LIKE ?1 AND "+
-		unposted, func(rows *sql.Rows) error {
-		var id int64
-		var by string
-		if err := rows.Scan(&id, &by); err != nil {
-			return err
-		}
-		if !still[by] {
-			ids = append(ids, id)
-		}
-		return nil
-	}, workerPrefix+screenWatch+"-%")
+// ended: there is no screen left to ask about. A posted card is taken
+// back from Slack; a failure there only warns.
+func (w *workers) closeRecovered(still map[string]bool) error {
+	var ids []int64
+	err := eachRow(w.conn, "SELECT id, asked_by FROM questions WHERE state = 'pending' AND asked_by LIKE ?1",
+		func(rows *sql.Rows) error {
+			var id int64
+			var by string
+			if err := rows.Scan(&id, &by); err != nil {
+				return err
+			}
+			if !still[by] {
+				ids = append(ids, id)
+			}
+			return nil
+		}, workerPrefix+screenWatch+"-%")
 	if err != nil || len(ids) == 0 {
 		return err
 	}
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		args[i] = id
+	}
 	if _, err := w.conn.Exec("UPDATE questions SET state = 'closed' WHERE id IN (?"+strings.Repeat(", ?", len(ids)-1)+")",
-		ids...); err != nil {
+		args...); err != nil {
 		return exit.Database(err)
 	}
-	fmt.Fprintf(os.Stdout, "unblock: closed %d unposted screen question(s): their agent is no longer stopped\n", len(ids))
-	return nil
+	fmt.Fprintf(os.Stdout, "unblock: closed %d screen question(s): their agent is no longer stopped\n", len(ids))
+	return closeCards(w.conn, w.cfg.FednetSocket, ids, recoveredNote)
 }
 
 // stopped is the screen of `row` when its agent is stopped at one.
