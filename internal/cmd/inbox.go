@@ -314,7 +314,7 @@ func inboxReaction(e *event) (exit.Code, error) {
 	}
 	defer conn.Close()
 	look(conn, cfg.FednetSocket, e.Payload.Thread, false)
-	fmt.Fprintf(os.Stdout, "thread %s archived: no longer marked to look at\n", e.Payload.Thread)
+	fmt.Fprintf(os.Stdout, "thread %s recorded as archived: eyes off\n", e.Payload.Thread)
 	return exit.Ok, nil
 }
 

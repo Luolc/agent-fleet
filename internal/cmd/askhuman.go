@@ -649,7 +649,7 @@ func openHomeThread(conn *sql.DB, cfg *config.Scope, row *jobRow) (string, error
 		if _, err := q.Exec("UPDATE jobs SET home_thread = ?1 WHERE job = ?2 AND state = 'open'", thread, row.Job); err != nil {
 			return exit.Database(err)
 		}
-		return wantLook(q, thread, true)
+		return nil
 	})
 }
 
