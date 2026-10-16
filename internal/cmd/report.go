@@ -19,16 +19,19 @@ import (
 const (
 	ReportAbout     = "Count the questions agents put to people and how long the answers took (read-only)"
 	ReportLongAbout = "Count the questions agents put to people and how long the answers took (read-only).\n\n" +
-		"Reads only the scope's ledger. A question counts once: a rerun of `fleet ask-human` while it " +
+		"Reads only the scope's ledger. A question counts once: a rerun of `fleet ask-human` or `fleet ask-thread` while it " +
 		"is pending records nothing new. One line per job, open and ended, in start order, with its " +
 		"state (open, its outcome, or unknown when the ledger has no row for the job), including the " +
 		"jobs that asked nothing; then the questions thread agents asked themselves, one line per thread; then " +
 		"the total. For each: questions asked, answered, pending and closed (given up on by `fleet " +
 		"watch`: its job ended by force, or no answer within its limit), and the median and longest " +
 		"wait of the answered ones.\n\n" +
-		"A question is answered when the next message a person posts in its thread arrives, and that " +
-		"message marks every question pending there answered: the wait runs to that message, which " +
-		"is not necessarily the answer to the question.\n\n" +
+		"A question on a card (`fleet ask-human --card`) is answered when a person submits or closes " +
+		"the card; a lead's question (`fleet ask-thread`) when the thread agent sends that lead a " +
+		"message or the card asked for it is answered. A question fleet posted as text (a watch " +
+		"worker's, a screen's) is answered when the next message a person posts in its thread " +
+		"arrives, which marks every such question pending there answered: the wait runs to that " +
+		"message, which is not necessarily the answer to the question.\n\n" +
 		"Exit: 0; 1 when the scope is not a scope name; 5 when the database fails or the ledger does " +
 		"not exist."
 )

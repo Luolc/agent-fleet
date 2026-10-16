@@ -1,5 +1,5 @@
 # Sourced by inside.sh: `inbox`, `thread post`, `thread end`, `thread
-# set-project`, `thread relate` and `ask-human` against the real herdr, with
+# set-project`, `thread relate`, `ask-human` and `ask-thread` against the real herdr, with
 # a fake atb and a fake fednet that log their arguments. Threads use the
 # scope `main` (a message without a scope): its ledger and the herdr session
 # fleet-main.
@@ -40,8 +40,14 @@ case "$2" in
 esac
 ATB
 # The fake fednet fails (exit 4, one line on stderr) while
-# /home/agent/fednet-down exists.
-printf '#!/bin/sh\necho "$*" >> /home/agent/fednet.log\n[ -e /home/agent/fednet-down ] && { echo "post: hub unreachable" >&2; exit 4; }\necho m-posted\n' > /home/agent/fake-thread/fednet
+# /home/agent/fednet-down exists; `ask` posts card-<n>, n the ref's id.
+cat > /home/agent/fake-thread/fednet <<'FEDNET'
+#!/bin/sh
+echo "$*" >> /home/agent/fednet.log
+[ -e /home/agent/fednet-down ] && { echo "post: hub unreachable" >&2; exit 4; }
+[ "$2" = ask ] && { echo '{"id":"card-'"${8#*:}"'","channel":"C0","ts":"1.0","permalink":"https://slack.example.test/card-'"${8#*:}"'"}'; exit 0; }
+echo m-posted
+FEDNET
 # A herdr shim that kills the hook (its parent) at `pane rename` while
 # /home/agent/kill-at-rename exists: an inbox run interrupted after the
 # agent started and before its first message.
@@ -182,13 +188,16 @@ has "inbox: earlier summary and the message on screen" "$(screen "$A")" "Earlier
 check "inbox: thread row counts two sessions" "2 " "$(tledger "SELECT sessions FROM threads WHERE thread = '$K'")"
 settled "$A"
 
-# The thread agent asks the people itself: while the question is pending
-# the session stays (--force is no way out); the people asking to end it
-# is.
-printf 'Which schema should the import use? 0xQ0\n' > /home/agent/tasks/q0.md
-out=$(thra "$K" TH-5 -- ask-human --file /home/agent/tasks/q0.md 2>&1); rc=$?
-check "ask-human: exit 0 from a thread agent" 0 "$rc"
-[ "$rc" = 0 ] || printf '%s\n' "$out"
+# The thread agent asks the people itself, on a card: while the question
+# is pending the session stays (--force is no way out); the people asking
+# to end it is.
+printf '{"question": "Which schema should the import use? 0xQ0"}\n' > /home/agent/tasks/q0.json
+out=$(thra "$K" TH-5 -- ask-human --card /home/agent/tasks/q0.json 2>&1); rc=$?
+check "ask-human: exit 0 from a thread agent, the card's id and link printed" \
+  "0 asked question #1 in thread $K: https://slack.example.test/card-1" "$rc $out"
+check "ask-human: the card goes to fednet with the scope and the question's id as its ref" \
+  "client ask -socket /home/agent/fednet.sock -thread $K -ref main:1 -card /home/agent/tasks/q0.json -json" \
+  "$(tail -n 1 /home/agent/fednet.log)"
 : > /home/agent/atb.log
 : > /home/agent/fednet.log
 for arm in "" "--force"; do
@@ -196,7 +205,7 @@ for arm in "" "--force"; do
   out=$(thra "$K" TH-5 -- thread end --summary-file /home/agent/summary.md $arm 2>&1); rc=$?
   check "thread end ${arm:-plain}: exit 1 while the thread agent's own question is pending" 1 "$rc"
   has "thread end ${arm:-plain}: names the question and the way out" "$out" \
-    "question from $A, pending: Which schema should the import use? 0xQ0" "--asked-to-end"
+    "question from $A, pending: " "0xQ0" "--asked-to-end"
 done
 check "thread end refused: nothing done, the row live, the agent there" "|||active $A" \
   "$(cat /home/agent/atb.log)|$(cat /home/agent/fednet.log)|$(tledger "SELECT step FROM steps WHERE key = 'thread-end:' || (SELECT max(id) FROM agents WHERE name = '$A')")|$(tledger "SELECT state FROM agents WHERE name = '$A' ORDER BY id DESC LIMIT 1")$(agent_field "$A" name)"
@@ -221,6 +230,18 @@ check "inbox: retry left the row active, the message delivered, three sessions" 
   "$(tledger "SELECT state FROM agents WHERE name = '$A' AND state != 'ended'")$(tledger "SELECT state FROM inbox WHERE msg_id = 'm3b'")$(tledger "SELECT sessions FROM threads WHERE thread = '$K'")"
 check "inbox: retry started no second agent" "1 " \
   "$("${S[@]}" agent list | jq -r '[.result.agents[] | select(.name == "'"$A"'")] | length') "
+settled "$A"
+# A message in the thread does not answer the card; a press on it does,
+# and reaches the thread agent.
+out=$(inbox "$(event m3c "$K" 'hmm 0xMSG3C')" 2>&1); rc=$?
+check "inbox: the messages do not answer the card" "0 pending " "$rc $(tledger "SELECT state FROM questions WHERE id = 1")"
+printf '{"msg_id":"a5","payload":{"type":"answer","answer":{"question_id":"main:1","card_id":"card-1","outcome":"answered","choice":null,"note":"the new one 0xANS0","by":"U0ABC","at":"2026-10-16T10:00:00-07:00"}}}\n' \
+  > /home/agent/events/a5.json
+out=$(inbox /home/agent/events/a5.json 2>&1); rc=$?
+check "inbox: a press on the card, exit 0" 0 "$rc"
+[ "$rc" = 0 ] || printf '%s\n' "$out"
+has "inbox: the answer on the thread agent's screen" "$(screen "$A")" "[ANSWER #1]" "0xANS0"
+check "inbox: the card's question answered" "answered|answered " "$(tledger "SELECT state || '|' || outcome FROM questions WHERE id = 1")"
 settled "$A"
 
 # Linear down for good at a new thread, and the outage line cannot be
@@ -461,22 +482,22 @@ check "job start: the record comes before the task heading fleet placed, the tas
 
 # The lead of item-8 asks the people in its home thread: fleet posts
 # nothing, and the question reaches the thread agent headed as a question
-# for it to settle; the next message in the thread answers it. Asking again
+# for it to settle; a message in the thread answers nothing. Asking again
 # repeats nothing.
 printf 'Which month should the import cover? 0xQ1\n' > /home/agent/tasks/q1.md
 lead8() { PATH=/home/agent/fake-thread:$PATH env "${P}AGENT=item-8-lead" "${P}ROLE=lead" "${P}PARENT=$A" "${P}SCOPE=main" \
   "${P}JOB=item-8" "${P}ISSUE=" "$T" "$@"; }
 : > /home/agent/fednet.log
-out=$(lead8 ask-human --file /home/agent/tasks/q1.md 2>&1); rc=$?
-check "ask-human: exit 0 from the lead" 0 "$rc"
+out=$(lead8 ask-thread --card /home/agent/tasks/q1.md 2>&1); rc=$?
+check "ask-thread: exit 0 from the lead" 0 "$rc"
 [ "$rc" = 0 ] || printf '%s\n' "$out"
-has "ask-human: delivered to the home thread's agent" "$out" "delivered to $A"
-check "ask-human: fleet posted nothing to the home thread" 0 "$(wc -l < /home/agent/fednet.log)"
+has "ask-thread: delivered to the home thread's agent" "$out" "delivered to $A" "gave question #2"
+check "ask-thread: fleet posted nothing to the home thread" 0 "$(wc -l < /home/agent/fednet.log)"
 # The thread's agent had ended, so one is started with the question as
 # its first message; the prompt's head is above the fake's 20 lines.
-has "ask-human: question on the thread agent's screen" "$(screen "$A")" "[QUESTION from item-8-lead]" "0xQ1"
-check "ask-human: pending in the ledger" "item-8|$K|item-8-lead|0|pending " \
-  "$(tledger "SELECT job, thread, asked_by, approval, state FROM questions WHERE job = 'item-8'")"
+has "ask-thread: question on the thread agent's screen" "$(screen "$A")" "[QUESTION #2 from item-8-lead]" "0xQ1"
+check "ask-thread: pending in the ledger" "item-8|$K|item-8-lead|1|pending " \
+  "$(tledger "SELECT job, thread, asked_by, card, state FROM questions WHERE job = 'item-8'")"
 settled "$A"
 : > /home/agent/atb.log
 out=$(thra "$K" TH-5 -- thread end --summary-file /home/agent/summary.md 2>&1); rc=$?
@@ -485,10 +506,10 @@ has "thread end: names the lead's question and the open job" "$out" \
   "question from item-8-lead, pending: Which month should the import cover? 0xQ1" "job item-8, open, reporting to this thread"
 check "thread end refused: no atb call, nothing posted, the row live" "|0|active " \
   "$(cat /home/agent/atb.log)|$(wc -l < /home/agent/fednet.log)|$(tledger "SELECT state FROM agents WHERE name = '$A' ORDER BY id DESC LIMIT 1")"
-out=$(lead8 ask-human --file /home/agent/tasks/q1.md 2>&1); rc=$?
-check "ask-human: asking again after a success, exit 0" 0 "$rc"
-check "ask-human: asking again posts nothing" 0 "$(wc -l < /home/agent/fednet.log)"
-has "ask-human: asking again says nothing was done" "$out" "already delivered to the agent of thread $K; nothing done"
+out=$(lead8 ask-thread --card /home/agent/tasks/q1.md 2>&1); rc=$?
+check "ask-thread: asking again after a success, exit 0" 0 "$rc"
+check "ask-thread: asking again posts nothing" 0 "$(wc -l < /home/agent/fednet.log)"
+has "ask-thread: asking again says nothing was done" "$out" "already delivered to the agent of thread $K; nothing done"
 
 # The thread agent posts to its thread through fleet: the thread and the
 # socket come from fleet, the text from the file, attachments as -file.
@@ -553,39 +574,50 @@ done
 lead8 thread progress --title x >/dev/null 2>&1; rc=$?
 check "thread progress: exit 1 from a lead" 1 "$rc"
 check "thread progress: the refusals send nothing" 0 "$(wc -l < /home/agent/fednet.log)"
-out=$(lead8 ask-human --file /home/agent/tasks/q1.md --approval 2>&1); rc=$?
+out=$(thra "$K" TH-5 -- ask-human --card /home/agent/tasks/q0.json --approval 2>&1); rc=$?
 check "ask-human --approval: exit 1, not supported yet" 1 "$rc"
 has "ask-human --approval: says so" "$out" "approval cards are not supported yet"
-check "ask-human --approval: nothing recorded" "1 " "$(tledger "SELECT count(*) FROM questions WHERE job = 'item-8'")"
+check "ask-human --approval: nothing recorded" "2 " "$(tledger "SELECT count(*) FROM questions")"
 out=$(inbox "$(event m5 "$K" 'September 0xMSG5')" 2>&1); rc=$?
 check "inbox: a reply in the thread, exit 0" 0 "$rc"
-has "inbox: the reply marks the question answered" "$out" "1 pending question(s) in thread $K answered"
-check "inbox: no question pending" "0 " "$(tledger "SELECT count(*) FROM questions WHERE state = 'pending'")"
+lacks "inbox: the reply answers no lead's question" "$out" "answered"
+check "inbox: the lead's question still pending" "1 " "$(tledger "SELECT count(*) FROM questions WHERE state = 'pending'")"
+# The thread agent passes the people's answer to the lead.
+printf 'September, the people said. 0xANS1\n' > /home/agent/tasks/ans1.md
+out=$(thra "$K" TH-5 -- send item-8-lead --file /home/agent/tasks/ans1.md 2>&1); rc=$?
+has "send: the thread agent's message to the lead answers the lead's question" "$out" "1 pending question(s) of item-8-lead in thread $K answered"
+check "send: no question pending" "0 " "$(tledger "SELECT count(*) FROM questions WHERE state = 'pending'")"
 out=$(thra "$K" TH-5 -- thread end --summary-file /home/agent/summary.md 2>&1); rc=$?
 check "thread end: exit 1 while the job whose home thread it is is open" 1 "$rc"
 has "thread end: names the open job" "$out" "job item-8, open, reporting to this thread"
 lacks "thread end: the answered question is not named" "$out" "0xQ1"
 has "inbox: the reply on the thread agent's screen" "$(screen "$A")" "0xMSG5"
 # The thread agent settles a lead's question itself: its message to the
-# lead answers it, with nothing posted.
+# lead answers it, with nothing posted. The lead asks with `ask-human
+# --file`, as a lead on an older prompt does (deprecated).
 printf 'Which bucket should the import write to? 0xQ2\n' > /home/agent/tasks/q2.md
 printf 'The bucket of last month. 0xANS2\n' > /home/agent/tasks/ans2.md
 : > /home/agent/fednet.log
-lead8 ask-human --file /home/agent/tasks/q2.md >/dev/null 2>&1
-check "ask-human: the second question is pending" "1 " "$(tledger "SELECT count(*) FROM questions WHERE state = 'pending'")"
+out=$(lead8 ask-human --file /home/agent/tasks/q2.md 2>&1); rc=$?
+check "ask-human --file from a lead: exit 0, as ask-thread" 0 "$rc"
+has "ask-human --file from a lead: its text on the thread agent's screen" "$(screen "$A")" "[QUESTION #3 from item-8-lead]" "0xQ2"
+check "ask-human --file from a lead: the question is pending" "1 " "$(tledger "SELECT count(*) FROM questions WHERE state = 'pending'")"
 out=$(thra "$K" TH-5 -- send item-8-lead --file /home/agent/tasks/ans2.md 2>&1); rc=$?
 check "send: the thread agent's answer to the lead, exit 0" 0 "$rc"
 has "send: the thread agent's message to the lead answers the lead's question" "$out" "1 pending question(s) of item-8-lead in thread $K answered"
 check "send: no question pending, nothing posted" "0 |0" \
   "$(tledger "SELECT count(*) FROM questions WHERE state = 'pending'")|$(wc -l < /home/agent/fednet.log)"
-out=$(as item-1-a worker item-1-lead item-1 -- ask-human --file /home/agent/tasks/q1.md 2>&1); rc=$?
-check "ask-human: exit 1 from a worker" 1 "$rc"
+out=$(as item-1-a worker item-1-lead item-1 -- ask-thread --card /home/agent/tasks/q1.md 2>&1); rc=$?
+check "ask-thread: exit 1 from a worker" 1 "$rc"
+out=$(lead8 ask-human --card /home/agent/tasks/q0.json 2>&1); rc=$?
+check "ask-human --card: exit 1 from a lead, pointing at ask-thread" "1" "$rc"
+has "ask-human --card from a lead: says so" "$out" "fleet ask-thread --card"
 out=$(PATH=/home/agent/fake-thread:$PATH env "${P}AGENT=item-1-lead" "${P}ROLE=lead" "${P}PARENT=thread-1" "${P}SCOPE=$SCOPE" \
-  "${P}JOB=item-1" "$T" ask-human --file /home/agent/tasks/q1.md 2>&1); rc=$?
-check "ask-human: exit 1 from a lead whose job has no home thread" 1 "$rc"
+  "${P}JOB=item-1" "$T" ask-thread --card /home/agent/tasks/q1.md 2>&1); rc=$?
+check "ask-thread: exit 1 from a lead whose job has no home thread" 1 "$rc"
 
 # The job's conclusion reaches its home thread the same way, here to the
-# thread agent ask-human started.
+# thread agent ask-thread started.
 printf 'Imported everything. 0xREPORT8\n' > /home/agent/tasks/report8.md
 out=$(PATH=/home/agent/fake-thread:$PATH env "${P}AGENT=item-8-lead" "${P}ROLE=lead" "${P}PARENT=$A" "${P}SCOPE=main" \
   "${P}JOB=item-8" "${P}ISSUE=" "$T" job end --report-file /home/agent/tasks/report8.md 2>&1); rc=$?

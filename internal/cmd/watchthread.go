@@ -5,6 +5,7 @@ package cmd
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -40,12 +41,27 @@ const (
 // unless dropped: closed as on watch's own forced end, because the job
 // ended after watch told its lead that a question expired, or because it
 // is a screen question, whose agent went with the job.
+// A card is reminded of with its link; snoozeUntil is when a snoozed card
+// came or comes back (0 for none), from which its reminders and its
+// timeout count; forwarded is a lead's question a pending card of the
+// thread agent's asks the people for.
 type question struct {
-	id                 int64
-	job, askedBy, text string
-	askedAt            int64
-	reminders          int
-	moved, dropped     bool
+	id                       int64
+	job, askedBy, text, link string
+	askedAt, snoozeUntil     int64
+	reminders                int
+	moved, dropped           bool
+	card, forwarded          bool
+}
+
+// since is when the question's reminders and timeout count from.
+func (q question) since() int64 {
+	return max(q.askedAt, q.snoozeUntil)
+}
+
+// snoozed is whether the question's card is snoozed at `now`.
+func (q question) snoozed(now int64) bool {
+	return q.snoozeUntil > now
 }
 
 // byHelper is whether watch or an agent it started asked the question: a
@@ -168,7 +184,9 @@ func readThreads(conn *sql.DB, cfg *config.Scope, inHerdr map[string]InHerdr, li
 // A job's name is unique only among open jobs, so a question belongs to
 // the open job of its name only when asked after that job started.
 func readQuestions(conn *sql.DB, get func(string) *watchedThread) error {
-	return eachRow(conn, "SELECT id, job, thread, asked_by, text, asked_at, reminders, job != '' AND NOT EXISTS "+
+	return eachRow(conn, "SELECT id, job, thread, asked_by, text, asked_at, reminders, card, permalink, "+
+		"COALESCE(snooze_until, 0), EXISTS (SELECT 1 FROM questions c WHERE c.for_question = q.id AND c.state = 'pending'), "+
+		"job != '' AND NOT EXISTS "+
 		"(SELECT 1 FROM jobs j WHERE j.job = q.job AND j.state = 'open' AND j.started_at <= q.asked_at), "+
 		"EXISTS (SELECT 1 FROM jobs j WHERE j.job = q.job AND j.state = 'ended' AND j.reclaim_at IS NOT NULL "+
 		"AND j.started_at <= q.asked_at AND j.ended_at >= q.asked_at) "+
@@ -176,7 +194,8 @@ func readQuestions(conn *sql.DB, get func(string) *watchedThread) error {
 		func(rows *sql.Rows) error {
 			var q question
 			var key string
-			if err := rows.Scan(&q.id, &q.job, &key, &q.askedBy, &q.text, &q.askedAt, &q.reminders, &q.moved, &q.dropped); err != nil {
+			if err := rows.Scan(&q.id, &q.job, &key, &q.askedBy, &q.text, &q.askedAt, &q.reminders, &q.card, &q.link,
+				&q.snoozeUntil, &q.forwarded, &q.moved, &q.dropped); err != nil {
 				return err
 			}
 			q.dropped = q.dropped || q.moved && q.byHelper()
@@ -327,7 +346,7 @@ func (r *watchRun) questions(t *watchedThread, all []watched) error {
 func (r *watchRun) expire(t *watchedThread) error {
 	var expired, givenUp []question
 	for _, q := range t.questions {
-		if q.byHelper() || r.now-q.askedAt < secs(r.cfg.Watch.ThreadQuestion) {
+		if q.byHelper() || q.snoozed(r.now) || r.now-q.since() < secs(r.cfg.Watch.ThreadQuestion) {
 			continue
 		}
 		if q.job == "" {
@@ -508,7 +527,7 @@ func (r *watchRun) remind(t *watchedThread) error {
 func (r *watchRun) remindersDue(q question) int {
 	due := 0
 	for _, d := range r.cfg.Watch.Reminders {
-		if r.now-q.askedAt >= secs(d) {
+		if r.now-q.since() >= secs(d) {
 			due++
 		}
 	}
@@ -519,7 +538,9 @@ func (r *watchRun) remindersDue(q question) int {
 // reclaimed, of the leads' questions pending in its thread, at the same
 // times the people are reminded of theirs; without one nobody is.
 func (r *watchRun) remindAgent(t *watchedThread) error {
-	leads := slices.DeleteFunc(slices.Clone(t.questions), func(q question) bool { return !q.byLead() })
+	// A lead's question a card asks the people for is reminded of on
+	// that card.
+	leads := slices.DeleteFunc(slices.Clone(t.questions), func(q question) bool { return !q.byLead() || q.forwarded })
 	if len(leads) == 0 || t.agent == nil || t.agent.reclaimAt.Valid {
 		return nil
 	}
@@ -562,7 +583,7 @@ func (r *watchRun) remindAgent(t *watchedThread) error {
 }
 
 func (r *watchRun) postReminder(t *watchedThread) error {
-	shown := slices.DeleteFunc(slices.Clone(t.questions), question.byLead)
+	shown := slices.DeleteFunc(slices.Clone(t.questions), func(q question) bool { return q.byLead() || q.snoozed(r.now) })
 	if len(shown) == 0 {
 		return nil
 	}
@@ -576,7 +597,11 @@ func (r *watchRun) postReminder(t *watchedThread) error {
 		due, len(r.cfg.Watch.Reminders), len(shown), Duration(r.now-oldest.askedAt))
 	ids := make([]any, 0, len(shown))
 	for _, q := range shown {
-		fmt.Fprintf(&text, "- from %s: %s\n", q.askedBy, WorkOrderTitle(q.text))
+		if q.card {
+			fmt.Fprintf(&text, "- from %s, card #%d: %s\n", q.askedBy, q.id, cardLink(q))
+		} else {
+			fmt.Fprintf(&text, "- from %s: %s\n", q.askedBy, WorkOrderTitle(q.text))
+		}
 		ids = append(ids, q.id)
 	}
 	body := strings.TrimRight(text.String(), "\n")
@@ -681,13 +706,31 @@ func staleReminders(conn *sql.DB, thread string) ([]string, error) {
 }
 
 // closeQuestions marks the questions closed: given up on, not answered.
+// Their cards, and the cards asked for them, are taken back from Slack.
 func (r *watchRun) closeQuestions(qs []question) error {
+	ids := make([]int64, 0, len(qs))
 	for _, q := range qs {
 		if _, err := r.conn.Exec("UPDATE questions SET state = 'closed' WHERE id = ?1 AND state = 'pending'", q.id); err != nil {
 			return exit.Database(err)
 		}
+		ids = append(ids, q.id)
 	}
-	return nil
+	return closeCards(r.conn, r.cfg.FednetSocket, ids)
+}
+
+// cardLink is the reminder's line for a card: its link, else its
+// question, read from the card's JSON.
+func cardLink(q question) string {
+	if q.link != "" {
+		return q.link
+	}
+	var card struct {
+		Question string `json:"question"`
+	}
+	if json.Unmarshal([]byte(q.text), &card) == nil && card.Question != "" {
+		return WorkOrderTitle(card.Question)
+	}
+	return "(its card is not posted yet)"
 }
 
 // askToEnd asks the live thread agent to end its session, and records

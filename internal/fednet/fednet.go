@@ -2,8 +2,9 @@
 // in a thread and what a thread agent posts through `fleet thread post`,
 // `delete` for the reminder a newer one replaces, `progress` for a thread
 // agent's progress card, `read-thread` for when a thread last had a
-// message, and `open-thread` and `routes` for the home thread of a job
-// that has none.
+// message, `open-thread` and `routes` for the home thread of a job that
+// has none, and `ask` and `ask-close` for a thread agent's question
+// cards.
 package fednet
 
 import (
@@ -207,6 +208,45 @@ func Latest(socket, thread string) (ts string, secs int64, err error) {
 		return "", 0, exit.Environmentf("%s %s: the thread has no message", op, thread)
 	}
 	return ts, int64(newest), nil
+}
+
+// Card is where fednet posted a question card: its id (fednet's
+// `card_id`) and the link to it, empty when Slack gave none.
+type Card struct {
+	ID        string `json:"id"`
+	Permalink string `json:"permalink"`
+}
+
+// Ask is `fednet client ask -socket <socket> -thread <thread> -ref <ref>
+// -card <file> -json`: a question card in the thread, the card's JSON
+// read and checked by fednet; asking again with the same ref posts no
+// second card and gives the first. When fednet exits non-zero its exit
+// code and stderr come back as they are; a fednet that could not be run,
+// hit the deadline or was killed by a signal, or a reply that is not
+// fednet's JSON, is the error.
+func Ask(socket, thread, ref, file string) (card Card, stderr []byte, code int, err error) {
+	const op = "fednet client ask"
+	stdout, stderr, code, err := relay(op, []string{"client", "ask", "-socket", socket, "-thread", thread, "-ref", ref,
+		"-card", file, "-json"})
+	if err != nil || code != 0 {
+		return Card{}, stderr, code, err
+	}
+	if err := json.Unmarshal(stdout, &card); err != nil || card.ID == "" {
+		return Card{}, stderr, 0, exit.Environmentf("%s: not a card in the reply: %q", op, firstLine(stdout))
+	}
+	return card, stderr, 0, nil
+}
+
+// AskClose is `fednet client ask-close -socket <socket> [-note <note>] --
+// <card id>`: the card stops waiting and shows the note, with no buttons.
+// fednet's exit code and first line of stderr come back as Delete's do.
+func AskClose(socket, id, note string) (code int, reason string, err error) {
+	args := []string{"client", "ask-close", "-socket", socket}
+	if note != "" {
+		args = append(args, "-note", note)
+	}
+	_, stderr, code, err := relay("fednet client ask-close", append(args, "--", id))
+	return code, firstLine(stderr), err
 }
 
 func hidden(op string, argv []string) error {

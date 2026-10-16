@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/Luolc/agent-fleet/internal/atb"
@@ -45,20 +46,21 @@ const topUsage = "Usage: fleet [OPTIONS] <COMMAND>"
 var topHelp = longAbout + "\n\n" + topUsage + `
 
 Commands:
-  inbox     ` + cmd.InboxAbout + `
-  thread    ` + cmd.ThreadAbout + `
-  job       ` + cmd.JobAbout + `
-  ask-human ` + cmd.AskHumanAbout + `
-  spawn     ` + cmd.SpawnAbout + `
-  send      ` + cmd.SendAbout + `
-  done      ` + cmd.DoneAbout + `
-  worker    ` + cmd.WorkerAbout + `
-  status    ` + cmd.StatusAbout + `
-  report    ` + cmd.ReportAbout + `
-  watch     ` + cmd.WatchAbout + `
-  worktree  ` + cmd.WorktreeAbout + `
-  prompt    ` + cmd.PromptAbout + `
-  help      Print this message or the help of the given subcommand(s)
+  inbox      ` + cmd.InboxAbout + `
+  thread     ` + cmd.ThreadAbout + `
+  job        ` + cmd.JobAbout + `
+  ask-human  ` + cmd.AskHumanAbout + `
+  ask-thread ` + cmd.AskThreadAbout + `
+  spawn      ` + cmd.SpawnAbout + `
+  send       ` + cmd.SendAbout + `
+  done       ` + cmd.DoneAbout + `
+  worker     ` + cmd.WorkerAbout + `
+  status     ` + cmd.StatusAbout + `
+  report     ` + cmd.ReportAbout + `
+  watch      ` + cmd.WatchAbout + `
+  worktree   ` + cmd.WorktreeAbout + `
+  prompt     ` + cmd.PromptAbout + `
+  help       Print this message or the help of the given subcommand(s)
 
 Options:
       --scope <NAME>    ` + scopeHelp + `
@@ -162,13 +164,27 @@ Options:
   -h, --help  Print help
 `
 
-const askHumanUsage = "Usage: fleet ask-human [OPTIONS] --file <PATH>"
+const askHumanUsage = "Usage: fleet ask-human [OPTIONS] (--card <PATH> [--for <ID>] | --close <ID> [--note <TEXT>])"
 
 var askHumanHelp = cmd.AskHumanLongAbout + "\n\n" + askHumanUsage + `
 
 Options:
-      --file <PATH>     The question, posted to the home thread and delivered to its agent
-      --approval        Ask for an approval card; not supported yet, refused with exit 1
+      --card <PATH>     The question as a card's JSON, posted to your thread with fednet
+      --for <ID>        The lead's question, pending in your thread, the card asks for
+      --close <ID>      Take back the card of your pending question <ID>
+      --note <TEXT>     With --close, a note the card shows
+      --file <PATH>     Deprecated: a plain-text question, posted as a card with no options (a lead's: as ask-thread)
+      --approval        Refused: approval cards are not supported yet
+      --scope <NAME>    ` + scopeHelp + `
+  -h, --help            Print help
+`
+
+const askThreadUsage = "Usage: fleet ask-thread [OPTIONS] --card <PATH>"
+
+var askThreadHelp = cmd.AskThreadLongAbout + "\n\n" + askThreadUsage + `
+
+Options:
+      --card <PATH>     The question as a card's JSON, delivered to your home thread's agent
       --scope <NAME>    ` + scopeHelp + `
   -h, --help            Print help
 `
@@ -469,6 +485,8 @@ func dispatch(args []string) (exit.Code, error) {
 		return runJob(rest[1:], &scope)
 	case "ask-human":
 		return runAskHuman(rest[1:], &scope)
+	case "ask-thread":
+		return runAskThread(rest[1:], &scope)
 	case "send":
 		return runSend(rest[1:], &scope)
 	case "spawn":
@@ -494,7 +512,7 @@ func dispatch(args []string) (exit.Code, error) {
 
 // help is clap's implicit `help [COMMAND]` subcommand.
 func help(args []string) (exit.Code, error) {
-	helps := map[string]string{"inbox": inboxHelp, "thread": threadHelp, "job": jobHelp, "ask-human": askHumanHelp, "send": sendHelp, "spawn": spawnHelp, "done": doneHelp, "worker": workerHelp,
+	helps := map[string]string{"inbox": inboxHelp, "thread": threadHelp, "job": jobHelp, "ask-human": askHumanHelp, "ask-thread": askThreadHelp, "send": sendHelp, "spawn": spawnHelp, "done": doneHelp, "worker": workerHelp,
 		"status": statusHelp, "report": reportHelp, "watch": watchHelp, "worktree": worktreeHelp, "prompt": promptHelp, "help": topHelp}
 	if len(args) == 0 {
 		fmt.Fprint(os.Stdout, topHelp)
@@ -693,11 +711,64 @@ func runThreadProgress(args []string, scope *cliargs.OptString) (exit.Code, erro
 
 func runAskHuman(args []string, scope *cliargs.OptString) (exit.Code, error) {
 	fs := flagSet("ask-human", scope)
+	card := cliargs.OptString{Name: "card", Placeholder: "PATH"}
+	forID := cliargs.OptString{Name: "for", Placeholder: "ID"}
+	closeID := cliargs.OptString{Name: "close", Placeholder: "ID"}
+	note := cliargs.OptString{Name: "note", Placeholder: "TEXT"}
 	file := cliargs.OptString{Name: "file", Placeholder: "PATH"}
 	approval := cliargs.Bool{Name: "approval"}
-	fs.Var(&file, "file", "The question")
+	fs.Var(&card, "card", "The question as a card's JSON")
+	fs.Var(&forID, "for", "The lead's question the card asks for")
+	fs.Var(&closeID, "close", "Take back this question's card")
+	fs.Var(&note, "note", "A note the taken-back card shows")
+	fs.Var(&file, "file", "Deprecated: a plain-text question")
 	fs.Var(&approval, "approval", "Ask for an approval card (not supported yet)")
-	_, helped, err := parse(fs, args, askHumanHelp, askHumanUsage, nil, &file)
+	_, helped, err := parse(fs, args, askHumanHelp, askHumanUsage, nil)
+	if err != nil || helped {
+		return exit.Ok, err
+	}
+	switch {
+	case !approval.Value && btoi(card.Given)+btoi(closeID.Given)+btoi(file.Given) != 1:
+		return 0, &usageError{"exactly one of --card <PATH> and --close <ID> is required", askHumanUsage}
+	case forID.Given && !card.Given:
+		return 0, &usageError{"--for <ID> goes with --card <PATH>", askHumanUsage}
+	case note.Given && !closeID.Given:
+		return 0, &usageError{"--note <TEXT> goes with --close <ID>", askHumanUsage}
+	}
+	a := cmd.AskHumanArgs{Card: card.Value, Note: note.Value, File: file.Value, Approval: approval.Value}
+	for _, id := range []struct {
+		flag *cliargs.OptString
+		to   *int64
+	}{{&forID, &a.For}, {&closeID, &a.Close}} {
+		if !id.flag.Given {
+			continue
+		}
+		n, err := strconv.ParseInt(id.flag.Value, 10, 64)
+		if err != nil || n <= 0 {
+			return 0, &usageError{fmt.Sprintf("--%s: %q is not a question id", id.flag.Name, id.flag.Value), askHumanUsage}
+		}
+		*id.to = n
+	}
+	h, err := scoped(scope)
+	if err != nil {
+		return 0, err
+	}
+	return cmd.AskHuman(h, a)
+}
+
+// btoi is 1 for true.
+func btoi(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+func runAskThread(args []string, scope *cliargs.OptString) (exit.Code, error) {
+	fs := flagSet("ask-thread", scope)
+	card := cliargs.OptString{Name: "card", Placeholder: "PATH"}
+	fs.Var(&card, "card", "The question as a card's JSON")
+	_, helped, err := parse(fs, args, askThreadHelp, askThreadUsage, nil, &card)
 	if err != nil || helped {
 		return exit.Ok, err
 	}
@@ -705,7 +776,7 @@ func runAskHuman(args []string, scope *cliargs.OptString) (exit.Code, error) {
 	if err != nil {
 		return 0, err
 	}
-	return cmd.AskHuman(h, cmd.AskHumanArgs{File: file.Value, Approval: approval.Value})
+	return cmd.AskThread(h, cmd.AskThreadArgs{Card: card.Value})
 }
 
 // runJob dispatches `fleet job <COMMAND>`.

@@ -71,6 +71,7 @@ case "$1 $2" in
   "agent read") printf '%s\n' "────────────" "❯ " "────────────" ;;
   "agent prompt")
     printf '%s\n' "$@" > "$dir/argv"
+    printf '%s\n' "$@" >> "$dir/prompts"
     echo '{"id":"cli:agent:prompt","result":{"type":"agent_prompted"}}' ;;
   *) echo "fake herdr: unexpected command: $*" >&2; exit 2 ;;
 esac
@@ -114,13 +115,23 @@ exit 0
 // threadFednet is a fake fednet: every call logged; every call fails
 // while <dir>/fednet-down exists; `open-thread` prints the key of a new
 // thread in the channel it is given; `routes` prints <dir>/routes.json,
-// or no routes without it.
+// or no routes without it; `ask` keeps the card in <dir>/card.json and
+// prints card-<n>, n the ref's id, as
+// fednet's JSON, or refuses the card (exit 2) while <dir>/card-refused
+// exists; `ask-close` prints nothing.
 const threadFednet = `#!/bin/sh
 dir="$(dirname "$0")/.."
 echo "fednet $*" >> "$dir/calls"
 [ -e "$dir/fednet-down" ] && { echo "post: hub unreachable" >&2; exit 4; }
 [ "$2" = open-thread ] && { echo "$6/1700000099.000"; exit 0; }
 [ "$2" = routes ] && { cat "$dir/routes.json" 2>/dev/null || echo '{}'; exit 0; }
+if [ "$2" = ask ]; then
+  [ -e "$dir/card-refused" ] && { echo "fednet: fednet client ask: options: 6, over the limit of 5" >&2; exit 2; }
+  n="${8#*:}"; cp "${10}" "$dir/card.json"
+  echo '{"id":"card-'"$n"'","channel":"C0123","ts":"1700000100.000","permalink":"https://slack.example.test/card-'"$n"'"}'
+  exit 0
+fi
+[ "$2" = ask-close ] && exit 0
 echo m-posted
 `
 

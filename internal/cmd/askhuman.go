@@ -1,15 +1,17 @@
-// `fleet ask-human`: a lead asks the people in the job's home thread a
-// question through the thread's agent, which asks them and passes the
-// answer back; a thread agent's own question fleet posts to its thread.
+// `fleet ask-human` and `fleet ask-thread`: a thread agent asks the people
+// in its thread a question on a card; a lead puts its question to the
+// home thread's agent, which settles it or asks the people for it.
 
 package cmd
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/Luolc/agent-fleet/internal/config"
 	"github.com/Luolc/agent-fleet/internal/db"
@@ -19,21 +21,58 @@ import (
 	"github.com/Luolc/agent-fleet/internal/identity"
 )
 
-// AskHumanAbout and AskHumanLongAbout are the help texts of `ask-human`.
+// AskHumanAbout and AskHumanLongAbout are the help texts of `ask-human`;
+// AskThreadAbout and AskThreadLongAbout those of `ask-thread`.
 const (
-	AskHumanAbout     = "Put a question for the people to your home thread's agent (leads), or ask them (thread agents)"
-	AskHumanLongAbout = "Put a question for the people to your home thread's agent (leads), or ask them (thread agents).\n\n" +
-		"A lead does not talk to people: only the thread agent does. A lead's question is a " +
-		"message to that agent, which decides whether to answer it, look it up or ask the people, " +
-		"in its own words. The question is read from --file; it is recorded as pending in the " +
-		"ledger (table `questions`) and delivered to the job's home thread (`jobs.home_thread`, " +
-		"the thread of the thread agent that started the job) as `fleet inbox` delivers a " +
-		"message: to the thread's live agent, headed `[FROM: <you>]`, or to a thread agent " +
-		"started for the thread (its ticket claimed again, the question as the session's " +
-		"first message). The message starts `[QUESTION from <you>]`; fleet posts nothing to the " +
-		"thread. The thread agent sends the lead its answer with `fleet send`, which marks the " +
-		"lead's questions pending in that thread answered; so does a person's message in the " +
-		"thread, for every question pending there.\n\n" +
+	AskHumanAbout     = "Ask the people in your thread a question on a card (thread agents)"
+	AskHumanLongAbout = "Ask the people in your thread a question on a card (thread agents).\n\n" +
+		"Only a thread agent asks people, and always on a card: a lead puts its questions to the " +
+		"thread agent with `fleet ask-thread`, a worker to its lead. --card is a file holding the " +
+		"question as JSON (" + cardShape + "). fleet records it as a pending question of your thread " +
+		"(table `questions`) and posts it with `fednet client ask -ref <scope>:<question id> -card " +
+		"<file>`; fednet checks the card (its fields and their limits are fednet's, see `fednet " +
+		"client ask --help`) and refuses one over a limit, naming the field, the limit and the " +
+		"length, never cutting it. fleet prints the question's id and the card's link. With --for " +
+		"<id>, the card asks for the lead's question <id> pending in your thread: its answers go to " +
+		"that lead too, and until the card is settled your `fleet send` to that lead does not mark " +
+		"the lead's question answered.\n\n" +
+		"Only a press on the card answers it; a message in the thread does not. Each press comes " +
+		"back through `fleet inbox` as `[ANSWER #<id>]` and the answer as JSON: " + answerShape + ". " +
+		"A card a person closed or answered is no longer pending; a snoozed one stays pending, " +
+		"and is not reminded of until it comes back.\n\n" +
+		"--close <id> takes back a card of yours that still waits (`fednet client ask-close`, " +
+		"with --note shown on it): the question is closed, and nothing more comes from it.\n\n" +
+		"Asking again with the same card while it is pending is the same question: a card fednet " +
+		"has is not posted again. When fednet cannot be reached or fails, the question stays " +
+		"pending; ask again to post it. When fednet refuses the card (its exit 2: a card over a " +
+		"limit, not JSON, or a hub older than the client), nothing was posted and the question is " +
+		"closed; fix the card and ask again.\n\n" +
+		"Deprecated, for agents started on an older prompt: --file <file> is a plain-text " +
+		"question. A thread agent's is posted as a card with no options (only the note box and " +
+		"\"other\"): its first line as the question, or a fixed title when that line is longer than " +
+		"fednet's limit, and the whole text as the context; fednet refuses a text over its limit. " +
+		"A lead's goes on as `fleet ask-thread` does, the text as it is. --approval is refused " +
+		"(approval cards are not supported yet).\n\n" +
+		"Exit: 0 when the card is posted (or was already), or taken back; 1 for a caller that is " +
+		"not a thread agent (a lead with --file: as `fleet ask-thread`), --approval, an unreadable or empty card, a --for that is not " +
+		"a lead's question pending in your thread, a --close that is not your pending card, or " +
+		"no fednet socket; fednet's exit code, with its stderr, when `fednet client ask` or " +
+		"`ask-close` fails; 5 when fednet cannot run or the database fails."
+	AskThreadAbout     = "Put a question for the people to your home thread's agent, as a card (leads)"
+	AskThreadLongAbout = "Put a question for the people to your home thread's agent, as a card (leads).\n\n" +
+		"A lead does not talk to people: only the thread agent does. --card is a file holding the " +
+		"question as JSON, the same card `fleet ask-human` posts (" + cardShape + "; fednet checks it " +
+		"when the thread agent posts it). It is recorded as pending in the ledger (table " +
+		"`questions`) and delivered to the job's home thread (`jobs.home_thread`) as `fleet " +
+		"inbox` delivers a message: to the thread's live agent, headed `[FROM: <you>]`, or to a " +
+		"thread agent started for the thread (its ticket claimed again, the question as the " +
+		"session's first message). The message starts `[QUESTION #<id> from <you>]`, then the " +
+		"JSON; fleet posts nothing to the thread. The thread agent answers it itself with " +
+		"`fleet send`, which marks your question answered, or posts the card with `fleet " +
+		"ask-human --card <file> --for <id>`: then each press on that card reaches you too, as " +
+		"`[ANSWER #<id>]` with your question's id and the answer as JSON (" + answerShape + "), and " +
+		"an answered or closed card answers your question. A message in the thread answers " +
+		"nothing.\n\n" +
 		"A single-repo job without a home thread (started by a caller without FLEET_ROLE) gets " +
 		"one at its lead's first ask: fleet opens a thread with `fednet client open-thread` in " +
 		"the channel of the job's repo (`<repo prefix><repo>`, or the initiative's channel for " +
@@ -46,31 +85,55 @@ const (
 		"opens with fleet's one line naming the job and its repo, not the question. It is " +
 		"recorded as the job's home thread, and the question goes on as above. Until it is " +
 		"recorded nothing of the question is.\n\n" +
-		"The delivery (and a thread agent's post) is recorded in the ledger (table `steps`), so " +
-		"running it again with the same question while it is pending continues where it " +
-		"stopped and never delivers or posts it twice.\n\n" +
-		"Approval cards (fednet's request-approval) are not supported yet: --approval is " +
-		"refused. Ask for a go-ahead in plain text (\"reply yes to go ahead\").\n\n" +
-		"A thread agent asking records the question on its own thread and fleet posts it " +
-		"there; nothing is delivered.\n\n" +
-		"Exit: 0 when the thread agent has the question (a thread agent's own: once it is " +
-		"posted); 1 with --approval, when the caller is a worker, the file " +
-		"is unreadable or empty, the job is not open, a cross-repo job has no home thread (it " +
+		"The delivery is recorded in the ledger (table `steps`), so running it again with the " +
+		"same card while it is pending continues where it stopped and never delivers it twice.\n\n" +
+		"Exit: 0 when the thread agent has the question; 1 when the caller is not a lead, the " +
+		"file is unreadable or empty, the job is not open, a cross-repo job has no home thread (it " +
 		"was started by a caller without FLEET_THREAD), fleet knows neither channel to open " +
 		"a single-repo job's home thread in, or the scope has no fednet socket; " +
 		"2/3/4 as `send` for the delivery; 3 when a new thread agent stops at an unknown " +
-		"screen; 5 when opening the thread or a thread agent's post fails, or herdr, atb or the database fails. A " +
+		"screen; 5 when opening the thread fails, or herdr, atb or the database fails. A " +
 		"thread agent that has to be started while Linear is unavailable starts without its " +
 		"ticket, as `fleet inbox` starts one. After a failure " +
 		"the question stays pending; ask again to finish."
 )
 
+// cardShape and answerShape are the card's JSON and the answer's, as the
+// help texts give them; the limits are fednet's.
+const (
+	cardShape = `{"question": "one sentence", "context": "Markdown, optional", "options": [{"short": ` +
+		`"the radio button's text", "long": "Markdown, optional", "recommended": true}]}, at most one ` +
+		`option recommended; the card adds "other", a note box, submit, snooze and close`
+	answerShape = `{"question_id": <id>, "card_id": "<fednet's id>", "outcome": "answered" | "snoozed" | ` +
+		`"closed" | "resurfaced", "choice": {"index": <from 0>, "short": "..."} or null for "other", ` +
+		`"note": "...", "snooze_until": "<RFC 3339>", "by": "<Slack user>", "at": "<RFC 3339>"}; answered ` +
+		`is a submit, snoozed a snooze (the card comes back at snooze_until), closed a person's ` +
+		`close (no need to answer: drop it or ask another way), resurfaced a snoozed card back in ` +
+		`front of the people (no choice, note or by)`
+)
+
 // AskHumanArgs are the arguments of `ask-human`.
 type AskHumanArgs struct {
-	// File holds the question.
+	// Card holds the question as JSON; For is the lead's question it
+	// asks for, 0 for none.
+	Card string
+	For  int64
+	// Close is the question whose card is taken back, with Note shown on
+	// it.
+	Close int64
+	Note  string
+	// File is a plain-text question, kept for agents started on an older
+	// prompt (deprecated): a lead's goes on as `ask-thread`, a thread
+	// agent's is posted as a card with no options.
 	File string
-	// Approval asks for an approval card; not supported yet, refused.
+	// Approval is refused: approval cards are not supported yet.
 	Approval bool
+}
+
+// AskThreadArgs are the arguments of `ask-thread`.
+type AskThreadArgs struct {
+	// Card holds the question as JSON.
+	Card string
 }
 
 // AskHuman runs `ask-human`.
@@ -80,81 +143,322 @@ func AskHuman(h *herdr.Herdr, args AskHumanArgs) (exit.Code, error) {
 		return 0, err
 	}
 	if args.Approval {
-		return 0, exit.Refusedf("approval cards are not supported yet; ask in plain text (\"reply yes to go ahead\") without --approval")
+		return 0, exit.Refusedf("approval cards are not supported yet; ask on a card with --card, without --approval")
 	}
-	if me.Role == identity.Worker && me.Parent == watchSender {
-		return 0, exit.Refusedf("a worker does not ask people; fleet's watch started you, so write your question " +
-			"to the question file your task names and end your turn")
+	if err := notAsker(me, "ask-human", args.File != ""); err != nil {
+		return 0, err
 	}
-	if me.Role == identity.Worker {
-		return 0, exit.Refusedf("a worker does not ask people; tell your lead with `fleet send %s`", me.Parent)
+	if args.File != "" && me.Role == identity.Lead {
+		return askThread(h, me, args.File, false)
 	}
-	data, err := os.ReadFile(args.File)
+	if me.Thread == "" {
+		return 0, exit.Refusedf("FLEET_THREAD is not set: a thread agent asks in its own thread")
+	}
+	cfg, err := config.LoadScope(me.Scope)
 	if err != nil {
-		return 0, exit.Refusedf("cannot read %s: %v", args.File, err)
+		return 0, err
 	}
-	// Only the end is trimmed: an indented first line is Markdown.
-	text := strings.TrimRight(string(data), " \t\r\n")
-	if strings.TrimSpace(text) == "" {
-		return 0, exit.Refusedf("the question file is empty")
+	if cfg.FednetSocket == "" {
+		return 0, exit.Refusedf("fednet.socket is not configured for scope %s, so no card can reach the thread", me.Scope)
 	}
 	conn, err := db.Open(me.Scope)
 	if err != nil {
 		return 0, err
 	}
 	defer conn.Close()
-	thread, job, cfg, err := askThread(conn, me)
-	if err != nil {
-		return 0, err
+	if args.Close != 0 {
+		return withdraw(conn, cfg.FednetSocket, me, args.Close, args.Note)
 	}
-	id, err := pendingQuestion(conn, job, thread, me.Agent, text)
-	if err != nil {
-		return 0, err
-	}
-	key := fmt.Sprintf("ask-human:%d", id)
-	if me.Role == identity.Thread {
-		posted, err := postQuestion(conn, key, cfg.FednetSocket, thread, text)
+	return askCard(conn, cfg.FednetSocket, me, args)
+}
+
+// askCard records a thread agent's card and posts it, unless an earlier
+// run did.
+func askCard(conn *sql.DB, socket string, me *identity.Identity, args AskHumanArgs) (exit.Code, error) {
+	cardFile := args.Card
+	if args.File != "" {
+		card, err := textCard(args.File)
 		if err != nil {
 			return 0, err
 		}
-		if posted {
-			fmt.Fprintf(os.Stdout, "posted a pending question to thread %s\n", thread)
-		} else {
-			fmt.Fprintf(os.Stdout, "the question was already posted to thread %s; nothing done\n", thread)
+		path, remove, err := tempFile(card)
+		if err != nil {
+			return 0, err
 		}
+		defer remove()
+		cardFile = path
+	}
+	text, err := readCard(cardFile)
+	if err != nil {
+		return 0, err
+	}
+	if err := leadQuestionPending(conn, args.For, me.Thread); err != nil {
+		return 0, err
+	}
+	id, err := pendingQuestion(conn, "", me.Thread, me.Agent, text, args.For, true)
+	if err != nil {
+		return 0, err
+	}
+	var cardID, link string
+	if err := conn.QueryRow("SELECT card_id, permalink FROM questions WHERE id = ?1", id).Scan(&cardID, &link); err != nil {
+		return 0, exit.Database(err)
+	}
+	if cardID != "" {
+		fmt.Fprintf(os.Stdout, "question #%d was already asked in thread %s; nothing done: %s\n", id, me.Thread, link)
 		return exit.Ok, nil
 	}
-	msg := inboundMessage{Thread: thread, Text: text, Question: me.Agent}
-	delivered, err := deliverQuestion(h, conn, key, me.Scope, cfg, msg)
+	card, stderr, code, err := fednet.Ask(socket, me.Thread, questionRef(me.Scope, id), cardFile)
+	if err != nil {
+		return 0, exit.New(failureCode(err), err.Error()+fmt.Sprintf("; question #%d is recorded, run ask-human again to post it", id))
+	}
+	if code != 0 {
+		return notAsked(conn, id, code, stderr)
+	}
+	if _, err := conn.Exec("UPDATE questions SET card_id = ?1, permalink = ?2 WHERE id = ?3", card.ID, card.Permalink, id); err != nil {
+		return 0, exit.Database(err)
+	}
+	fmt.Fprintf(os.Stdout, "asked question #%d in thread %s: %s\n", id, me.Thread, card.Permalink)
+	return exit.Ok, nil
+}
+
+// leadQuestionPending refuses a --for (`id`, 0 for none) that is not a
+// lead's question pending in the thread.
+func leadQuestionPending(conn *sql.DB, id int64, thread string) error {
+	if id == 0 {
+		return nil
+	}
+	var n int
+	if err := conn.QueryRow("SELECT count(*) FROM questions WHERE id = ?1 AND thread = ?2 AND job != '' AND state = 'pending'",
+		id, thread).Scan(&n); err != nil {
+		return exit.Database(err)
+	}
+	if n == 0 {
+		return exit.Refusedf("question #%d is not a lead's question pending in thread %s", id, thread)
+	}
+	return nil
+}
+
+// notAsked hands back fednet's failure to post question `id`'s card: its
+// exit code and stderr. A card fednet refused (exit 2) posted nothing, so
+// the question is closed; after any other failure it stays pending.
+func notAsked(conn *sql.DB, id int64, code int, stderr []byte) (exit.Code, error) {
+	_, _ = os.Stderr.Write(stderr)
+	if code != 2 {
+		fmt.Fprintf(os.Stderr, "fleet: question #%d is recorded, run ask-human again to post it\n", id)
+		return exit.Code(code), nil
+	}
+	if _, err := conn.Exec("UPDATE questions SET state = 'closed' WHERE id = ?1", id); err != nil {
+		return 0, exit.Database(err)
+	}
+	fmt.Fprintf(os.Stderr, "fleet: fednet refused the card, so nothing was posted and question #%d is closed; fix the card and ask again\n", id)
+	return exit.Code(code), nil
+}
+
+// AskThread runs `ask-thread`.
+func AskThread(h *herdr.Herdr, args AskThreadArgs) (exit.Code, error) {
+	me, err := identity.FromEnv()
+	if err != nil {
+		return 0, err
+	}
+	if err := notAsker(me, "ask-thread", false); err != nil {
+		return 0, err
+	}
+	return askThread(h, me, args.Card, true)
+}
+
+// askThread puts a lead's question, a card or (`card` false) the plain
+// text of an older prompt's `ask-human --file`, to its home thread's
+// agent.
+func askThread(h *herdr.Herdr, me *identity.Identity, file string, card bool) (exit.Code, error) {
+	text, err := readCard(file)
+	if err != nil {
+		return 0, err
+	}
+	conn, err := db.Open(me.Scope)
+	if err != nil {
+		return 0, err
+	}
+	defer conn.Close()
+	thread, job, cfg, err := leadThread(conn, me)
+	if err != nil {
+		return 0, err
+	}
+	id, err := pendingQuestion(conn, job, thread, me.Agent, text, 0, card)
+	if err != nil {
+		return 0, err
+	}
+	msg := inboundMessage{Thread: thread, Text: text, Question: me.Agent, QuestionID: id}
+	delivered, err := deliverQuestion(h, conn, fmt.Sprintf("ask-human:%d", id), me.Scope, cfg, msg)
 	if err != nil {
 		return 0, err
 	}
 	if !delivered {
-		fmt.Fprintf(os.Stdout, "the question was already delivered to the agent of thread %s; nothing done\n", thread)
+		fmt.Fprintf(os.Stdout, "question #%d was already delivered to the agent of thread %s; nothing done\n", id, thread)
 		return exit.Ok, nil
 	}
-	fmt.Fprintf(os.Stdout, "gave the question to the agent of thread %s, which asks the people and passes the answer on\n", thread)
+	fmt.Fprintf(os.Stdout, "gave question #%d to the agent of thread %s, which settles it or asks the people\n", id, thread)
 	return exit.Ok, nil
 }
 
-// postQuestion is the `post` step of a thread agent's ask: true when it ran now, false
-// when an earlier run recorded it. fednet's output is not shown, and the
-// failure names only what the caller can do: ask again.
-func postQuestion(conn *sql.DB, key, socket, thread, text string) (bool, error) {
-	ran := false
-	err := runStep(conn, key, "post", func() error {
-		ran = true
-		_, _, code, err := fednet.Relay(socket, thread, text, nil)
-		if err == nil && code != 0 {
-			err = exit.Environmentf("fednet client post failed (exit status: %d)", code)
-		}
-		return err
-	})
+// textTitle is a plain-text question's header on its card when its first
+// line does not fit, and maxTitle is fednet's limit on a card's question.
+const (
+	textTitle = "agent 有一个问题，详见下方"
+	maxTitle  = 140
+)
+
+// textCard is the card a thread agent's plain-text question is posted as
+// (an older prompt's `ask-human --file`, deprecated): its first line as
+// the question, or textTitle when that line is too long, the whole text
+// as the context, no options. fednet checks the rest, and refuses a text
+// over its limit for a context.
+func textCard(path string) (string, error) {
+	text, err := readCard(path)
+	if err != nil {
+		return "", err
+	}
+	title, _, _ := strings.Cut(strings.TrimSpace(text), "\n")
+	title = strings.TrimSpace(title)
+	if utf8.RuneCountInString(title) > maxTitle {
+		title = textTitle
+	}
+	var b strings.Builder
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(struct {
+		Question string `json:"question"`
+		Context  string `json:"context"`
+	}{title, text}); err != nil {
+		return "", exit.Environmentf("cannot write the card: %v", err)
+	}
+	return b.String(), nil
+}
+
+// notAsker refuses the callers `command` is not for: a worker, and for
+// `ask-human` a lead, for `ask-thread` a thread agent.
+// A lead's `ask-human --file` (`text`) is an older prompt's ask-thread.
+func notAsker(me *identity.Identity, command string, text bool) error {
+	switch {
+	case me.Role == identity.Worker && me.Parent == watchSender:
+		return exit.Refusedf("a worker does not ask people; fleet's watch started you, so write your question " +
+			"to the question file your task names and end your turn")
+	case me.Role == identity.Worker:
+		return exit.Refusedf("a worker does not ask people; tell your lead with `fleet send %s`", me.Parent)
+	case me.Role == identity.Lead && command == "ask-human" && !text:
+		return exit.Refusedf("a lead does not ask people itself; put the question to your home thread's agent with " +
+			"`fleet ask-thread --card <file>`")
+	case me.Role == identity.Thread && command == "ask-thread":
+		return exit.Refusedf("a thread agent asks the people itself, with `fleet ask-human --card <file>`")
+	}
+	return nil
+}
+
+// readCard is the card file's text, its end trimmed; fednet checks the
+// rest.
+func readCard(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", exit.Refusedf("cannot read %s: %v", path, err)
+	}
+	text := strings.TrimRight(string(data), " \t\r\n")
+	if strings.TrimSpace(text) == "" {
+		return "", exit.Refusedf("the card file is empty")
+	}
+	return text, nil
+}
+
+// questionRef is the ref a card is asked with: one fednet client serves
+// every scope of the machine, and its answers carry nothing but the ref.
+func questionRef(scope string, id int64) string {
+	return fmt.Sprintf("%s:%d", scope, id)
+}
+
+// failureCode is the exit code of a failure, 5 for any other error.
+func failureCode(err error) exit.Code {
 	var failure *exit.Failure
 	if errors.As(err, &failure) {
-		return false, exit.New(failure.Code, failure.Message+"; the question is recorded, run ask-human again to post it")
+		return failure.Code
 	}
-	return ran, err
+	return exit.Environment
+}
+
+// withdraw takes back the card of the caller's pending question `id`.
+// A question whose card was never posted is only closed.
+func withdraw(conn *sql.DB, socket string, me *identity.Identity, id int64, note string) (exit.Code, error) {
+	var cardID string
+	err := conn.QueryRow("SELECT card_id FROM questions WHERE id = ?1 AND thread = ?2 AND asked_by = ?3 AND card = 1 "+
+		"AND state = 'pending'", id, me.Thread, me.Agent).Scan(&cardID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, exit.Refusedf("question #%d is not a card of yours pending in thread %s", id, me.Thread)
+	}
+	if err != nil {
+		return 0, exit.Database(err)
+	}
+	if cardID != "" {
+		code, reason, err := fednet.AskClose(socket, cardID, note)
+		if err != nil {
+			return 0, err
+		}
+		if code != 0 {
+			fmt.Fprintf(os.Stderr, "fleet: fednet client ask-close: %s\n", reason)
+			return exit.Code(code), nil
+		}
+	}
+	if _, err := conn.Exec("UPDATE questions SET state = 'closed', outcome = 'withdrawn' WHERE id = ?1", id); err != nil {
+		return 0, exit.Database(err)
+	}
+	fmt.Fprintf(os.Stdout, "took back question #%d in thread %s\n", id, me.Thread)
+	return exit.Ok, nil
+}
+
+// closeCards takes back from Slack the cards of the questions `ids`, which
+// fleet is closing, and those asked for them that still wait, which it
+// closes too, so nobody presses a card no agent waits on. A failure is
+// only a warning: the questions close all the same.
+func closeCards(conn *sql.DB, socket string, ids []int64) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	in := "(?" + strings.Repeat(", ?", len(ids)-1) + ")"
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		args[i] = id
+	}
+	var cards []struct {
+		id     int64
+		cardID string
+	}
+	err := eachRow(conn, "SELECT id, card_id FROM questions WHERE card_id != '' AND (id IN "+in+
+		" OR (for_question IN "+in+" AND state = 'pending')) ORDER BY id", func(rows *sql.Rows) error {
+		var c struct {
+			id     int64
+			cardID string
+		}
+		if err := rows.Scan(&c.id, &c.cardID); err != nil {
+			return err
+		}
+		cards = append(cards, c)
+		return nil
+	}, append(args, args...)...)
+	if err != nil {
+		return err
+	}
+	for _, c := range cards {
+		if socket == "" {
+			fmt.Fprintf(os.Stderr, "fleet: warning: the card of question #%d stays in Slack: no fednet socket\n", c.id)
+			continue
+		}
+		code, reason, err := fednet.AskClose(socket, c.cardID, "fleet closed this question")
+		switch {
+		case err != nil:
+			fmt.Fprintf(os.Stderr, "fleet: warning: the card of question #%d stays in Slack: %v\n", c.id, err)
+		case code != 0:
+			fmt.Fprintf(os.Stderr, "fleet: warning: the card of question #%d stays in Slack: fednet client ask-close "+
+				"exit status %d: %s\n", c.id, code, reason)
+		}
+	}
+	_, err = conn.Exec("UPDATE questions SET state = 'closed' WHERE for_question IN "+in+" AND state = 'pending'", args...)
+	return dbErr(err)
 }
 
 // deliverQuestion is the `deliver` step of a lead's ask: true when it ran
@@ -171,15 +475,15 @@ func deliverQuestion(h *herdr.Herdr, conn *sql.DB, key, scope string, cfg *confi
 	})
 	var failure *exit.Failure
 	if errors.As(err, &failure) {
-		return false, exit.New(failure.Code, failure.Message+"; the question is recorded, run ask-human again to deliver it")
+		return false, exit.New(failure.Code, failure.Message+"; the question is recorded, run ask-thread again to deliver it")
 	}
 	return ran, err
 }
 
-// askThread is the thread the caller asks in, as askedIn names it, with
+// leadThread is the thread a lead asks in, as askedIn names it, with
 // the scope's settings, which must name fednet's socket; a single-repo
 // job without a home thread gets one opened first.
-func askThread(conn *sql.DB, me *identity.Identity) (thread, job string, cfg *config.Scope, err error) {
+func leadThread(conn *sql.DB, me *identity.Identity) (thread, job string, cfg *config.Scope, err error) {
 	thread, job, row, err := askedIn(conn, me)
 	if err != nil {
 		return "", "", nil, err
@@ -199,16 +503,12 @@ func askThread(conn *sql.DB, me *identity.Identity) (thread, job string, cfg *co
 	return thread, job, cfg, nil
 }
 
-// askedIn is the thread the caller asks in, with the job (empty for a
-// thread agent): a lead's open job's home thread, a thread agent's own.
-// The thread is empty for a single-repo job without a home thread, which
-// gets one when its lead first asks; `row` is a lead's job.
+// askedIn is the thread a lead asks in, its open job's home thread, with
+// the job. The thread is empty for a single-repo job without a home
+// thread, which gets one when its lead first asks; `row` is the job.
 func askedIn(conn *sql.DB, me *identity.Identity) (thread, job string, row *jobRow, err error) {
 	if me.Role != identity.Lead {
-		if me.Thread == "" {
-			return "", "", nil, exit.Refusedf("FLEET_THREAD is not set: a thread agent asks in its own thread")
-		}
-		return me.Thread, "", nil, nil
+		return "", "", nil, exit.Refusedf("FLEET_ROLE is not lead: only a lead puts a question to its home thread's agent")
 	}
 	if me.Job == "" {
 		return "", "", nil, exit.Refusedf("FLEET_JOB is not set")
@@ -267,14 +567,14 @@ func openHomeThread(conn *sql.DB, cfg *config.Scope, row *jobRow) (string, error
 	if channel == "" {
 		return "", exit.Refusedf("job %s has no home thread, and fleet cannot open one: no thread of #%s or #%s has "+
 			"reached this scope, and fednet's routes name neither, so their ids are unknown (a message to the bot in "+
-			"either, or a route with the channel's name, makes it known); nothing is recorded, run ask-human again then",
+			"either, or a route with the channel's name, makes it known); nothing is recorded, run ask-thread again then",
 			row.Job, tried[0], tried[1])
 	}
 	text := fmt.Sprintf("Thread of job %s in %s, which started without one.", row.Job, row.Repo)
 	thread, err := fednet.OpenThread(cfg.FednetSocket, channel, text)
 	var failure *exit.Failure
 	if errors.As(err, &failure) {
-		return "", exit.New(failure.Code, failure.Message+"; nothing is recorded, run ask-human again")
+		return "", exit.New(failure.Code, failure.Message+"; nothing is recorded, run ask-thread again")
 	}
 	if err != nil {
 		return "", err
@@ -292,19 +592,22 @@ func openHomeThread(conn *sql.DB, cfg *config.Scope, row *jobRow) (string, error
 }
 
 // pendingQuestion is the id of the pending question with this text from
-// this asker in this thread, recorded now unless an earlier run did.
-func pendingQuestion(conn *sql.DB, job, thread, by, text string) (int64, error) {
+// this asker in this thread, a card or not, for the lead's question `forID` (0 for none),
+// recorded now unless an earlier run did.
+func pendingQuestion(conn *sql.DB, job, thread, by, text string, forID int64, card bool) (int64, error) {
 	var id int64
+	forQuestion := sql.NullInt64{Int64: forID, Valid: forID != 0}
 	err := conn.QueryRow("SELECT id FROM questions WHERE job = ?1 AND thread = ?2 AND asked_by = ?3 AND text = ?4 "+
-		"AND state = 'pending' ORDER BY id DESC LIMIT 1", job, thread, by, text).Scan(&id)
+		"AND card = ?6 AND for_question IS ?5 AND state = 'pending' ORDER BY id DESC LIMIT 1", job, thread, by, text,
+		forQuestion, card).Scan(&id)
 	if err == nil {
 		return id, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return 0, exit.Database(err)
 	}
-	res, err := conn.Exec("INSERT INTO questions (job, thread, asked_by, text, approval, state, asked_at) "+
-		"VALUES (?1, ?2, ?3, ?4, 0, 'pending', ?5)", job, thread, by, text, db.Now())
+	res, err := conn.Exec("INSERT INTO questions (job, thread, asked_by, text, approval, state, asked_at, card, for_question) "+
+		"VALUES (?1, ?2, ?3, ?4, 0, 'pending', ?5, ?7, ?6)", job, thread, by, text, db.Now(), forQuestion, card)
 	if err != nil {
 		return 0, exit.Database(err)
 	}

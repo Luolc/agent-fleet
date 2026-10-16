@@ -458,3 +458,39 @@ func TestAVersion14LedgerKeepsItsAgentsAsNotLight(t *testing.T) {
 		t.Errorf("light %d, version %d", light, version)
 	}
 }
+
+// A question a version-15 binary recorded reads as a plain-text one,
+// still pending, with no card.
+func TestAVersion15LedgerKeepsItsQuestionsAsText(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fleet.db")
+	conn, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range append(migrations[:15:15],
+		"INSERT INTO questions (job, thread, asked_by, text, state, asked_at) VALUES ('j', 'C1/1.1', 'j-lead', 'Which?', 'pending', 1)",
+		"PRAGMA user_version = 15") {
+		if _, err := conn.Exec(step); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	conn, err = OpenAt(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	var card, version int64
+	var state, cardID string
+	if err := conn.QueryRow("SELECT card, card_id, state FROM questions").Scan(&card, &cardID, &state); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if card != 0 || cardID != "" || state != "pending" || version != schemaVersion {
+		t.Errorf("card %d, card_id %q, state %s, version %d", card, cardID, state, version)
+	}
+}
