@@ -70,13 +70,16 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: tools/*.sum
 
-      # The statute-compile hook runs the statute that statute-checks.toml
-      # names, the version that compiled the files it compares.
+      # The statute-compile hook runs the statute that statute.lock names, the
+      # version that compiled the files it compares. Locks written before
+      # statute 0.1.18 carry no version; statute-checks.toml names it there.
       - name: statute version
         id: statute
         run: |
-          version=$(sed -n 's/^statute = "\(.*\)"$/\1/p' statute-checks.toml)
-          [ -n "$version" ] || { echo "no statute version in statute-checks.toml" >&2; exit 1; }
+          version=$(sed -n 's/^statute = "\(.*\)"$/\1/p' statute.lock)
+          [ -n "$version" ] || version=$(sed -n 's/^statute = "\(.*\)"$/\1/p' statute-checks.toml)
+          [ -n "$version" ] || { echo "no statute version in statute.lock or statute-checks.toml" >&2; exit 1; }
+          echo "statute version: $version"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: install statute
