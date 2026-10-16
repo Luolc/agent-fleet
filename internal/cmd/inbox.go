@@ -41,8 +41,9 @@ const (
 		"lead's question, to that lead under that question's id, when it is live. A press on a " +
 		"question fleet has closed (taken back, or given up on by `fleet watch`) is recorded and " +
 		"given to no agent. Messages in a thread answer only the questions fleet posted there as " +
-		"text (a watch worker's, a screen's): only a press answers a card, and only the thread " +
-		"agent a lead's question.\n\n" +
+		"text (a watch worker's, a screen's) and the questions of a lead whose job has ended that " +
+		"no pending card asks for: only a press answers a card, and only the thread agent an " +
+		"open job's lead's question.\n\n" +
 		"Which messages fleet serves, by channel: `<repo prefix><R>` (thread agents run in the " +
 		"main checkout <checkouts>/<R>), `<initiative prefix><I>` (in <initiatives>/<I>/, the " +
 		"checkout of the initiative's repo) and direct messages (in the general initiative's " +
@@ -370,17 +371,21 @@ func startThread(h *herdr.Herdr, conn *sql.DB, scope string, cfg *config.Scope, 
 // answerByMessage marks answered the thread's pending questions a
 // person's message answers: those fleet posted as text (a watch worker's,
 // a screen's, watch's own at a watch's `max`, and a thread agent's from
-// before cards). Only a press answers a card, and only the thread agent
-// a lead's question.
+// before cards), and a lead's whose job has ended (moved to the thread,
+// its lead gone), unless a card asks the people for it. Only a press
+// answers a card, and only the thread agent an open job's lead's
+// question.
 func answerByMessage(conn *sql.DB, thread string) error {
 	var ids []any
-	err := eachRow(conn, "SELECT id, job, asked_by FROM questions WHERE thread = ?1 AND state = 'pending' AND card = 0",
+	err := eachRow(conn, "SELECT id, job, asked_by, card, job != '' AND NOT EXISTS (SELECT 1 FROM jobs j WHERE "+
+		"j.job = q.job AND j.state = 'open' AND j.started_at <= q.asked_at), EXISTS (SELECT 1 FROM questions c "+
+		"WHERE c.for_question = q.id AND c.state = 'pending') FROM questions q WHERE thread = ?1 AND state = 'pending'",
 		func(rows *sql.Rows) error {
 			var q question
-			if err := rows.Scan(&q.id, &q.job, &q.askedBy); err != nil {
+			if err := rows.Scan(&q.id, &q.job, &q.askedBy, &q.card, &q.moved, &q.forwarded); err != nil {
 				return err
 			}
-			if !q.byLead() {
+			if !q.byLead() && !q.card || q.byLead() && q.moved && !q.forwarded {
 				ids = append(ids, q.id)
 			}
 			return nil
@@ -547,12 +552,17 @@ func recordAnswer(conn *sql.DB, q answeredCard, a cardAnswer) error {
 				[]any{db.Now(), q.forQuestion.Int64}})
 		}
 	case "snoozed":
-		until, err := time.Parse(time.RFC3339, a.SnoozeUntil)
-		if err != nil {
-			return exit.Refusedf("snoozed answer to question #%d: snooze_until %q is not RFC 3339", q.id, a.SnoozeUntil)
+		// A time fleet cannot read leaves the card unsnoozed for watch;
+		// refusing would have fednet run the hook again for good.
+		until := sql.NullInt64{}
+		if t, err := time.Parse(time.RFC3339, a.SnoozeUntil); err == nil {
+			until = sql.NullInt64{Int64: t.Unix(), Valid: true}
+		} else {
+			fmt.Fprintf(os.Stderr, "fleet: the snooze of question #%d has a snooze_until that is not RFC 3339 (%q); "+
+				"it is recorded without one\n", q.id, a.SnoozeUntil)
 		}
 		stmts = append(stmts, stmt{"UPDATE questions SET outcome = ?1, snooze_until = ?2, reminders = 0 WHERE id = ?3",
-			[]any{a.Outcome, until.Unix(), q.id}})
+			[]any{a.Outcome, until, q.id}})
 	default:
 		stmts = append(stmts, stmt{"UPDATE questions SET outcome = ?1, reminders = 0 WHERE id = ?2", []any{a.Outcome, q.id}})
 	}

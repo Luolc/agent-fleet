@@ -783,3 +783,55 @@ func TestAskHumanFileFromAnOlderPrompt(t *testing.T) {
 		t.Errorf("questions = %q", got)
 	}
 }
+
+// A lead's question still pending when its job ended is the thread's: a
+// person's message answers it, unless a card asks the people for it.
+func TestAMessageAnswersTheQuestionsOfAnEndedJob(t *testing.T) {
+	w := threadWorld(t, "")
+	openJobWithHomeThread(w, true)
+	if out := w.inbox(w.event("m1", "start the import", "")); out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	for _, f := range []string{"q1.json", "q2.json"} {
+		if out := w.askThread("--card", task(w, f, `{"question": "`+f+`"}`)); out.code != 0 {
+			t.Fatalf("%+v", out)
+		}
+	}
+	if out := w.asThreadAgent("TH-5", "ask-human", "--card", task(w, "c.json", `{"question": "q2?"}`), "--for", "2"); out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	conn := w.defaultLedger()
+	if _, err := conn.Exec("UPDATE jobs SET state = 'ended', ended_at = 1"); err != nil {
+		t.Fatal(err)
+	}
+	conn.Close()
+	out := w.inbox(w.event("m2", "September", ""))
+	if out.code != 0 || !strings.Contains(out.stdout, "1 pending question(s) in thread "+threadKey+" answered") {
+		t.Errorf("%+v", out)
+	}
+	if got := questions(w); got != "item-1 "+threadKey+" item-1-lead card answered\nitem-1 "+threadKey+
+		" item-1-lead card pending\n "+threadKey+" thread-c0123-1700000000-123 card pending" {
+		t.Errorf("questions = %q", got)
+	}
+}
+
+// A snooze whose time fleet cannot read is recorded without one and
+// delivered, so fednet does not run the hook again for it.
+func TestASnoozeWithoutAReadableTimeIsDelivered(t *testing.T) {
+	w := threadWorld(t, "")
+	if out := w.inbox(w.event("m1", "start", "")); out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	if out := w.asThreadAgent("TH-5", "ask-human", "--card", task(w, "q.json", `{"question": "Which month?"}`)); out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	out := w.inbox(w.answerEvent("a1", `{"question_id":"main:1","card_id":"card-1","outcome":"snoozed","choice":null,`+
+		`"snooze_until":"tomorrow","by":"U0ABC","at":"x"}`))
+	if out.code != 0 || !strings.Contains(out.stderr, `snooze_until that is not RFC 3339 ("tomorrow")`) ||
+		!strings.Contains(w.file("argv"), "[ANSWER #1]") {
+		t.Errorf("%+v", out)
+	}
+	if got := question(w, 1); got != "pending snoozed" {
+		t.Errorf("question 1 = %q", got)
+	}
+}

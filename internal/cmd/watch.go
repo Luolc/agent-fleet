@@ -96,7 +96,8 @@ const (
 		"pending for `thread_question` (72h) is closed and its session reclaimed. Every card fleet " +
 		"closes a question of, and every card asked for a lead's question it closes, is taken back " +
 		"from Slack (`fednet client ask-close`; a failure only warns). A lead's question " +
-		"pending for `lead_question` (72h): the lead is told its job ends in 30 minutes; if the job " +
+		"pending for `lead_question` (72h; while a card asks the people for it and is snoozed, not " +
+		"before the card is back, and counted from then): the lead is told its job ends in 30 minutes; if the job " +
 		"is still open then, watch reclaims it as `job end --force` does and posts the Linear steps " +
 		"not done to the thread, closing the job's pending questions, as it does for a job that " +
 		"ended any other way after its lead was told. A lead's question still " +

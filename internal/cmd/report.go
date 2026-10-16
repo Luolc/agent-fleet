@@ -29,8 +29,9 @@ const (
 		"A question on a card (`fleet ask-human --card`) is answered when a person submits or closes " +
 		"the card; a lead's question (`fleet ask-thread`) when the thread agent sends that lead a " +
 		"message or the card asked for it is answered. A question fleet posted as text (a watch " +
-		"worker's, a screen's) is answered when the next message a person posts in its thread " +
-		"arrives, which marks every such question pending there answered: the wait runs to that " +
+		"worker's, a screen's), and a lead's whose job ended with no card asking for it, is " +
+		"answered when the next message a person posts in its thread arrives, which marks every " +
+		"such question pending there answered: the wait runs to that " +
 		"message, which is not necessarily the answer to the question.\n\n" +
 		"Exit: 0; 1 when the scope is not a scope name; 5 when the database fails or the ledger does " +
 		"not exist."

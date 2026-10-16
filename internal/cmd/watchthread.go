@@ -43,7 +43,7 @@ const (
 // is a screen question, whose agent went with the job. A card is
 // reminded of with its link; snoozeUntil is when a snoozed card
 // came or comes back (0 for none), from which its reminders and its
-// timeout count; forwarded is a lead's question a pending card of the
+// timeout count, for a lead's question that of the card asked for it; forwarded is a lead's question a pending card of the
 // thread agent's asks the people for.
 type question struct {
 	id                       int64
@@ -185,7 +185,7 @@ func readThreads(conn *sql.DB, cfg *config.Scope, inHerdr map[string]InHerdr, li
 // the open job of its name only when asked after that job started.
 func readQuestions(conn *sql.DB, get func(string) *watchedThread) error {
 	return eachRow(conn, "SELECT id, job, thread, asked_by, text, asked_at, reminders, card, permalink, "+
-		"COALESCE(snooze_until, 0), EXISTS (SELECT 1 FROM questions c WHERE c.for_question = q.id AND c.state = 'pending'), "+
+		"COALESCE(snooze_until, (SELECT max(c.snooze_until) FROM questions c WHERE c.for_question = q.id AND c.state = 'pending'), 0), EXISTS (SELECT 1 FROM questions c WHERE c.for_question = q.id AND c.state = 'pending'), "+
 		"job != '' AND NOT EXISTS "+
 		"(SELECT 1 FROM jobs j WHERE j.job = q.job AND j.state = 'open' AND j.started_at <= q.asked_at), "+
 		"EXISTS (SELECT 1 FROM jobs j WHERE j.job = q.job AND j.state = 'ended' AND j.reclaim_at IS NOT NULL "+
@@ -385,7 +385,7 @@ func (r *watchRun) expire(t *watchedThread) error {
 // leadQuestion runs the lead-question rule on one job.
 func (r *watchRun) leadQuestion(t *watchedThread, j *watchedJob, all []watched) error {
 	i := slices.IndexFunc(t.questions, func(q question) bool { return q.job == j.job && !q.moved && !q.byHelper() })
-	expired := i >= 0 && r.now-t.questions[i].askedAt >= secs(j.limits.LeadQuestion)
+	expired := i >= 0 && !t.questions[i].snoozed(r.now) && r.now-t.questions[i].since() >= secs(j.limits.LeadQuestion)
 	switch {
 	case !expired && j.reclaimAt.Valid:
 		// The question was answered after the lead was told.
@@ -460,7 +460,8 @@ func (r *watchRun) tellMoved(t *watchedThread) error {
 	var text strings.Builder
 	fmt.Fprintf(&text, "fleet watch, rule `questions of an ended job`: %d question(s) a lead asked in thread %s are still "+
 		"pending, but the job is no longer open. They are this thread's questions now: fleet has shown them to nobody "+
-		"but you, and a person's next message in the thread answers them. `fleet thread end` waits for them "+
+		"but you, and a person's next message in the thread answers them (one a card of yours asks the people "+
+		"for is answered by a press on that card). `fleet thread end` waits for them "+
 		"as for your own; one still pending %s after it was asked is closed, and your session is not reclaimed for "+
 		"it. %s; at the least, with the job gone, acting on the answer is yours.\n",
 		len(moved), t.key, Duration(secs(r.cfg.Watch.ThreadQuestion)), seePrompt)
