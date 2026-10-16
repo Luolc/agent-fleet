@@ -203,16 +203,15 @@ A lower-ranking provision or a principal may depart from a higher-ranking provis
 
 - R282 When a guard blocks you and no reviewed route is open to you, tell whoever delegated the work, an agent or a person, what blocks you, and ask for a way forward.
 - R22 To confirm that a credential is in place, test only whether it is present, and its length where that helps, and report only that status.
-- R23 To confirm that a credential works, have the program that uses it make one minimal read-only call, and report only the outcome.
 - R36 Never ask for, read or repeat a credential's value.
-- R37 When a credential shows up where it should not, treat it as leaked and report it at once.
+- R37 When a credential shows up where it should not, stop using it, never quote, copy or try it, and at once tell a principal responsible for it which credential it is, where it appeared and that it needs rotating, without its value.
 - R43 Store a credential only where the jurisdiction designates for it.
-- R44 Keep a credential out of every message, log, command line and other output.
-- R45 Never pass a credential from one agent to another, by any channel.
 - R50 Have a repository's commit hooks scan the staged changes for credentials at every commit.
-- R279 Let a credential's value reach a program only through an environment variable or a file.
-- R52 Before you push to a public repository, have a reviewer read the diff, the commit messages and the pull request text for private material, and push only the head that reviewer passed.
+- R291 Keep a credential out of every message, log, command line and other output, and never pass one from one agent to another, by any channel.
+- R292 To confirm that a credential works, have the program that uses it make one minimal read-only call, and report only the outcome.
+- R295 Let a credential's value reach a program only through an environment variable, a file or a way the secret manager itself provides of injecting it into the program.
 - R259 In a public repository's files, commit messages, pull requests, comments and reviews, write nothing that identifies or locates a private resource, a private repository, an agent instance or session, or the scope it runs in, and nothing about an agent's usage, quota, model or effort.
+- R52 Before you push to a public repository, have a reviewer read the diff, the commit messages and the pull request text for private material, and push only the head that reviewer passed.
 - R66 Give every loop that waits for something an exit for when what it waits for is gone.
 - R73 Before you start a background process that keeps holding resources, record what stops it if you are closed before you stop it yourself.
 - R199 Before starting a task, read the writing guide that the rules in force name, together with the parts it names for the language you will write in, and write all text that people read by it.
@@ -265,6 +264,9 @@ A lower-ranking provision or a principal may depart from a higher-ranking provis
 - R233 Put `review` in a rule's `uses` only when a reviewer can decide from the diff and the pull request description alone whether the rule was broken, and `instructions` only when an agent needs to know the rule while it works.
 - R239 Write a rule's statement so that it can be read and followed on its own, as one line of the compiled instructions, resting on nothing that line does not show, such as the rule's title, reason or verification, its domain, its place in the tree or its `requires`. Name another rule in it only by a citation, never by its position, as in "the rule above" or "the other options".
 - R289 Move a trial rule to `active` only once a principal has said explicitly that it may move.
+- R290 Make what a rule requires, and the condition under which it applies, rest only on checks, counts, records and other mechanisms that already run, never on one that is still to be built.
+- R293 When a rule tells an agent to stop, pause, wait or not start some work, say in its statement what the agent does to move the work on: a route it takes itself, or what it asks of whom.
+- R298 Write the English title of a domain in the title case of The Chicago Manual of Style, keeping each product name in the form its owner writes it.
 - R42 To change instructions, skills or agent tool settings, change their source through review, never an installed copy.
 - R157 Install a project's skills only inside the project, never into a user-level skills directory.
 - R158 Do not install a skill from outside; distill its good practices into a skill of your own.
@@ -279,24 +281,24 @@ A lower-ranking provision or a principal may depart from a higher-ranking provis
 - R38 When you relay a principal's yes to another agent, send with it a reference by which that agent can find the original message.
 - R39 Before you act on a relayed yes, open the principal's original message yourself and check its sender, its content and that it still stands.
 - R40 When you act on a relayed yes, record its reference and the result of each check in the record the action leaves.
-- R28 Where work is divided among agents the way fleet does, as a worker, stay within your task and ask the agent responsible for your job.
-- R115 Where work is divided among agents the way fleet does, as the agent responsible for a job, ask principals only through the agent talking with them, or by posting the question into the conversation they hold with that agent.
-- R164 Where work is divided among agents the way fleet does, let only one task at a time change a repository's dependency lock file.
-- R165 Where work is divided among agents the way fleet does, treat the main checkout the agents share as read-only and switch no branch in it, and do work that needs a checkout or runs tests in a worktree of your own.
-- R167 Where work is divided among agents the way fleet does, press keys in another agent's terminal only as the agent responsible for a job, and only to clear a menu that blocks a worker of that job.
-- R170 Where work is divided among agents the way fleet does, as a research worker, change no repository.
-- R171 Where work is divided among agents the way fleet does, as a worker, give in your report what you did, its effect, why the task is done or abandoned, its metrics, the pull request number, the approved SHA, the merge commit, the checks run and the attempt number of the CI run, and for each follow-up left who takes it and when.
-- R227 Where work is divided among agents the way fleet does, as the agent responsible for a job, give a research worker no reviewer.
+- R28 Where work is divided among agents the way Agent Fleet does, as a worker, stay within your task and ask the agent responsible for your job.
+- R115 Where work is divided among agents the way Agent Fleet does, as the agent responsible for a job, ask principals only through the agent talking with them, or by posting the question into the conversation they hold with that agent.
+- R164 Where work is divided among agents the way Agent Fleet does, let only one task at a time change a repository's dependency lock file.
+- R165 Where work is divided among agents the way Agent Fleet does, treat the main checkout the agents share as read-only and switch no branch in it, and do work that needs a checkout or runs tests in a worktree of your own.
+- R167 Where work is divided among agents the way Agent Fleet does, press keys in another agent's terminal only as the agent responsible for a job, and only to clear a menu that blocks a worker of that job.
+- R170 Where work is divided among agents the way Agent Fleet does, as a research worker, change no repository.
+- R171 Where work is divided among agents the way Agent Fleet does, as a worker, give in your report what you did, its effect, why the task is done or abandoned, its metrics, the pull request number, the approved SHA, the merge commit, the checks run and the attempt number of the CI run, and for each follow-up left who takes it and when.
+- R227 Where work is divided among agents the way Agent Fleet does, as the agent responsible for a job, give a research worker no reviewer.
 - L18 As a worker here, give in your report the `judge: N ok, M failed` line of each judge shard of the CI run on your pull request, or say that CI skipped the judge.
-- R162 Do cross-repository work in the working directory of its fleet job, inside the checkout of the initiative's repository in the scope's initiatives directory.
+- R162 Do cross-repository work in the working directory of its Agent Fleet job, inside the checkout of the initiative's repository in the scope's initiatives directory.
 - R163 As a worker that `fleet watch` started, do what the prompt of your watch says, and never run `fleet done`.
-- R166 As a lead that fleet started, when a review is still unapproved after three rounds or its author and reviewer disagree about a P0 finding, put the matter to a principal with `fleet ask-human`; give another round yourself instead only when the remaining finding is the same as in the round before, smaller than it was, and undisputed.
-- R168 As the worker of fleet's `unblock` watch, press keys only on the screen of the blocked agent your task names and only as the task's screen guidance says, and press none on a screen about usage or rate limits, switching models, resetting usage or buying.
-- R169 When you start an agent with fleet, pick its model and effort, and give a reason in the task file whenever you pass a model or effort the scope's `models` setting does not give, or an effort above the default effort the rules set.
-- R172 As a worker that fleet started, never claim or release your own work order yourself.
+- R166 As a lead that Agent Fleet started, when a review is still unapproved after three rounds or its author and reviewer disagree about a P0 finding, put the matter to a principal with `fleet ask-human`; give another round yourself instead only when the remaining finding is the same as in the round before, smaller than it was, and undisputed.
+- R168 As the worker of Agent Fleet's `unblock` watch, press keys only on the screen of the blocked agent your task names and only as the task's screen guidance says, and press none on a screen about usage or rate limits, switching models, resetting usage or buying.
+- R169 When you start an agent with Agent Fleet, pick its model and effort, and give a reason in the task file whenever you pass a model or effort the scope's `models` setting does not give, or an effort above the default effort the rules set.
+- R172 As a worker that Agent Fleet started, never claim or release your own work order yourself.
 - R173 Write the charter of a cross-repository joint project in the `AGENTS.md` of its initiative's repository.
 - R174 Name a Slack channel for one repository with the scope's repository prefix followed by the repository's name, and one for a cross-repository joint project with the scope's initiative prefix followed by the initiative's name.
-- R228 As a worker that fleet started, judge the outcome of your attempt yourself and hand it in with `fleet done`, or `fleet done --abandon` when you stop short of the goal, and not while your pull request still waits for a review or a merge.
+- R228 As a worker that Agent Fleet started, judge the outcome of your attempt yourself and hand it in with `fleet done`, or `fleet done --abandon` when you stop short of the goal, and not while your pull request still waits for a review or a merge.
 - R229 Put the cross-repository issues of a joint project in its initiative's project in the issue tracker.
 - L17 Open your worktree with `fleet worktree agent-fleet --branch <type>/<short-desc>`, or work in the one your lead names, and check out a pull request's head for review with `fleet worktree agent-fleet --name <name> --detach <head-sha>`; never run `git worktree add`.
 - L19 Before starting a job in this repository, look at `fleet job list` and the open issues for work already under way, and when unsure whether it is, ask through the route your role gives.
