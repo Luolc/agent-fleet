@@ -591,40 +591,18 @@ func askedIn(conn *sql.DB, me *identity.Identity) (thread, job string, row *jobR
 
 // openHomeThread opens a thread for the questions of a single-repo job
 // without a home thread, in its repo's channel, or the general
-// initiative's when fleet knows no id of the repo's, and records it as
-// the job's home thread and as a thread of that channel, so its agent
-// starts in that channel's directory, and the next lookup finds the
-// channel in the ledger. A channel's id is the one of the newest thread
-// this scope has seen there, or else the one fednet's routes give the
-// channel's name; direct messages, which have the general mapping too,
-// are left out: their Slack ids start with D, and no thread opens there.
-// Routes fednet cannot give count as naming no channel, with a line on
-// stderr. The thread opens with a line of fleet's, since fednet opens no
-// thread without a message; the question is the thread agent's to ask.
-// Until the thread is recorded nothing of the question is.
+// initiative's when fleet knows no id of the repo's (channelOf), and
+// records it as the job's home thread and as a thread of that channel, so
+// its agent starts in that channel's directory, and the next lookup finds
+// the channel in the ledger. The thread opens with a line of fleet's,
+// since fednet opens no thread without a message; the question is the
+// thread agent's to ask. Until the thread is recorded nothing of the
+// question is.
 func openHomeThread(conn *sql.DB, cfg *config.Scope, row *jobRow) (string, error) {
 	tried := []string{jobMapping(cfg, row.Repo, row.LeadCwd), generalMapping(cfg.Channels)}
-	var routes map[string]string
-	var mapping, channel string
-	for i, m := range tried {
-		mapping = m
-		err := conn.QueryRow("SELECT channel FROM threads WHERE mapping = ?1 AND channel != '' AND channel NOT LIKE 'D%' "+
-			"ORDER BY id DESC LIMIT 1",
-			mapping).Scan(&channel)
-		if err == nil {
-			break
-		}
-		if !errors.Is(err, sql.ErrNoRows) {
-			return "", exit.Database(err)
-		}
-		if i == 0 {
-			if routes, err = fednet.Channels(cfg.FednetSocket); err != nil {
-				fmt.Fprintf(os.Stderr, "fleet: %v; channel ids are taken from the ledger only\n", err)
-			}
-		}
-		if channel = routes[mapping]; channel != "" {
-			break
-		}
+	mapping, channel, err := channelOf(conn, cfg, tried...)
+	if err != nil {
+		return "", err
 	}
 	if channel == "" {
 		return "", exit.Refusedf("job %s has no home thread, and fleet cannot open one: no thread of #%s or #%s has "+
@@ -642,15 +620,56 @@ func openHomeThread(conn *sql.DB, cfg *config.Scope, row *jobRow) (string, error
 		return "", err
 	}
 	return thread, reserve(conn, func(querier) error { return nil }, func(q querier) error {
-		if _, err := q.Exec("INSERT INTO threads (thread, slug, channel, mapping, cwd, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-			thread, ThreadSlug(thread), channel, mapping, MappingDir(cfg, mapping), db.Now()); err != nil {
-			return exit.Database(err)
+		if err := insertThread(q, cfg, thread, channel, mapping); err != nil {
+			return err
 		}
 		if _, err := q.Exec("UPDATE jobs SET home_thread = ?1 WHERE job = ?2 AND state = 'open'", thread, row.Job); err != nil {
 			return exit.Database(err)
 		}
 		return nil
 	})
+}
+
+// channelOf is the first of `mappings` whose channel id fleet knows, with
+// that id, or "" for both when it knows none. A channel's id is the one of
+// the newest thread this scope has seen there, or else the one fednet's
+// routes give the channel's name, read at most once; direct messages,
+// which have the general mapping too, are left out: their Slack ids start
+// with D, and no thread opens there. Routes fednet cannot give count as
+// naming no channel, with a line on stderr.
+func channelOf(conn *sql.DB, cfg *config.Scope, mappings ...string) (mapping, channel string, err error) {
+	var routes map[string]string
+	read := false
+	for _, mapping := range mappings {
+		err := conn.QueryRow("SELECT channel FROM threads WHERE mapping = ?1 AND channel != '' AND channel NOT LIKE 'D%' "+
+			"ORDER BY id DESC LIMIT 1", mapping).Scan(&channel)
+		if err == nil {
+			return mapping, channel, nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return "", "", exit.Database(err)
+		}
+		if !read {
+			read = true
+			if routes, err = fednet.Channels(cfg.FednetSocket); err != nil {
+				fmt.Fprintf(os.Stderr, "fleet: %v; channel ids are taken from the ledger only\n", err)
+			}
+		}
+		if channel = routes[mapping]; channel != "" {
+			return mapping, channel, nil
+		}
+	}
+	return "", "", nil
+}
+
+// insertThread records a thread fleet opened in `channel`, as a thread of
+// `mapping`, so its agent starts in that mapping's directory.
+func insertThread(q querier, cfg *config.Scope, thread, channel, mapping string) error {
+	if _, err := q.Exec("INSERT INTO threads (thread, slug, channel, mapping, cwd, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+		thread, ThreadSlug(thread), channel, mapping, MappingDir(cfg, mapping), db.Now()); err != nil {
+		return exit.Database(err)
+	}
+	return nil
 }
 
 // pendingQuestion is the id of the pending question with this text from

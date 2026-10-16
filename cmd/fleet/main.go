@@ -102,6 +102,7 @@ Commands:
   end          ` + cmd.ThreadEndAbout + `
   set-project  ` + cmd.ThreadSetProjectAbout + `
   relate       ` + cmd.ThreadRelateAbout + `
+  handoff      ` + cmd.ThreadHandoffAbout + `
 
 Options:
   -h, --help  Print help
@@ -162,6 +163,18 @@ Arguments:
 
 Options:
   -h, --help  Print help
+`
+
+const threadHandoffUsage = "Usage: fleet thread handoff [OPTIONS] (--repo <REPO> | --initiative <INITIATIVE>) --file <PATH>"
+
+var threadHandoffHelp = cmd.ThreadHandoffLongAbout + "\n\n" + threadHandoffUsage + `
+
+Options:
+      --repo <REPO>              The repo whose channel takes the work: <repo prefix><REPO>
+      --initiative <INITIATIVE>  The initiative whose channel takes the work: <initiative prefix><INITIATIVE>
+      --file <PATH>              The task: what to do and why, the people's words with their thread key and ts
+      --scope <NAME>             ` + scopeHelp + `
+  -h, --help                     Print help
 `
 
 const askHumanUsage = "Usage: fleet ask-human [OPTIONS] (--card <PATH> [--for <ID>] | --close <ID> [--note <TEXT>])"
@@ -618,7 +631,7 @@ func runInbox(args []string, scope *cliargs.OptString) (exit.Code, error) {
 }
 
 var threadHelps = map[string]string{"post": threadPostHelp, "progress": threadProgressHelp, "end": threadEndHelp,
-	"set-project": threadSetProjectHelp, "relate": threadRelateHelp}
+	"set-project": threadSetProjectHelp, "relate": threadRelateHelp, "handoff": threadHandoffHelp}
 
 // runThread dispatches `fleet thread <COMMAND>`.
 func runThread(args []string, scope *cliargs.OptString) (exit.Code, error) {
@@ -670,9 +683,33 @@ func runThread(args []string, scope *cliargs.OptString) (exit.Code, error) {
 			return 0, err
 		}
 		return cmd.ThreadRelate(got[0])
+	case "handoff":
+		return runThreadHandoff(args[1:], scope)
 	default:
 		return 0, &usageError{fmt.Sprintf("unrecognized subcommand '%s'", args[0]), threadUsage}
 	}
+}
+
+func runThreadHandoff(args []string, scope *cliargs.OptString) (exit.Code, error) {
+	fs := flagSet("thread handoff", scope)
+	repo := cliargs.OptString{Name: "repo", Placeholder: "REPO"}
+	initiative := cliargs.OptString{Name: "initiative", Placeholder: "INITIATIVE"}
+	file := cliargs.OptString{Name: "file", Placeholder: "PATH"}
+	fs.Var(&repo, "repo", "The repo whose channel takes the work")
+	fs.Var(&initiative, "initiative", "The initiative whose channel takes the work")
+	fs.Var(&file, "file", "The task")
+	_, helped, err := parse(fs, args, threadHandoffHelp, threadHandoffUsage, nil, &file)
+	if err != nil || helped {
+		return exit.Ok, err
+	}
+	if repo.Given == initiative.Given {
+		return 0, &usageError{"exactly one of --repo <REPO> and --initiative <INITIATIVE> is required", threadHandoffUsage}
+	}
+	h, err := scoped(scope)
+	if err != nil {
+		return 0, err
+	}
+	return cmd.ThreadHandoff(h, cmd.ThreadHandoffArgs{Repo: repo.Value, Initiative: initiative.Value, File: file.Value})
 }
 
 func runThreadPost(args []string, scope *cliargs.OptString) (exit.Code, error) {

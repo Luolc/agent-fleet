@@ -32,7 +32,7 @@ import (
 // ThreadAbout, ThreadEndAbout and the others are the help texts of
 // `thread` and its subcommands.
 const (
-	ThreadAbout         = "What a thread agent does to its own thread: post to it, show its progress, end the session, set the ticket's project, relate an issue"
+	ThreadAbout         = "What a thread agent does to its own thread: post to it, show its progress, end the session, set the ticket's project, relate an issue, hand work off"
 	ThreadPostAbout     = "Post to your thread in Slack (thread agents only)"
 	ThreadPostLongAbout = "Post to your thread in Slack (thread agents only).\n\n" +
 		"The text is read from --body-file and posted with `fednet client post` to the " +
@@ -281,9 +281,10 @@ func tempFile(content string) (string, func(), error) {
 }
 
 // inboundMessage is what a thread agent is given: a message from a
-// person, as `fleet inbox` got it, a press on a card (`Answer` set), or
+// person, as `fleet inbox` got it, a press on a card (`Answer` set),
 // (`Question` set) a question from an agent for the people in the
-// thread, from `fleet ask-thread` or the job's conclusion.
+// thread, from `fleet ask-thread` or the job's conclusion, or (`Handoff`
+// set) work another thread's agent handed to this thread.
 type inboundMessage struct {
 	Thread, Text, User, TS, Context string
 	// Mapping is the thread's mapping as the message gives it (empty for
@@ -306,6 +307,9 @@ type inboundMessage struct {
 	// screen, Worker one a watch worker asks: there is no agent to pass the
 	// answer to.
 	Screen, Worker bool
+	// Handoff is the thread work was handed off from, By the thread agent
+	// that handed it off, Text its task.
+	Handoff, By string
 }
 
 // channel is the channel part of the thread key `CHANNEL/TS`.
@@ -317,13 +321,16 @@ func (m inboundMessage) channel() string {
 // fromFleet is whether the message came from an agent or from watch, not
 // from a person in the thread.
 func (m inboundMessage) fromFleet() bool {
-	return m.Question != "" || m.Watch || m.Answer
+	return m.Question != "" || m.Watch || m.Answer || m.Handoff != ""
 }
 
 // sender is the header name the message is delivered under.
 func (m inboundMessage) sender() string {
 	if m.Watch {
 		return watchSender
+	}
+	if m.Handoff != "" {
+		return m.By
 	}
 	if m.Question != "" {
 		return m.Question
@@ -354,6 +361,12 @@ func (m inboundMessage) body() string {
 			"its outcome: answered (the choice and the note), snoozed (it comes back at snooze_until), closed (no need to "+
 			"answer: drop it or ask another way), resurfaced (back in front of the people: wait).\n\n%s\n",
 			m.QuestionID, m.QuestionID, m.Thread, seePrompt, m.Text)
+	}
+	if m.Handoff != "" {
+		return fmt.Sprintf("[HANDOFF from %s in thread %s]\nWork %s handed off to this thread, %s; the task below is "+
+			"that agent's, not a person's words, and carries none of the yeses given there. %s; at the least, post one "+
+			"line here saying you have it, then act on it as on a request made here.\n\n%s\n",
+			m.By, m.Handoff, m.By, m.Thread, seePrompt, m.Text)
 	}
 	if m.Conclusion {
 		return fmt.Sprintf("Conclusion of a job from %s for the people in thread %s. %s; at the least, post it to "+
@@ -387,6 +400,9 @@ func (m inboundMessage) trigger() string {
 	}
 	if m.Conclusion {
 		return "the conclusion of a job from " + m.Question
+	}
+	if m.Handoff != "" {
+		return fmt.Sprintf("a handoff from %s in thread %s", m.By, m.Handoff)
 	}
 	if m.Answer {
 		return fmt.Sprintf("a press on the card of question #%d", m.QuestionID)
