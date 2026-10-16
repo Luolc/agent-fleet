@@ -277,11 +277,16 @@ func (w *workers) questionFile(name string) string {
 	return filepath.Join(w.dir, name+"-question.md")
 }
 
+// unposted is the SQL condition of a card fleet's watch asked whose post
+// failed (no card_id yet): with no card for a person to press, nothing
+// waits on it and no reminder lists it until it is posted.
+const unposted = "(card = 1 AND card_id = '' AND (asked_by = '" + watchSender + "' OR asked_by LIKE '" + workerPrefix + "%'))"
+
 // pendingFrom is whether a question from one of `askers` waits for the
-// people, a card only once it is posted; answeredAt is when the latest of
-// them was answered (0: none).
+// people, an unposted card not; answeredAt is when the latest of them was
+// answered (0: none).
 func pendingFrom(conn *sql.DB, askers []string) (pending bool, answeredAt int64, err error) {
-	query := "SELECT CASE WHEN card = 1 AND card_id = '' AND state = 'pending' THEN 'unposted' ELSE state END, " +
+	query := "SELECT CASE WHEN " + unposted + " THEN 'unposted' ELSE state END, " +
 		"COALESCE(answered_at, 0) FROM questions WHERE asked_by IN (?" +
 		strings.Repeat(", ?", len(askers)-1) + ")"
 	err = eachRow(conn, query, func(rows *sql.Rows) error {

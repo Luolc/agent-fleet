@@ -174,6 +174,7 @@ func (w *workers) unblock() error {
 	if err != nil {
 		return err
 	}
+	still := map[string]bool{}
 	for _, row := range rows {
 		if row.startedByWatch() {
 			continue
@@ -181,23 +182,65 @@ func (w *workers) unblock() error {
 		if w.outOfTime() {
 			return nil
 		}
-		screen, stopped, err := w.stopped(row)
-		if err == nil && stopped {
-			names := screenWorkers(row.ID)
-			if w.busy[names[0]] || w.busy[names[1]] {
-				fmt.Fprintf(os.Stdout, "unblock: %s is stopped at a screen; %s is on it\n", row.Name, names[0])
-				continue
-			}
-			err = w.handle(e, due, row, screen)
+		if w.unblockRow(e, due, row) {
+			still[screenWorkers(row.ID)[0]] = true
 		}
-		if err != nil {
-			w.failed(fmt.Errorf("unblock %s: %w", row.Name, err))
-		}
+	}
+	if err := w.dropUnposted(still); err != nil {
+		return err
 	}
 	if !due {
 		return nil
 	}
 	return w.ran(e)
+}
+
+// unblockRow looks at one live agent, handling its screen when it is
+// stopped at one and has no live worker; true when it is stopped, or
+// cannot be told not to be.
+func (w *workers) unblockRow(e config.Entry, due bool, row stopRow) bool {
+	screen, stopped, err := w.stopped(row)
+	if err == nil && stopped {
+		names := screenWorkers(row.ID)
+		if w.busy[names[0]] || w.busy[names[1]] {
+			fmt.Fprintf(os.Stdout, "unblock: %s is stopped at a screen; %s is on it\n", row.Name, names[0])
+			return true
+		}
+		err = w.handle(e, due, row, screen)
+	}
+	if err != nil {
+		w.failed(fmt.Errorf("unblock %s: %w", row.Name, err))
+	}
+	return err != nil || stopped
+}
+
+// dropUnposted closes the screen questions whose card was never posted
+// when their agent is no longer stopped at a screen (`still` has the
+// names they are asked under for the agents that are), or its row has
+// ended: there is no screen left to ask about.
+func (w *workers) dropUnposted(still map[string]bool) error {
+	var ids []any
+	err := eachRow(w.conn, "SELECT id, asked_by FROM questions WHERE state = 'pending' AND asked_by LIKE ?1 AND "+
+		unposted, func(rows *sql.Rows) error {
+		var id int64
+		var by string
+		if err := rows.Scan(&id, &by); err != nil {
+			return err
+		}
+		if !still[by] {
+			ids = append(ids, id)
+		}
+		return nil
+	}, workerPrefix+screenWatch+"-%")
+	if err != nil || len(ids) == 0 {
+		return err
+	}
+	if _, err := w.conn.Exec("UPDATE questions SET state = 'closed' WHERE id IN (?"+strings.Repeat(", ?", len(ids)-1)+")",
+		ids...); err != nil {
+		return exit.Database(err)
+	}
+	fmt.Fprintf(os.Stdout, "unblock: closed %d unposted screen question(s): their agent is no longer stopped\n", len(ids))
+	return nil
 }
 
 // stopped is the screen of `row` when its agent is stopped at one.

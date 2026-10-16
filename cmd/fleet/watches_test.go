@@ -409,3 +409,42 @@ func TestAWatchWorkersCardFednetRefusesClosesTheWorker(t *testing.T) {
 		t.Errorf("question file left: %v", err)
 	}
 }
+
+// A screen card whose post failed is nothing anyone waits on: no reminder
+// lists it and `thread end` is not refused for it; once its agent is no
+// longer stopped, it is closed and never posted.
+func TestAnUnpostedScreenCardIsNotWaitedOnAndGoesWithItsScreen(t *testing.T) {
+	w := watchThreadWorld(t)
+	w.exec("INSERT INTO threads (thread, slug, created_at) VALUES ('C1/1.0', 'c1-1-0', 0)",
+		"INSERT INTO agents (name, role, thread, pane_id, state, started_at) VALUES ('thread-c1', 'thread', 'C1/1.0', 'p1', 'active', 0)")
+	w.herdrList("thread-c1 blocked 1")
+	w.screen("thread-c1", "⏺ fake reply\n"+rule+"\n You have hit your usage limit · resets 3pm (UTC)\n\n ❯ 1. Stop and wait "+
+		"for limit to reset\n   2. Request extra usage\n")
+	w.lastMessage("C1/1.0", t0+3600)
+	w.file("ask-exit", "5")
+	w.watchAt(time.Minute, 5)
+	w.watchAt(time.Hour, 5)
+	if got := w.query("SELECT count(*) || ' ' || state || ' ' || card_id FROM questions"); got != "1 pending " {
+		t.Errorf("questions %q", got)
+	}
+	if got := w.log("fednet.log"); strings.Count(got, "client ask ") != 2 || strings.Contains(got, "Reminder") {
+		t.Errorf("fednet: %s", got)
+	}
+	summary := filepath.Join(w.dir, "summary.md")
+	w.file("summary.md", "Nothing open.\n")
+	out := w.run("", []string{"thread", "end", "--summary-file", summary}, "FLEET_AGENT=thread-c1", "FLEET_ROLE=thread",
+		"FLEET_SCOPE="+scope, "FLEET_THREAD=C1/1.0")
+	if strings.Contains(out.stderr, "still waits") {
+		t.Errorf("thread end refused: %+v", out)
+	}
+
+	w.file("ask-exit", "")
+	w.herdrList()
+	out = w.watchAt(2*time.Hour, 0)
+	if got := w.query("SELECT state || ' ' || card_id FROM questions"); got != "closed " {
+		t.Errorf("question %q: %+v", got, out)
+	}
+	if got := strings.Count(w.log("fednet.log"), "client ask "); got != 2 {
+		t.Errorf("%d asks", got)
+	}
+}

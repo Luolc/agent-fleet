@@ -1146,12 +1146,12 @@ func newThreadEnding(conn *sql.DB, agent string, force bool) (*threadEnding, err
 }
 
 // stillWaiting refuses an ending while the thread waits: a question in
-// it is pending (the thread agent's own or a lead's), or a job whose home
-// thread it is is open. The answer and the lead's messages reach the
+// it is pending (the thread agent's own, a lead's, or a posted card of
+// watch's), or a job whose home thread it is is open. The answer and the lead's messages reach the
 // session that is live, so ending it only makes the next one start cold.
 func stillWaiting(conn *sql.DB, thread string) error {
 	rows, err := conn.Query("SELECT 0, id, 'question from ' || asked_by || ', pending: ', text FROM questions "+
-		"WHERE thread = ?1 AND state = 'pending' "+
+		"WHERE thread = ?1 AND state = 'pending' AND NOT "+unposted+" "+
 		"UNION ALL SELECT 1, id, 'job ' || job || ', open, reporting to this thread', '' FROM jobs "+
 		"WHERE home_thread = ?1 AND state = 'open' ORDER BY 1, 2", thread)
 	if err != nil {
