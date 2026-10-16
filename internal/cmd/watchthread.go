@@ -180,7 +180,8 @@ func readThreads(conn *sql.DB, cfg *config.Scope, inHerdr map[string]InHerdr, li
 	return threads, true, nil
 }
 
-// readQuestions adds each pending question to its thread, oldest first.
+// readQuestions adds each pending question to its thread, oldest first,
+// but a card of watch's not posted yet.
 // A job's name is unique only among open jobs, so a question belongs to
 // the open job of its name only when asked after that job started.
 func readQuestions(conn *sql.DB, get func(string) *watchedThread) error {
@@ -190,7 +191,7 @@ func readQuestions(conn *sql.DB, get func(string) *watchedThread) error {
 		"(SELECT 1 FROM jobs j WHERE j.job = q.job AND j.state = 'open' AND j.started_at <= q.asked_at), "+
 		"EXISTS (SELECT 1 FROM jobs j WHERE j.job = q.job AND j.state = 'ended' AND j.reclaim_at IS NOT NULL "+
 		"AND j.started_at <= q.asked_at AND j.ended_at >= q.asked_at) "+
-		"FROM questions q WHERE state = 'pending' ORDER BY asked_at, id",
+		"FROM questions q WHERE state = 'pending' AND NOT "+unposted+" ORDER BY asked_at, id",
 		func(rows *sql.Rows) error {
 			var q question
 			var key string

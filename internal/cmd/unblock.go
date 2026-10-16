@@ -15,10 +15,10 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Luolc/agent-fleet/internal/atb"
 	"github.com/Luolc/agent-fleet/internal/config"
-	"github.com/Luolc/agent-fleet/internal/db"
 	"github.com/Luolc/agent-fleet/internal/exit"
 	"github.com/Luolc/agent-fleet/internal/fednet"
 	"github.com/Luolc/agent-fleet/internal/identity"
@@ -174,6 +174,7 @@ func (w *workers) unblock() error {
 	if err != nil {
 		return err
 	}
+	still := map[string]bool{}
 	for _, row := range rows {
 		if row.startedByWatch() {
 			continue
@@ -181,23 +182,65 @@ func (w *workers) unblock() error {
 		if w.outOfTime() {
 			return nil
 		}
-		screen, stopped, err := w.stopped(row)
-		if err == nil && stopped {
-			names := screenWorkers(row.ID)
-			if w.busy[names[0]] || w.busy[names[1]] {
-				fmt.Fprintf(os.Stdout, "unblock: %s is stopped at a screen; %s is on it\n", row.Name, names[0])
-				continue
-			}
-			err = w.handle(e, due, row, screen)
+		if w.unblockRow(e, due, row) {
+			still[screenWorkers(row.ID)[0]] = true
 		}
-		if err != nil {
-			w.failed(fmt.Errorf("unblock %s: %w", row.Name, err))
-		}
+	}
+	if err := w.dropUnposted(still); err != nil {
+		return err
 	}
 	if !due {
 		return nil
 	}
 	return w.ran(e)
+}
+
+// unblockRow looks at one live agent, handling its screen when it is
+// stopped at one and has no live worker; true when it is stopped, or
+// cannot be told not to be.
+func (w *workers) unblockRow(e config.Entry, due bool, row stopRow) bool {
+	screen, stopped, err := w.stopped(row)
+	if err == nil && stopped {
+		names := screenWorkers(row.ID)
+		if w.busy[names[0]] || w.busy[names[1]] {
+			fmt.Fprintf(os.Stdout, "unblock: %s is stopped at a screen; %s is on it\n", row.Name, names[0])
+			return true
+		}
+		err = w.handle(e, due, row, screen)
+	}
+	if err != nil {
+		w.failed(fmt.Errorf("unblock %s: %w", row.Name, err))
+	}
+	return err != nil || stopped
+}
+
+// dropUnposted closes the screen questions whose card was never posted
+// when their agent is no longer stopped at a screen (`still` has the
+// names they are asked under for the agents that are), or its row has
+// ended: there is no screen left to ask about.
+func (w *workers) dropUnposted(still map[string]bool) error {
+	var ids []any
+	err := eachRow(w.conn, "SELECT id, asked_by FROM questions WHERE state = 'pending' AND asked_by LIKE ?1 AND "+
+		unposted, func(rows *sql.Rows) error {
+		var id int64
+		var by string
+		if err := rows.Scan(&id, &by); err != nil {
+			return err
+		}
+		if !still[by] {
+			ids = append(ids, id)
+		}
+		return nil
+	}, workerPrefix+screenWatch+"-%")
+	if err != nil || len(ids) == 0 {
+		return err
+	}
+	if _, err := w.conn.Exec("UPDATE questions SET state = 'closed' WHERE id IN (?"+strings.Repeat(", ?", len(ids)-1)+")",
+		ids...); err != nil {
+		return exit.Database(err)
+	}
+	fmt.Fprintf(os.Stdout, "unblock: closed %d unposted screen question(s): their agent is no longer stopped\n", len(ids))
+	return nil
 }
 
 // stopped is the screen of `row` when its agent is stopped at one.
@@ -236,7 +279,6 @@ func (u *workers) handle(e config.Entry, due bool, row stopRow, screen string) e
 		fmt.Fprintf(os.Stdout, "unblock: %s is stopped at a screen; the people were asked and have not answered\n", row.Name)
 		return nil
 	}
-	shown := "\n\nThe screen:\n\n" + fenced(tail(screen, 15))
 	switch classifyScreen(screen, row.Cwd) {
 	case ownTrustScreen:
 		// A failure is the next run's to look at again, on the screen the
@@ -250,9 +292,13 @@ func (u *workers) handle(e config.Entry, due bool, row stopRow, screen string) e
 		}
 		return nil
 	case handsOffScreen:
-		return u.askOnce(row, "ask-hands-off", fmt.Sprintf("%s (%s) is stopped at a screen fleet never answers: a usage "+
-			"limit, a model switch, a usage reset or a purchase. A person has to deal with it at the machine (agent %s "+
-			"in the herdr session %s).", row.Name, row.who(), row.Name, identity.Session(u.scope))+shown)
+		card, err := u.screenCard(row, row.Name+" is stopped at a screen fleet never answers", fmt.Sprintf("%s (%s) is "+
+			"stopped at a screen fleet never answers: a usage limit, a model switch, a usage reset or a purchase.",
+			row.Name, row.who()), screen)
+		if err != nil {
+			return err
+		}
+		return u.askOnce(row, "ask-hands-off", card)
 	}
 	var helpers int
 	if err := u.conn.QueryRow("SELECT count(*) FROM agents WHERE name IN (?1, ?2)", names[0], names[1]).
@@ -260,9 +306,12 @@ func (u *workers) handle(e config.Entry, due bool, row stopRow, screen string) e
 		return exit.Database(err)
 	}
 	if helpers >= maxHelpers {
-		return u.askOnce(row, "ask-helpers", fmt.Sprintf("%s (%s) is still stopped at a screen after %d helpers. A "+
-			"person has to look at it at the machine (agent %s in the herdr session %s).", row.Name, row.who(), helpers,
-			row.Name, identity.Session(u.scope))+shown)
+		card, err := u.screenCard(row, fmt.Sprintf("%s is still stopped at a screen after %d helpers", row.Name, helpers),
+			fmt.Sprintf("%s (%s) is still stopped at a screen after %d helpers.", row.Name, row.who(), helpers), screen)
+		if err != nil {
+			return err
+		}
+		return u.askOnce(row, "ask-helpers", card)
 	}
 	if !due {
 		why := "is off"
@@ -284,13 +333,13 @@ func fenced(text string) string {
 	return "```\n" + text + "\n```"
 }
 
-// askOnce asks the people about `row` once for its `step`: a retry after
-// a failure asks again, a step done is never repeated.
-func (u *workers) askOnce(row stopRow, step, text string) error {
+// askOnce asks the people about `row` once for its `step`, on `card`: a
+// retry after a failure asks again, a step done is never repeated.
+func (u *workers) askOnce(row stopRow, step, card string) error {
 	asked := false
 	err := runStep(u.conn, fmt.Sprintf("unblock:%d", row.ID), step, func() error {
 		asked = true
-		return u.ask(row, screenWorkers(row.ID)[0], text)
+		return u.ask(row, screenWorkers(row.ID)[0], card)
 	})
 	if err != nil || !asked {
 		return err
@@ -299,14 +348,46 @@ func (u *workers) askOnce(row stopRow, step, text string) error {
 	return nil
 }
 
-// ask posts `text` to the home thread of `row` (its own thread for a
-// thread agent, else its job's), records it as a question pending from
+// screenCard is the card the people are asked on about `row`, stopped at
+// a screen a person has to deal with: `title`, then `why`, where to find
+// the agent and the last 15 lines of its screen, its earliest lines left
+// out, and counted, while the context is over fednet's limit. For an
+// agent of a job, the people may also have the thread's agent end the
+// job.
+func (u *workers) screenCard(row stopRow, title, why, screen string) (string, error) {
+	shown := lines(tail(screen, 15))
+	var context string
+	for left := 0; left <= len(shown); left++ {
+		omitted := ""
+		if left > 0 {
+			omitted = fmt.Sprintf(" (its first %d line(s) left out)", left)
+		}
+		context = fmt.Sprintf("%s A person has to deal with it at the machine (agent %s in the herdr session %s).\n\n"+
+			"The screen%s:\n\n%s", why, row.Name, identity.Session(u.scope), omitted,
+			fenced(strings.Join(shown[left:], "\n")))
+		if utf8.RuneCountInString(context) <= maxContext {
+			break
+		}
+	}
+	var options []cardOption
+	if row.Job != "" {
+		options = []cardOption{
+			{Short: "I'll deal with it", Long: "A person deals with the screen at the machine; fleet does not ask " +
+				"about it again.", Recommended: true},
+			{Short: "End job " + row.Job, Long: fmt.Sprintf("The thread's agent ends job %s by force (`fleet job end "+
+				"%s --force`), its work as it stands.", row.Job, row.Job)},
+		}
+	}
+	return encodeCard(title, context, options)
+}
+
+// ask asks the people on `card` in the home thread of `row` (its own
+// thread for a thread agent, else its job's), as a question pending from
 // `helper`, the row's worker, and then, unless the stopped agent is the
-// thread's own, delivers it to the thread's agent as `ask-human` does; a
-// delivery that fails is printed, since the question is out. A
-// single-repo job without a home thread gets one opened first, as
-// `ask-human` opens it.
-func (u *workers) ask(row stopRow, helper, text string) error {
+// thread's own, delivers it to the thread's agent; a delivery that fails
+// is printed, since the question is out. A single-repo job without a
+// home thread gets one opened first, as `ask-thread` opens it.
+func (u *workers) ask(row stopRow, helper, card string) error {
 	thread := row.Thread
 	if row.Role != "thread" {
 		job, err := openJob(u.conn, row.Job)
@@ -325,14 +406,15 @@ func (u *workers) ask(row stopRow, helper, text string) error {
 	if thread == "" {
 		return exit.Refusedf("no home thread to ask the people in about %s's screen", row.Name)
 	}
-	if err := u.post(thread, row.Job, helper, text); err != nil {
+	link, err := u.askCard(thread, row.Job, helper, card)
+	if err != nil {
 		return err
 	}
 	fmt.Fprintf(os.Stdout, "unblock: %s: asked the people in thread %s\n", row.Name, thread)
 	if row.Role == "thread" {
 		return nil
 	}
-	msg := inboundMessage{Thread: thread, Text: text, Question: helper, Screen: true}
+	msg := inboundMessage{Thread: thread, Text: cardText(link, card), Question: helper, Screen: true}
 	if code, err := toThread(u.h, u.conn, u.scope, u.cfg, msg); err != nil || code != exit.Ok {
 		fmt.Fprintf(os.Stderr, "fleet: unblock %s: the question is posted, but did not reach the agent of thread %s "+
 			"(exit %d): %v\n", row.Name, thread, code, err)
@@ -340,24 +422,65 @@ func (u *workers) ask(row stopRow, helper, text string) error {
 	return nil
 }
 
-// post posts `text` to `thread` and records it as a question pending from
-// `asker` for `job` (empty for none).
-func (r *watchRun) post(thread, job, asker, text string) error {
+// errCardRefused marks a card fednet refused (its exit 2: one over a
+// limit, not JSON, or a hub older than the client), which it refuses
+// again however often it is asked.
+var errCardRefused = errors.New("fednet refused the card")
+
+// askCard asks the people in `thread` on `card` (its JSON), a question
+// pending from `asker` for `job` (empty for none), and returns the card's
+// link; a card asked before that still waits is not posted again. A card
+// whose post failed stays pending without a card_id, which no rule waits
+// on (pendingFrom), and the next try posts it under the same ref, so a
+// post fednet made but did not report makes no second card; another
+// card of the asker's that never got posted is closed. A card fednet
+// refused closes its question: it would be refused again.
+func (r *watchRun) askCard(thread, job, asker, card string) (string, error) {
 	if r.cfg.FednetSocket == "" {
-		return exit.Refusedf("fednet.socket is not configured for scope %s, so %s cannot ask the people", r.scope, asker)
+		return "", exit.Refusedf("fednet.socket is not configured for scope %s, so %s cannot ask the people", r.scope, asker)
 	}
-	_, _, code, err := fednet.Relay(r.cfg.FednetSocket, thread, text, nil)
+	id, err := pendingQuestion(r.conn, job, thread, asker, card, 0, true)
 	if err != nil {
-		return err
+		return "", err
 	}
-	if code != 0 {
-		return exit.Environmentf("fednet client post failed (exit status: %d)", code)
+	var cardID, link string
+	if err := r.conn.QueryRow("SELECT card_id, permalink FROM questions WHERE id = ?1", id).Scan(&cardID, &link); err != nil {
+		return "", exit.Database(err)
 	}
-	if _, err := r.conn.Exec("INSERT INTO questions (job, thread, asked_by, text, approval, state, asked_at) "+
-		"VALUES (?1, ?2, ?3, ?4, 0, 'pending', ?5)", job, thread, asker, text, db.Now()); err != nil {
-		return exit.Database(err)
+	if cardID != "" {
+		return link, nil
 	}
-	return nil
+	if _, err := r.conn.Exec("UPDATE questions SET state = 'closed' WHERE thread = ?1 AND asked_by = ?2 AND card = 1 "+
+		"AND card_id = '' AND state = 'pending' AND id != ?3", thread, asker, id); err != nil {
+		return "", exit.Database(err)
+	}
+	path, remove, err := tempFile(card + "\n")
+	if err != nil {
+		return "", err
+	}
+	defer remove()
+	posted, stderr, code, err := fednet.Ask(r.cfg.FednetSocket, thread, questionRef(r.scope, id), path)
+	if err == nil && code == 0 {
+		_, err = r.conn.Exec("UPDATE questions SET card_id = ?1, permalink = ?2 WHERE id = ?3", posted.ID, posted.Permalink, id)
+		return posted.Permalink, dbErr(err)
+	}
+	switch {
+	case err != nil:
+		return "", err
+	case code == 2:
+		if _, err := r.conn.Exec("UPDATE questions SET state = 'closed' WHERE id = ?1", id); err != nil {
+			return "", exit.Database(err)
+		}
+		return "", fmt.Errorf("%w, question #%d is closed: %s", errCardRefused, id, strings.TrimSpace(string(stderr)))
+	}
+	return "", exit.Environmentf("fednet client ask failed (exit status %d), question #%d is posted on the next try: %s",
+		code, id, strings.TrimSpace(string(stderr)))
+}
+
+// cardText is a card fleet posted, as the thread's agent is told of it:
+// its JSON, then its link.
+func cardText(link, card string) string {
+	return fmt.Sprintf("%s\n\nCard: %s", card, link)
 }
 
 // tell lets whoever has to know about a screen fleet did not answer by
@@ -529,34 +652,44 @@ func screenSubject(row stopRow, screen, issue string) string {
 }
 
 // earlierSection is the section `heading` of an agent's first message
-// with the questions `askers` asked, oldest first, and the latest message
-// a person posted in the thread of the last of them; "" when they asked
-// none.
+// with the questions `askers` asked, oldest first, each with the last
+// press on its card; for a question fleet posted as text before cards,
+// the latest message a person posted in the thread of the last of them.
+// "" when they asked none.
 func earlierSection(conn *sql.DB, heading string, askers []string) (string, error) {
 	var earlier []string
 	thread := ""
-	query := "SELECT text, state, asked_at, thread FROM questions WHERE asked_by IN (?" +
+	text := false
+	query := "SELECT text, state, asked_at, thread, card, answer FROM questions WHERE asked_by IN (?" +
 		strings.Repeat(", ?", len(askers)-1) + ") ORDER BY id"
 	err := eachRow(conn, query, func(rows *sql.Rows) error {
-		var question, state string
+		var question, state, answer string
 		var at int64
-		if err := rows.Scan(&question, &state, &at, &thread); err != nil {
+		var card bool
+		if err := rows.Scan(&question, &state, &at, &thread, &card, &answer); err != nil {
 			return err
 		}
-		earlier = append(earlier, fmt.Sprintf("Asked at %s (%s):\n\n> %s", time.Unix(at, 0).UTC().Format(time.RFC3339),
-			state, strings.ReplaceAll(question, "\n", "\n> ")))
+		text = text || !card
+		entry := fmt.Sprintf("Asked at %s (%s):\n\n> %s", time.Unix(at, 0).UTC().Format(time.RFC3339), state,
+			strings.ReplaceAll(question, "\n", "\n> "))
+		if answer != "" {
+			entry += "\n\nThe last press on its card:\n\n" + answer
+		}
+		earlier = append(earlier, entry)
 		return nil
 	}, anys(askers)...)
 	if err != nil || len(earlier) == 0 {
 		return "", err
 	}
-	m, err := latestMessage(conn, thread)
-	if err != nil {
-		return "", err
-	}
-	section, err := latestMessageSection(m)
-	if err != nil {
-		return "", err
+	section := ""
+	if text {
+		m, err := latestMessage(conn, thread)
+		if err != nil {
+			return "", err
+		}
+		if section, err = latestMessageSection(m); err != nil {
+			return "", err
+		}
 	}
 	return "\n## " + heading + "\n\n" + strings.Join(earlier, "\n\n") + "\n" + section, nil
 }

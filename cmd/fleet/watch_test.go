@@ -353,11 +353,12 @@ const t0 int64 = 1_800_000_000
 // ts is in <dir>/threads/<key with / as _> (exit 1 without one), and
 // `post` prints a msg_id, but exits with the code in <dir>/mention-exit,
 // when there is one, for a post with -mention; `delete` exits with the
-// code in <dir>/delete-exit, 0 without one; while <dir>/fednet-down
-// exists it exits 4. The
-// fake atb logs its argv to <dir>/atb.log, and fails while <dir>/atb-down
-// exists; a release with --restore exits with the code in
-// <dir>/restore-exit, when there is one.
+// code in <dir>/delete-exit, 0 without one; `ask` logs `card <its JSON>`
+// and prints card-<id>, <id> the ref's, or exits with the code in
+// <dir>/ask-exit, or 2 while <dir>/card-refused exists; while
+// <dir>/fednet-down exists it exits 4. The fake atb logs its argv to
+// <dir>/atb.log, and fails while <dir>/atb-down exists; a release with
+// --restore exits with the code in <dir>/restore-exit, when there is one.
 func watchThreadWorld(t *testing.T) *watchWorld {
 	t.Helper()
 	w := newWatchWorld(t)
@@ -381,6 +382,11 @@ case "$2" in
     echo "msg-$(wc -l < "$dir/fednet.log" | tr -d ' ')" ;;
   delete)
     if [ -f "$dir/delete-exit" ]; then echo "delete: refused" >&2; exit "$(cat "$dir/delete-exit")"; fi ;;
+  ask)
+    printf 'card %s\n' "$(cat "${10}")" >> "$dir/fednet.log"
+    [ -f "$dir/ask-exit" ] && { echo "ask: hub unreachable" >&2; exit "$(cat "$dir/ask-exit")"; }
+    [ -f "$dir/card-refused" ] && { echo "ask: context is 3001 characters, over the limit of 3000" >&2; exit 2; }
+    echo '{"id":"card-'"${8#*:}"'","channel":"C0","ts":"1.0","permalink":"https://slack.example.test/card-'"${8#*:}"'"}' ;;
 esac
 `
 	// `linear query` prints <dir>/issues.json, no started issue without it.
@@ -1272,8 +1278,9 @@ func TestWatchClosesARevisitAgentOfBeforeAndAsksItsQuestion(t *testing.T) {
 	if len(prompts) != 2 || prompts[0][0] != "o-lead" || !strings.Contains(prompts[0][1], "o-w") {
 		t.Fatalf("%q", prompts)
 	}
-	if got := w.log("fednet.log"); !strings.Contains(got, "post -socket /run/example/fednet.sock -thread C3/3.0 -- revisit-ex-5, "+
-		"the worker of fleet watch `revisit` for subject `EX-5`, asks: | | Close EX-5? 0xQUESTION") {
+	if got := w.log("fednet.log"); !strings.Contains(got, "client ask -socket /run/example/fednet.sock -thread C3/3.0 -ref example:1 ") ||
+		!strings.Contains(got, `card {"question":"Close EX-5? 0xQUESTION","context":"revisit-ex-5, the worker of fleet watch `+
+			"`revisit` for subject `EX-5`, asks this.\\n\\nClose EX-5? 0xQUESTION\"}") {
 		t.Errorf("fednet: %s", got)
 	}
 	if got := w.query("SELECT job || '|' || thread || '|' || asked_by || '|' || state FROM questions"); got != "|C3/3.0|revisit-ex-5|pending" {
@@ -1282,7 +1289,8 @@ func TestWatchClosesARevisitAgentOfBeforeAndAsksItsQuestion(t *testing.T) {
 	if prompts[1][0] != "thread-c3" {
 		t.Fatalf("%q", prompts)
 	}
-	for _, want := range []string{"[FROM: revisit-ex-5]\n", "already posted there by fleet. Nothing to pass on", "0xQUESTION"} {
+	for _, want := range []string{"[FROM: revisit-ex-5]\n", "already posted there by fleet on a card. Nothing to pass on",
+		"Card: https://slack.example.test/card-1", "0xQUESTION"} {
 		if !strings.Contains(prompts[1][1], want) {
 			t.Errorf("%q missing:\n%s", want, prompts[1][1])
 		}

@@ -52,6 +52,8 @@ echo "$*" >> "$d/fednet.log"
 case "$2" in
   read-thread) printf '{"messages":[{"ts":"1700000001.000","user":"U0ABC","text":"a"}]}\n' ;;
   post) echo "m-$(wc -l < "$d/fednet.log")" ;;
+  ask) echo "card $(cat "${10}")" >> "$d/fednet.log"
+    echo '{"id":"card-'"${8#*:}"'","channel":"C0","ts":"1.0","permalink":"https://slack.example.test/card-'"${8#*:}"'"}' ;;
 esac
 FEDNET
 printf '#!/bin/sh\n' > "$CB/atb"
@@ -127,14 +129,16 @@ check "watches: again 1h holds back the unchanged ones" "1 1" \
   "$(count "$(creceived cw-lead)" "0xCFGWX") $(count "$(creceived cw-lead)" "0xCFGWY")"
 
 cwatch 61 0
-has "watches: at its max the people are asked once instead" "$(cat "$CD/fednet.log")" \
-  "client post -socket $CD/fednet.sock -thread $CK -- fleet watch, watch \`nag\`: subject \`x\` has had the watch's max of 1 act(s)"
+has "watches: at its max the people are asked once instead, on a card" "$(cat "$CD/fednet.log")" \
+  "client ask -socket $CD/fednet.sock -thread $CK -ref cfgw:" \
+  "card {\"question\":\"fleet watch \`nag\`: subject \`x\` had the watch's max of 1 act(s)\"" \
+  '{"short":"Leave it",' '"recommended":true},{"short":"Look into it",'
 has "watches: and the thread's agent is told there is nothing to pass on" "$(creceived "$CA")" \
-  "fleet watch asked the people in thread $CK" "Nothing to pass on"
+  "fleet watch asked the people in thread $CK on a card" "Nothing to pass on" "Card: https://slack.example.test/card-"
 cwatch 66 0
 cwatch 130 0
 check "watches: x and y are asked about once each, and not told again" "1 1 1 1" \
-  "$(grep -c -- "-- fleet watch, watch \`nag\`: subject \`x\`" "$CD/fednet.log") $(grep -c -- "-- fleet watch, watch \`nag\`: subject \`y\`" "$CD/fednet.log") $(count "$(creceived cw-lead)" "0xCFGWX") $(count "$(creceived cw-lead)" "0xCFGWY")"
+  "$(grep -c -- "fleet watch \`nag\`: subject \`x\`" "$CD/fednet.log") $(grep -c -- "fleet watch \`nag\`: subject \`y\`" "$CD/fednet.log") $(count "$(creceived cw-lead)" "0xCFGWX") $(count "$(creceived cw-lead)" "0xCFGWY")"
 check "watches: the questions wait for the people" "watch|pending watch|pending " \
   "$(cledger "SELECT asked_by || '|' || state FROM questions ORDER BY id")"
 
@@ -169,8 +173,9 @@ printf 'Rebase onto main or close PR 9? 0xQUESTION\n' > "$WD/watch-fix-p1-questi
 cwatch 141 0
 check "watches: the workers that finished their turn are closed" "ended ended" \
   "$(cledger "SELECT group_concat(state, ' ') FROM agents WHERE name IN ('watch-fix-p1', 'watch-tick-tick')" | sed 's/ $//')"
-has "watches: the worker's question is asked in the thread of its subject's job" "$(cat "$CD/fednet.log")" \
-  "client post -socket $CD/fednet.sock -thread $CK -- watch-fix-p1, the worker of fleet watch \`fix\` for subject \`p1\`, asks:"
+has "watches: the worker's question is asked on a card in the thread of its subject's job" "$(cat "$CD/fednet.log")" \
+  "client ask -socket $CD/fednet.sock -thread $CK -ref cfgw:" \
+  "watch-fix-p1, the worker of fleet watch \`fix\` for subject \`p1\`, asks this." "0xQUESTION"
 check "watches: the question waits for the people, from the worker" "cw|pending " \
   "$(cledger "SELECT job || '|' || state FROM questions WHERE asked_by = 'watch-fix-p1'")"
 has "watches: the thread's agent is told there is nothing to pass on" "$(creceived "$CA")" \
@@ -178,13 +183,24 @@ has "watches: the thread's agent is told there is nothing to pass on" "$(creceiv
 cwatch 142 0
 check "watches: no new worker while the question waits" agent_not_found "$(cfield watch-fix-p1 name)"
 
-sqlite3 "$CDB" >/dev/null <<SQL
-UPDATE questions SET state = 'answered', answered_at = $(date +%s) WHERE asked_by = 'watch-fix-p1';
-UPDATE threads SET last_text = 'rebase it 0xANSWER', last_user = 'U0ABC', last_ts = '1700000300.000' WHERE thread = '$CK';
-SQL
+printf '{"msg_id":"cw2","payload":{"type":"message","thread":"%s","text":"rebase it 0xTYPED","user":"U0ABC","ts":"1700000300.000","channel_name":"repo-%s","scope":"cfgw"}}\n' \
+  "$CK" "$R" > /home/agent/events/cw2.json
+PATH=$CB:$PATH XDG_RUNTIME_DIR=/home/agent/run "$T" inbox /home/agent/events/cw2.json >"$CD/inbox2.out" 2>&1; rc=$?
+check "watches: a message in the thread answers no card" "0 pending " \
+  "$rc $(cledger "SELECT state FROM questions WHERE asked_by = 'watch-fix-p1'")"
+cwatch 142 0
+check "watches: so no new worker either" agent_not_found "$(cfield watch-fix-p1 name)"
+qid=$(sqlite3 "$CDB" "SELECT id FROM questions WHERE asked_by = 'watch-fix-p1'")
+printf '{"msg_id":"cw3","payload":{"type":"answer","answer":{"question_id":"cfgw:%s","card_id":"card-%s","outcome":"answered","choice":null,"note":"rebase it 0xANSWER","by":"U0ABC","at":"2026-10-16T10:00:00-07:00"}}}\n' \
+  "$qid" "$qid" > /home/agent/events/cw3.json
+PATH=$CB:$PATH XDG_RUNTIME_DIR=/home/agent/run "$T" inbox /home/agent/events/cw3.json >"$CD/inbox3.out" 2>&1; rc=$?
+check "watches: a press on the card answers it" "0 answered " \
+  "$rc $(cledger "SELECT state FROM questions WHERE asked_by = 'watch-fix-p1'")"
 cwatch 143 0
 check "watches: once the people answer, a new worker before again has passed" "2 watch-fix-p1" \
   "$(cledger "SELECT count(*) FROM agents WHERE name = 'watch-fix-p1'" | tr -d ' ') $(cfield watch-fix-p1 name)"
-has "watches: it gets the question and the answer" "$(creceived watch-fix-p1)" "## Earlier" "0xQUESTION" "0xANSWER"
+has "watches: it gets the question and the press" "$(creceived watch-fix-p1)" "## Earlier" "0xQUESTION" \
+  "The last press on its card:" '"note":"rebase it 0xANSWER"'
+lacks "watches: and not the message typed in the thread" "$(creceived watch-fix-p1)" "0xTYPED"
 
 "${CS[@]}" server stop >/dev/null

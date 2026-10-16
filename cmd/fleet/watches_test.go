@@ -156,11 +156,19 @@ func TestACommandWatchKeepsItsLimitsAndAsksThePeopleOnce(t *testing.T) {
 	if got := w.query("SELECT group_concat(asked_by || ' ' || job || ' ' || thread || ' ' || state, ', ') FROM questions"); got != "watch  C1/1.0 pending, watch  C1/1.0 pending" {
 		t.Errorf("questions %s", got)
 	}
-	if !strings.Contains(w.log("fednet.log"), "-thread C1/1.0 -- fleet watch, watch `nag`: subject `x` has had the watch's max of 2 act(s)") {
-		t.Errorf("fednet: %s", w.log("fednet.log"))
+	if got := w.log("fednet.log"); !strings.Contains(got, "client ask -socket /run/example/fednet.sock -thread C1/1.0 -ref example:1 ") ||
+		!strings.Contains(got, "card {\"question\":\"fleet watch `nag`: subject `x` had the watch's max of 2 act(s)\","+
+			"\"context\":\"Its source still gives it:\\n\\nx is late\\n\\n") ||
+		!strings.Contains(got, `"options":[{"short":"Leave it","long":"fleet does nothing more about it while its source gives it.",`+
+			`"recommended":true},{"short":"Look into it","long":"The thread's agent looks into it and reports here."}]}`) {
+		t.Errorf("fednet: %s", got)
+	}
+	if got := w.query("SELECT group_concat(card || ' ' || card_id, ', ') FROM questions"); got != "1 card-1, 1 card-2" {
+		t.Errorf("cards %s", got)
 	}
 	prompts := w.prompts()[before:]
-	if len(prompts) != 2 || prompts[0][0] != "thread-c1" || !strings.Contains(prompts[0][1], "Nothing to pass on") {
+	if len(prompts) != 2 || prompts[0][0] != "thread-c1" || !strings.Contains(prompts[0][1], "Nothing to pass on") ||
+		!strings.Contains(prompts[0][1], "Card: https://slack.example.test/card-1") {
 		t.Errorf("%q", prompts)
 	}
 	// The questions are reminded of but never time out.
@@ -280,8 +288,9 @@ func TestWatchClosesAScreenHelperOfBeforeAndWaitsForItsQuestion(t *testing.T) {
 	if got := w.query("SELECT state FROM agents WHERE name = '" + helper + "'"); got != "ended" {
 		t.Errorf("helper row %s", got)
 	}
-	if !strings.Contains(w.log("fednet.log"), "-thread C1/1.0 -- j-w (a worker of job j, lead j-lead) is stopped at a screen "+
-		"that fleet's guidance does not cover, so its helper "+helper+" asks: | | Press 1? 0xQUESTION") {
+	if !strings.Contains(w.log("fednet.log"), `card {"question":"Press 1? 0xQUESTION","context":"j-w (a worker of job j, `+
+		`lead j-lead) is stopped at a screen that fleet's guidance does not cover; its helper `+helper+` asks this.\n\n`+
+		`Press 1? 0xQUESTION"}`) {
 		t.Errorf("fednet: %s", w.log("fednet.log"))
 	}
 	if got := w.query("SELECT asked_by || ' ' || state FROM questions"); got != helper+" pending" {
@@ -317,5 +326,125 @@ func TestAWatchWorkersQuestionNeverTimesOutAndItIsNoSuspect(t *testing.T) {
 		if p[0] == "watch" {
 			t.Errorf("told watch: %q", p[1])
 		}
+	}
+}
+
+// fixWorker is the live worker watch-fix-p1 of the worker watch `fix`,
+// done with its turn, its subject p1 of job j, with `question` in its
+// question file.
+func fixWorker(t *testing.T, question string) *watchWorld {
+	t.Helper()
+	w := sourceWorld(t, `{"fix": {"source": {"command": ["SOURCE"]}, "do": "worker"}, "quiet-threads": {"off": true}}`, nil)
+	w.exec("INSERT INTO agents (name, role, parent, task, pane_id, state, started_at) VALUES ('watch-fix-p1', 'worker', " +
+		"'watch', '{\"watch\": \"fix\", \"key\": \"p1\", \"job\": \"j\"}', 'p8', 'active', 0)")
+	w.herdrList("thread-c1 idle 1", "j-lead idle 1", "watch-fix-p1 idle 8")
+	dir := filepath.Join(w.dir, "home", ".local", "state", "fleet", scope+"-watch")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "watch-fix-p1-question.md"), []byte(question), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return w
+}
+
+// A watch worker's question is asked on a card, the card it wrote with
+// a line naming it before the context, and only a press on that card
+// answers it: a message in the thread does not. The press is kept on the
+// question and reaches the thread's agent, naming who asked.
+func TestAWatchWorkersQuestionIsAnsweredOnlyByAPressOnItsCard(t *testing.T) {
+	w := fixWorker(t, `{"question": "Rebase PR 9 or close it?", "context": "PR 9 conflicts.", `+
+		`"options": [{"short": "Rebase", "recommended": true}, {"short": "Close"}]}`+"\n")
+	w.watchAt(time.Minute, 0)
+	if got := w.log("fednet.log"); !strings.Contains(got, "client ask -socket /run/example/fednet.sock -thread C1/1.0 -ref example:1 ") ||
+		!strings.Contains(got, `card {"context":"watch-fix-p1, the worker of fleet watch `+"`fix`"+` for subject `+"`p1`"+
+			`, asks this.\n\nPR 9 conflicts.","options":[{"short":"Rebase","recommended":true},{"short":"Close"}],`+
+			`"question":"Rebase PR 9 or close it?"}`) {
+		t.Errorf("fednet: %s", got)
+	}
+	if got := w.query("SELECT asked_by || ' ' || job || ' ' || state || ' ' || card || ' ' || card_id FROM questions"); got != "watch-fix-p1 j pending 1 card-1" {
+		t.Errorf("question %s", got)
+	}
+
+	message := task(w.world, "m1.json", `{"msg_id":"m1","payload":{"type":"message","thread":"C1/1.0","text":"close it",`+
+		`"user":"U0EXAMPLE1","ts":"1800000100.000","scope":"`+scope+`"}}`)
+	if out := w.inbox(message); out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	if got := w.query("SELECT state FROM questions"); got != "pending" {
+		t.Errorf("a message answered the card: %s", got)
+	}
+
+	before := len(w.prompts())
+	press := `{"question_id":"` + scope + `:1","card_id":"card-1","outcome":"answered","choice":{"index":1,"short":"Close"},` +
+		`"note":"it is stale","by":"U0EXAMPLE1","at":"2027-01-15T08:00:00Z"}`
+	if out := w.inbox(w.answerEvent("a1", press)); out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	if got := w.query("SELECT state || ' ' || outcome || ' ' || answer FROM questions"); got != `answered answered {"question_id":1,`+
+		`"card_id":"card-1","outcome":"answered","choice":{"index":1,"short":"Close"},"note":"it is stale","by":"U0EXAMPLE1",`+
+		`"at":"2027-01-15T08:00:00Z"}` {
+		t.Errorf("question %s", got)
+	}
+	prompts := w.prompts()[before:]
+	if len(prompts) != 1 || prompts[0][0] != "thread-c1" || !strings.Contains(prompts[0][1], "[FROM: inbox]\n[ANSWER #1]\n"+
+		"A press on the card fleet posted in thread C1/1.0 for watch-fix-p1 (question #1), not one of yours") {
+		t.Errorf("%q", prompts)
+	}
+}
+
+// A card fednet refuses is refused again: the worker is closed all the
+// same, its question closed, and the run fails saying why.
+func TestAWatchWorkersCardFednetRefusesClosesTheWorker(t *testing.T) {
+	w := fixWorker(t, "Rebase PR 9 or close it? 0xQUESTION\n")
+	w.file("card-refused", "x")
+	out := w.watchAt(time.Minute, 5)
+	if !strings.Contains(out.stderr, "fednet refused the card, question #1 is closed: ask: context is 3001 characters") {
+		t.Errorf("stderr: %s", out.stderr)
+	}
+	if got := w.query("SELECT state FROM questions") + " " + w.query("SELECT state FROM agents WHERE name = 'watch-fix-p1'"); got != "closed ended" {
+		t.Errorf("question and worker %s", got)
+	}
+	if _, err := os.Stat(filepath.Join(w.dir, "home", ".local", "state", "fleet", scope+"-watch", "watch-fix-p1-question.md")); !os.IsNotExist(err) {
+		t.Errorf("question file left: %v", err)
+	}
+}
+
+// A screen card whose post failed is nothing anyone waits on: no reminder
+// lists it and `thread end` is not refused for it; once its agent is no
+// longer stopped, it is closed and never posted.
+func TestAnUnpostedScreenCardIsNotWaitedOnAndGoesWithItsScreen(t *testing.T) {
+	w := watchThreadWorld(t)
+	w.exec("INSERT INTO threads (thread, slug, created_at) VALUES ('C1/1.0', 'c1-1-0', 0)",
+		"INSERT INTO agents (name, role, thread, pane_id, state, started_at) VALUES ('thread-c1', 'thread', 'C1/1.0', 'p1', 'active', 0)")
+	w.herdrList("thread-c1 blocked 1")
+	w.screen("thread-c1", "⏺ fake reply\n"+rule+"\n You have hit your usage limit · resets 3pm (UTC)\n\n ❯ 1. Stop and wait "+
+		"for limit to reset\n   2. Request extra usage\n")
+	w.lastMessage("C1/1.0", t0+3600)
+	w.file("ask-exit", "5")
+	w.watchAt(time.Minute, 5)
+	w.watchAt(time.Hour, 5)
+	if got := w.query("SELECT count(*) || ' ' || state || ' ' || card_id FROM questions"); got != "1 pending " {
+		t.Errorf("questions %q", got)
+	}
+	if got := w.log("fednet.log"); strings.Count(got, "client ask ") != 2 || strings.Contains(got, "Reminder") {
+		t.Errorf("fednet: %s", got)
+	}
+	summary := filepath.Join(w.dir, "summary.md")
+	w.file("summary.md", "Nothing open.\n")
+	out := w.run("", []string{"thread", "end", "--summary-file", summary}, "FLEET_AGENT=thread-c1", "FLEET_ROLE=thread",
+		"FLEET_SCOPE="+scope, "FLEET_THREAD=C1/1.0")
+	if strings.Contains(out.stderr, "still waits") {
+		t.Errorf("thread end refused: %+v", out)
+	}
+
+	w.file("ask-exit", "")
+	w.herdrList()
+	out = w.watchAt(2*time.Hour, 0)
+	if got := w.query("SELECT state || ' ' || card_id FROM questions"); got != "closed " {
+		t.Errorf("question %q: %+v", got, out)
+	}
+	if got := strings.Count(w.log("fednet.log"), "client ask "); got != 2 {
+		t.Errorf("%d asks", got)
 	}
 }

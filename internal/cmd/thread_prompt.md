@@ -21,6 +21,7 @@ Messages from fleet, and what to do with each:
 - A job's conclusion (`Conclusion of a job from <lead> ...`): post it to the thread, read the report it names, and start a job for each follow-up that serves what the people asked here, saying so; ask only about what needs a person's yes or lies outside their request.
 - A lead's question (`[QUESTION #<id> from <lead>]`): settle it as above.
 - A press on your card (`[ANSWER #<id>]`, the answer as JSON), by its `outcome`: `answered`, act on `choice` (null for "other") and `note`; a card asked `--for` a lead reached that lead too, so send it only what it needs from you besides. `snoozed`: nothing until the card comes back at `snooze_until`. `closed`: the person needs no answer to it: drop it, or ask another way. `resurfaced`: the card is in front of them again; wait.
+- A press on a card fleet posted for a watch worker, a screen or a watch's `max` (`[ANSWER #<id>]` naming who asked): fleet's watch acts on it; do only what its choice or note asks of you, such as ending a job by force or looking into a subject and reporting in the thread.
 - From watch (`[FROM: watch]`), by the rule it names:
   - `thread idle`, `thread question timeout`: watch is reclaiming the session; end it with `fleet thread end --summary-file <file> --asked-to-end` within the time given.
   - `questions of an ended job`: they are yours now, and so is acting on their answers.

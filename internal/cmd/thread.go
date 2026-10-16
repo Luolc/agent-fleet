@@ -296,8 +296,10 @@ type inboundMessage struct {
 	// QuestionID is the ledger's id of a lead's question or of the
 	// question a press answers.
 	QuestionID int64
-	// Answer marks a press on a card of the thread agent's, Text its JSON.
-	Answer bool
+	// Answer marks a press on a card, Text its JSON; AskedBy names the
+	// watch worker or watch itself when fleet posted the card for them.
+	Answer  bool
+	AskedBy string
 	// Watch marks a notice from `fleet watch`, delivered as it is.
 	Watch bool
 	// Screen marks a question `watch` asks about an agent stopped at a
@@ -340,6 +342,13 @@ func (m inboundMessage) body() string {
 	if m.Watch {
 		return m.Text
 	}
+	if m.Answer && m.AskedBy != "" {
+		return fmt.Sprintf("[ANSWER #%d]\nA press on the card fleet posted in thread %s for %s (question #%d), not "+
+			"one of yours: fleet's watch acts on it, starting the next worker with an answered or closed card and "+
+			"waiting while it is snoozed. %s; at the least, do what its choice or note asks of you (such as ending a "+
+			"job or looking into something), and nothing else.\n\n%s\n", m.QuestionID, m.Thread, m.AskedBy,
+			m.QuestionID, seePrompt, m.Text)
+	}
 	if m.Answer {
 		return fmt.Sprintf("[ANSWER #%d]\nA press on the card of your question #%d in thread %s. %s; at the least, act on "+
 			"its outcome: answered (the choice and the note), snoozed (it comes back at snooze_until), closed (no need to "+
@@ -352,12 +361,14 @@ func (m inboundMessage) body() string {
 	}
 	if m.Screen {
 		return fmt.Sprintf("Question from %s for the people in thread %s about an agent stopped at a screen, already "+
-			"posted there by fleet. Nothing to pass on: once they answer, fleet's watch gives their answer to a new "+
-			"helper on its next run, or they deal with the screen themselves.\n\n%s\n", m.Question, m.Thread, m.Text)
+			"posted there by fleet on a card. Nothing to pass on: only a press on the card answers it, and fleet's "+
+			"watch gives the answer to a new helper on its next run, or they deal with the screen themselves. The "+
+			"press reaches you too; act only on what it asks of you.\n\n%s\n", m.Question, m.Thread, m.Text)
 	}
 	if m.Worker {
-		return fmt.Sprintf("Question from %s for the people in thread %s, already posted there by fleet. Nothing to "+
-			"pass on: once they answer, fleet's watch starts a new worker with their answer on its next run.\n\n%s\n",
+		return fmt.Sprintf("Question from %s for the people in thread %s, already posted there by fleet on a card. "+
+			"Nothing to pass on: only a press on the card answers it, and fleet's watch starts a new worker with the "+
+			"answer on its next run. The press reaches you too; act only on what it asks of you.\n\n%s\n",
 			m.Question, m.Thread, m.Text)
 	}
 	if m.Question != "" {
@@ -1135,12 +1146,12 @@ func newThreadEnding(conn *sql.DB, agent string, force bool) (*threadEnding, err
 }
 
 // stillWaiting refuses an ending while the thread waits: a question in
-// it is pending (the thread agent's own or a lead's), or a job whose home
-// thread it is is open. The answer and the lead's messages reach the
+// it is pending (the thread agent's own, a lead's, or a posted card of
+// watch's), or a job whose home thread it is is open. The answer and the lead's messages reach the
 // session that is live, so ending it only makes the next one start cold.
 func stillWaiting(conn *sql.DB, thread string) error {
 	rows, err := conn.Query("SELECT 0, id, 'question from ' || asked_by || ', pending: ', text FROM questions "+
-		"WHERE thread = ?1 AND state = 'pending' "+
+		"WHERE thread = ?1 AND state = 'pending' AND NOT "+unposted+" "+
 		"UNION ALL SELECT 1, id, 'job ' || job || ', open, reporting to this thread', '' FROM jobs "+
 		"WHERE home_thread = ?1 AND state = 'open' ORDER BY 1, 2", thread)
 	if err != nil {

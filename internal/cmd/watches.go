@@ -511,30 +511,40 @@ func (r *watchRun) subjectThread(s subject) (string, error) {
 	return thread, dbErr(err)
 }
 
-// askAboutSubject asks the people once about a subject due again whose
-// acts reached the watch's `max`: posted to its thread as a question pending from
-// watch, which is reminded of but never times out, and the thread's agent
-// told there is nothing to pass on. With no thread to ask in, the question
-// is printed on stderr. Either way the subject gets no more acts while its
-// source gives it.
+// askAboutSubject asks the people once, on a card, about a subject due
+// again whose acts reached the watch's `max`: posted to its thread as a
+// question pending from watch, which is reminded of but never times out,
+// and the thread's agent told it is there. With no thread to ask in, the
+// question is printed on stderr. Either way the subject gets no more acts
+// while its source gives it.
 func (r *watchRun) askAboutSubject(e config.Entry, s subject) error {
-	question := fmt.Sprintf("fleet watch, watch `%s`: subject `%s` has had the watch's max of %d act(s), and its "+
-		"source still gives it:\n\n%s\n\nfleet does nothing more about it while the source gives it; what to do is yours.",
-		e.Name, s.Key, e.Max, strings.TrimRight(s.Text, "\n"))
+	title := fmt.Sprintf("fleet watch `%s`: subject `%s` had the watch's max of %d act(s)", e.Name, s.Key, e.Max)
+	context := fmt.Sprintf("Its source still gives it:\n\n%s\n\nfleet does nothing more about it while the source "+
+		"gives it.", strings.TrimRight(s.Text, "\n"))
 	thread, err := r.subjectThread(s)
 	if err != nil {
 		return err
 	}
 	if thread == "" || r.cfg.FednetSocket == "" {
-		fmt.Fprintf(os.Stderr, "fleet watch: no thread to ask the people in about subject %s of watch %s; the question: %s\n",
-			s.Key, e.Name, question)
+		fmt.Fprintf(os.Stderr, "fleet watch: no thread to ask the people in about subject %s of watch %s; the question: %s. %s\n",
+			s.Key, e.Name, title, context)
 	} else {
-		if err := r.post(thread, s.Job, watchSender, question); err != nil {
+		card, err := encodeCard(title, context, []cardOption{
+			{Short: "Leave it", Long: "fleet does nothing more about it while its source gives it.", Recommended: true},
+			{Short: "Look into it", Long: "The thread's agent looks into it and reports here."},
+		})
+		if err != nil {
+			return err
+		}
+		link, err := r.askCard(thread, s.Job, watchSender, card)
+		if err != nil {
 			return err
 		}
 		fmt.Fprintf(os.Stdout, "watch %s: asked the people in thread %s about %s\n", e.Name, thread, s.Key)
-		notice := fmt.Sprintf("fleet watch asked the people in thread %s, and posted it there:\n\n%s\n\nNothing to pass "+
-			"on: the question is reminded of but never times out.\n", thread, question)
+		notice := fmt.Sprintf("fleet watch asked the people in thread %s on a card:\n\n%s\n\nNothing to pass on: the "+
+			"card is reminded of but never times out. A press on it reaches you as `[ANSWER #<id>]`; act on what "+
+			"it asks of you (`Look into it`: look into the subject and report in the thread).\n", thread,
+			cardText(link, card))
 		msg := inboundMessage{Thread: thread, Text: notice, Watch: true}
 		if code, err := toThread(r.h, r.conn, r.scope, r.cfg, msg); err != nil || code != exit.Ok {
 			fmt.Fprintf(os.Stderr, "fleet watch: watch %s: the question is posted, but did not reach the agent of thread "+
