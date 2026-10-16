@@ -36,6 +36,7 @@ ATB
 # `ask` logs the card too and posts card-<n>, n the ref's id.
 cat > /home/agent/fake-screens/fednet <<'FEDNET'
 #!/bin/sh
+[ "$2" = react ] && { echo "$*" >> /home/agent/screens-react.log; exit 0; }
 printf '%s\n--\n' "$*" >> /home/agent/screens-fednet.log
 case "$2" in
   read-thread) printf '{"messages":[{"ts":"%s.000100","user":"U0ABC","text":"b"}]}\n' "$(date +%s)" ;;

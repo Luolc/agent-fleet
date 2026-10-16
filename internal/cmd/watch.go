@@ -274,6 +274,12 @@ func Watch(h *herdr.Herdr) (exit.Code, error) {
 	if err := r.commandWatches(); err != nil {
 		return 0, err
 	}
+	// Last, so the cards and endings of this run are marked in it.
+	if on {
+		if err := r.marks(); err != nil {
+			return 0, err
+		}
+	}
 	return r.code, nil
 }
 

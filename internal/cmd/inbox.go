@@ -29,7 +29,16 @@ const (
 		"payload of type `message` carries `thread` (CHANNEL/TS), `text`, `user`, `ts`, for a " +
 		"new thread the channel's `context`, and three optional fields: `trigger` (`dm` for a " +
 		"direct message to the bot), `channel_name` and `scope`. A payload of type `answer` is a " +
-		"press on a question card (below). Any other payload type is ignored, exit 0.\n\n" +
+		"press on a question card (below). A payload of type `reaction` is an emoji a person put on " +
+		"a thread's root message (`thread`, `user`, `reaction`, and `scope` as a message's): " +
+		"`package` (the people archived the thread) takes fleet's `eyes` off a thread the scope " +
+		"knows, any other is ignored, and no agent hears of it. Any other payload type is ignored, " +
+		"exit 0.\n\n" +
+		"fleet keeps emoji on a thread's root message (`fednet client react`, with the scope's " +
+		"socket): one of `hourglass_flowing_sand` (a session or a job runs), `question` (a card " +
+		"waits for the people) and `white_check_mark` (neither), and `eyes` from each delivered " +
+		"message until the people archive the thread. One that fednet fails to put is a warning " +
+		"on stderr, never the exit code; `fleet watch` puts it later.\n\n" +
 		"An answer's `answer` is fednet's JSON, its `question_id` the ref fleet asked with, " +
 		"`<scope>:<question id>`, and `card_id` the card's; one whose ref is not fleet's, or whose " +
 		"question the scope's ledger has not with that card, is ignored, exit 0. Once its msg_id is " +
@@ -132,6 +141,9 @@ type event struct {
 		// Answer is a press on a question card, in a payload of type
 		// `answer`.
 		Answer json.RawMessage `json:"answer"`
+		// Reaction is the emoji a person put on a thread's root message,
+		// in a payload of type `reaction`.
+		Reaction string `json:"reaction"`
 	} `json:"payload"`
 }
 
@@ -209,6 +221,9 @@ func Inbox(args InboxArgs) (exit.Code, error) {
 	if e.Payload.Type == "answer" {
 		return inboxAnswer(e)
 	}
+	if e.Payload.Type == "reaction" {
+		return inboxReaction(e)
+	}
 	if e.Payload.Type != "message" {
 		fmt.Fprintf(os.Stdout, "ignored %s: a %s, not a message\n", e.MsgID, e.Payload.Type)
 		return exit.Ok, nil
@@ -254,6 +269,13 @@ func Inbox(args InboxArgs) (exit.Code, error) {
 	if err != nil || code != exit.Ok {
 		return code, err
 	}
+	// A person's message makes the thread one to look at again, until
+	// they archive it.
+	if dropped {
+		markThread(conn, cfg.FednetSocket, msg.Thread)
+	} else {
+		look(conn, cfg.FednetSocket, msg.Thread, true)
+	}
 	state = "delivered"
 	if dropped {
 		state = "dropped"
@@ -261,6 +283,39 @@ func Inbox(args InboxArgs) (exit.Code, error) {
 		return 0, err
 	}
 	return exit.Ok, setMessage(conn, e.MsgID, state)
+}
+
+// inboxReaction takes a reaction a person put on the root message of a
+// thread the scope knows: `package` (archived) takes the eyes mark off,
+// any other is ignored. No agent hears of it. Doing it again changes
+// nothing, since fednet may hand the same reaction over twice.
+func inboxReaction(e *event) (exit.Code, error) {
+	if e.Payload.Reaction != archived {
+		fmt.Fprintf(os.Stdout, "ignored %s: reaction %q\n", e.MsgID, e.Payload.Reaction)
+		return exit.Ok, nil
+	}
+	if e.Payload.Thread == "" {
+		return 0, exit.Refusedf("reaction %s names no thread", e.MsgID)
+	}
+	scope, err := identity.CheckScope(e.Payload.Scope)
+	if err != nil {
+		return 0, err
+	}
+	cfg, err := config.LoadScope(scope)
+	if err != nil {
+		return 0, err
+	}
+	conn, err := inboxLedger(scope, e.Payload.Thread, "")
+	if err != nil || conn == nil {
+		if err == nil {
+			fmt.Fprintf(os.Stdout, "ignored %s: scope %s does not know thread %s\n", e.MsgID, scope, e.Payload.Thread)
+		}
+		return exit.Ok, err
+	}
+	defer conn.Close()
+	look(conn, cfg.FednetSocket, e.Payload.Thread, false)
+	fmt.Fprintf(os.Stdout, "thread %s recorded as archived: eyes off\n", e.Payload.Thread)
+	return exit.Ok, nil
 }
 
 // recordLatest writes the delivered message onto the thread's row as the
@@ -458,6 +513,9 @@ func inboxAnswer(e *event) (exit.Code, error) {
 	}
 	if err := recordAnswer(conn, q, a); err != nil {
 		return 0, err
+	}
+	if cfg, err := config.LoadScope(scope); err == nil {
+		markThread(conn, cfg.FednetSocket, q.thread)
 	}
 	if q.state == "closed" {
 		fmt.Fprintf(os.Stdout, "question #%d is closed: its %s is recorded and given to no agent\n", q.id, a.Outcome)

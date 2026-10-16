@@ -1104,6 +1104,7 @@ func ThreadEnd(h *herdr.Herdr, args ThreadEndArgs) (exit.Code, error) {
 	if err := runStep(conn, e.key, "end-row", func() error { return endRow(conn, me.Agent) }); err != nil {
 		return 0, err
 	}
+	markThread(conn, cfg.FednetSocket, e.thread)
 	fmt.Fprintf(os.Stdout, "ended session %d of thread %s\n", e.session, e.thread)
 	if len(e.missed) > 0 {
 		fmt.Fprintf(os.Stdout, "Linear steps not done, finish them by hand:\n")
