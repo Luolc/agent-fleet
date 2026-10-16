@@ -39,4 +39,7 @@ scripts/check-design-cap.sh
 step judge shards
 scripts/check-judge-shards.sh
 
+step release guard
+scripts/release-guard-test.sh
+
 step ok
