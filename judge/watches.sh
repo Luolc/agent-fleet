@@ -11,8 +11,7 @@
 # <dir>/bad-fail exists. Two `worker` watches join later (below).
 need_repo
 CS=(herdr --session fleet-cfgw)
-herdr --session fleet-cfgw server >/home/agent/server-fleet-cfgw.log 2>&1 &
-for _ in $(seq 1 100); do "${CS[@]}" status server >/dev/null 2>&1 && break; sleep 0.2; done
+start_server fleet-cfgw
 CD=/home/agent/cfgw
 CB=$CD/bin
 CDB=/home/agent/.local/state/$T/cfgw.db

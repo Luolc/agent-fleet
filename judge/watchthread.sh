@@ -17,8 +17,7 @@
 # reclaiming).
 need_repo
 QS=(herdr --session fleet-quiet)
-herdr --session fleet-quiet server >/home/agent/server-fleet-quiet.log 2>&1 &
-for _ in $(seq 1 100); do "${QS[@]}" status server >/dev/null 2>&1 && break; sleep 0.2; done
+start_server fleet-quiet
 QD=/home/agent/quiet
 QB=$QD/bin
 QDB=/home/agent/.local/state/$T/quiet.db
