@@ -4,7 +4,7 @@ statute = "0.1.19"
 
 [constitution]
 git = "https://github.com/Luolc/agent-constitution"
-commit = "a1ed4fa9a10f912b5d37ab7b991c002262cc452c"
+commit = "45e71e937adbbf0a2a913caedb55ad76aa5226ec"
 edition = "2026-10"
 revision = "3"
 
@@ -12,7 +12,7 @@ revision = "3"
 name = "R"
 git = "https://github.com/Luolc/agent-constitution"
 branch = "main"
-commit = "a1ed4fa9a10f912b5d37ab7b991c002262cc452c"
+commit = "45e71e937adbbf0a2a913caedb55ad76aa5226ec"
 
 [[rules]]
 rule = "R1"
@@ -410,9 +410,9 @@ by = "default"
 
 [[rules]]
 rule = "R115"
-revision = 3
-sha256 = "45f5f6e0ffdcc323884778a51c73adb9147603a30b232b6537d46cc004686842"
-original-sha256 = "b95dd5e551082c40a19e045e4d7fd2f73824fafcfe5a667e7c90cb485526b149"
+revision = 4
+sha256 = "b909a438af3717b7f8be8befb0fc8cd3aafa4cfc19c88a16d5e1febf1fdb8f6e"
+original-sha256 = "493b48bf1729607ea996b7ce8b1a5f8df8c3f500ce222356171003704ea22e94"
 by = "default"
 
 [[rules]]
@@ -497,13 +497,6 @@ rule = "R165"
 revision = 3
 sha256 = "8377d88aa2f622123963b68842173f0ba060b8c641ac3a723006503ef634cf10"
 original-sha256 = "e25ec75d6bdc9d26828f5f0d8c5f24825a47b683b35adcd1957a0f9189d33d5e"
-by = "default"
-
-[[rules]]
-rule = "R166"
-revision = 5
-sha256 = "d01138d6129a30fba8bcafa0c28dedd532e4f13fe5ee6e035336f9341752cc59"
-original-sha256 = "475de4344c8e5eaf752db904df1875c03fe3ab24d3fff0a2e570e73f755ba9ef"
 by = "default"
 
 [[rules]]
@@ -999,6 +992,13 @@ rule = "R331"
 revision = 1
 sha256 = "0b159d03fea1b938129c9f6139939673f8408753018e3efe65ccd87e328e5ffb"
 original-sha256 = "b310b58f8417599b76f26aaf858a8b870818ae8383cc40826fb4a9caab909ec2"
+by = "default"
+
+[[rules]]
+rule = "R332"
+revision = 1
+sha256 = "c1fcff5dcaa2b890b6fdc8fb4236fbf13aa80ae4673d35264387d343a1257785"
+original-sha256 = "aa9ab8d25a4fdf6c9b531186e4c05b12582e12231222245a14ac1a9a87f6e4f6"
 by = "default"
 
 [[rules]]
