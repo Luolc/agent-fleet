@@ -9,7 +9,7 @@ repos:
   # statute.lock: statute refuses a lock another version wrote, so the hook
   # fails until the two agree.
   - repo: https://github.com/Luolc/statute-pre-commit
-    rev: v0.1.19
+    rev: v0.1.20
     hooks:
       - id: statute-compile
   - repo: local
