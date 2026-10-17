@@ -343,7 +343,6 @@ A lower-ranking provision or a principal may depart from a higher-ranking provis
 #### Commands
 
 - R163 As a worker that `fleet watch` started, do what the prompt of your watch says, and never run `fleet done`.
-- R166 As a lead that Agent Fleet started, when a review is still unapproved after 3 rounds or its author and reviewer disagree about a P0 finding, put the matter to a principal with `fleet ask-human`; give another round yourself instead only when the remaining finding is the same as in the round before, smaller than it was, and undisputed.
 - R168 As the worker of Agent Fleet's `unblock` watch, press keys only on the screen of the blocked agent your task names and only as the task's screen guidance says, and press none on a screen about usage or rate limits, switching models, resetting usage or buying.
 - R169 When you start an agent with Agent Fleet, pick its model and effort, and give a reason in the task file whenever you pass a model or effort the scope's `models` setting does not give, or an effort above the default effort the rules set.
 - R172 As a worker that Agent Fleet started, never claim or release your own work order yourself.
@@ -351,6 +350,7 @@ A lower-ranking provision or a principal may depart from a higher-ranking provis
 - R174 Name a Slack channel for one repository with the scope's repository prefix followed by the repository's name, and one for a cross-repository joint project with the scope's initiative prefix followed by the initiative's name.
 - R228 As a worker that Agent Fleet started, judge the outcome of your attempt yourself and hand it in with `fleet done`, or `fleet done --abandon` when you stop short of the goal, and not while your pull request still waits for a review or a merge.
 - R229 Put the cross-repository issues of a joint project in its initiative's project in the issue tracker.
+- R332 As a lead that Agent Fleet started, when a review is still unapproved after 3 rounds or its author and reviewer disagree about a P0 finding, put the matter to a principal with `fleet ask-thread`; give another round yourself instead only when the remaining finding is the same as in the round before, smaller than it was, and undisputed.
 - L17 Open your worktree with `fleet worktree agent-fleet --branch <type>/<short-desc>`, or work in the one your lead names, and check out a pull request's head for review with `fleet worktree agent-fleet --name <name> --detach <head-sha>`; never run `git worktree add`.
 - L19 Before starting a job in this repository, look at `fleet job list` and the open issues for work already under way, and when unsure whether it is, ask through the route your role gives.
 
