@@ -35,14 +35,17 @@ const (
 		"changes no route.\n\n" +
 		"The steps: fleet records the handoff (table `handoffs`), opens a thread in the target " +
 		"channel with `fednet client open-thread`, its first message fleet's one line naming your " +
-		"thread, you and the task's first line, and records it as a thread of that channel. Then " +
+		"channel (`<#<id>>`, which Slack shows as a link), your thread, the task's first line and " +
+		"you, and records it as a thread of that channel. Then " +
 		"it starts a thread agent there, as `fleet inbox` starts one (a thread ticket created and " +
 		"claimed for it, when the scope has a Linear team), whose first message, headed `[FROM: " +
 		"<you>]`, is `[HANDOFF from <you> in thread <your thread>]` and the task: an agent's " +
 		"words, never recorded as the latest message a person posted there. Then it posts one " +
-		"line to your thread, `已转到 #<channel> 的线程 <key>`, and relates the two threads' " +
+		"line to your thread, `已转到 <#<id>> 的[新线程](<link>)`, and relates the two threads' " +
 		"tickets (`atb linear relate`), taking both from the ledger; your ticket is not otherwise " +
-		"touched. While a thread has no ticket the two are not related, said on stderr, and the " +
+		"touched. A thread is linked as `<fednet.slack_url>/archives/<channel>/p<ts without its " +
+		"dot>`; without the scope's `fednet.slack_url`, neither line links a thread or shows its " +
+		"key (`一个线程`). While a thread has no ticket the two are not related, said on stderr, and the " +
 		"handoff stays unfinished: running it again once both have one relates them.\n\n" +
 		"Each step done is recorded (table `steps`, `handoff:<id>`), so running it again with the " +
 		"same task to the same target continues where it stopped and never opens a second thread; " +
@@ -230,11 +233,12 @@ func (ho *handoff) open() error {
 			return exit.Database(err)
 		}
 	}
-	where := "#" + ho.from.Mapping
+	where := " <#" + ho.from.Channel + "> 的"
 	if strings.HasPrefix(ho.from.Channel, "D") {
-		where = "私信"
+		where = "私信里的"
 	}
-	line := fmt.Sprintf("从%s的线程 %s 转来 (%s)：%s", where, ho.me.Thread, ho.me.Agent, WorkOrderTitle(ho.task))
+	line := fmt.Sprintf("从%s转来：%s (%s)", where+threadLink(ho.cfg.SlackURL, ho.me.Thread, "原线程", "一个线程"),
+		WorkOrderTitle(ho.task), ho.me.Agent)
 	thread, err := fednet.OpenThread(ho.cfg.FednetSocket, channel, line)
 	var failure *exit.Failure
 	if errors.As(err, &failure) {
@@ -273,7 +277,8 @@ func (ho *handoff) finish(h *herdr.Herdr) (exit.Code, error) {
 	if err != nil {
 		return 0, again(err)
 	}
-	line := fmt.Sprintf("已转到 #%s 的线程 %s", ho.mapping, ho.to)
+	channel, _, _ := strings.Cut(ho.to, "/")
+	line := fmt.Sprintf("已转到 <#%s> 的%s", channel, threadLink(ho.cfg.SlackURL, ho.to, "新线程", "一个新线程"))
 	if err := runStep(ho.conn, key, "post", func() error { return fednet.Post(ho.cfg.FednetSocket, ho.me.Thread, line) }); err != nil {
 		return 0, again(err)
 	}
@@ -324,6 +329,17 @@ func (ho *handoff) relate(key string) (string, error) {
 		return "", err
 	}
 	return fmt.Sprintf("; %s is related to %s", to.Ticket, from.Ticket), nil
+}
+
+// threadLink is `text` linked to `thread` (`<channel>/<ts>`) in the
+// workspace at `slackURL`, in Markdown, or `bare` without a workspace:
+// the people click a link, never a thread key.
+func threadLink(slackURL, thread, text, bare string) string {
+	channel, ts, ok := strings.Cut(thread, "/")
+	if slackURL == "" || !ok {
+		return bare
+	}
+	return "[" + text + "](" + slackURL + "/archives/" + channel + "/p" + strings.ReplaceAll(ts, ".", "") + ")"
 }
 
 // again is a failed step's error, saying that a rerun finishes the
