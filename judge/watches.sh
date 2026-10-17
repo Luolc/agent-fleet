@@ -17,7 +17,7 @@ CB=$CD/bin
 CDB=/home/agent/.local/state/$T/cfgw.db
 CK=C0801/8.8
 mkdir -p "$CB" /home/agent/.config/$T /home/agent/events /home/agent/run
-cat > "/home/agent/.config/$T/cfgw.json" <<JSON
+scope_config cfgw <<JSON
 {"fednet": {"socket": "$CD/fednet.sock"},
  "watches": {"quiet-threads": {"off": true},
    "ci": {"source": {"command": ["$CB/source", "ci"]}, "do": "tell", "prompt": "cfgw-ci.md", "env": ["CFGW_TOKEN"], "per_run": 3},
