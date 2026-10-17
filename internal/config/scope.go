@@ -271,7 +271,7 @@ func (f *scopeFile) sections(t *Scope) error {
 				strings.Trim(parsed.Path, "/") != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
 				return errors.New("fednet.slack_url: must be the workspace's https address with no path, like https://<workspace>.slack.com")
 			}
-			t.SlackURL = strings.TrimRight(*u, "/")
+			t.SlackURL = parsed.Scheme + "://" + parsed.Host
 		}
 	}
 	if f.Unblock != nil {

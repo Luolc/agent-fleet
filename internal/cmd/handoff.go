@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 
 	"github.com/Luolc/agent-fleet/internal/atb"
@@ -41,7 +42,10 @@ const (
 		"claimed for it, when the scope has a Linear team), whose first message, headed `[FROM: " +
 		"<you>]`, is `[HANDOFF from <you> in thread <your thread>]` and the task: an agent's " +
 		"words, never recorded as the latest message a person posted there. Then it posts one " +
-		"line to your thread, `已转到 <#<id>> 的[新线程](<link>)`, and relates the two threads' " +
+		"line to your thread, `已转到 <#<id>> 的[新线程](<link>)`; with --mention, it posts " +
+		"`你要求的转交在这里` in the new thread, mentioning each user given (fednet puts the " +
+		"mentions first, so Slack notifies them and the notice leads into the new thread); and " +
+		"it relates the two threads' " +
 		"tickets (`atb linear relate`), taking both from the ledger; your ticket is not otherwise " +
 		"touched. A thread is linked as `<fednet.slack_url>/archives/<channel>/p<ts without its " +
 		"dot>`; without the scope's `fednet.slack_url`, neither line links a thread or shows its " +
@@ -49,23 +53,34 @@ const (
 		"handoff stays unfinished: running it again once both have one relates them.\n\n" +
 		"Each step done is recorded (table `steps`, `handoff:<id>`), so running it again with the " +
 		"same task to the same target continues where it stopped and never opens a second thread; " +
-		"once every step is done, it does nothing. A run killed between opening the thread and " +
+		"once every step is done, it does nothing. The mention is a step too (`mention`), posted " +
+		"at most once: the run that posts it uses its own --mention, a later run's --mention is " +
+		"ignored, and a run without --mention skips the step, leaving it to a later run that has " +
+		"one while the handoff is unfinished. A run killed between opening the thread and " +
 		"recording it leaves that thread in Slack with only fleet's line, and the next run opens " +
 		"another.\n\n" +
 		"Exit: 0 when the new thread's agent has the task (or had it already); 1 when the caller " +
-		"is not a live thread agent, the file is unreadable or empty, the target is not one " +
-		"directory name, is your own thread's channel, is not checked out on this machine, or " +
-		"fleet knows no id of its channel, or the scope has no fednet socket (each before " +
+		"is not a live thread agent, a --mention is not a Slack user id (U or W, then capitals " +
+		"and digits), the file is unreadable or empty, the target is not one directory name, is " +
+		"your own thread's channel, is not checked out on this machine, or fleet knows no id of " +
+		"its channel, or the scope has no fednet socket (each before " +
 		"anything is recorded); 2/3/4 as `send` for the delivery; 3 when the new thread agent " +
 		"stops at an unknown screen; 5 when fednet refuses or fails to open the thread or to " +
-		"post, or herdr, atb or the database fails. After a failure, run it again to finish."
+		"post, or refuses a mention (a user not on the hub's user list, or a fednet too old for -mention: the " +
+		"line in your thread is posted by then), or herdr, atb or the database fails. After a failure, run it " +
+		"again to finish, without the refused --mention."
 )
 
 // ThreadHandoffArgs are the arguments of `thread handoff`: one of Repo
-// and Initiative, and the task's file.
+// and Initiative, the task's file, and the Slack user ids to mention in
+// the new thread.
 type ThreadHandoffArgs struct {
 	Repo, Initiative, File string
+	Mentions               []string
 }
+
+// slackUser is the shape of a Slack user id.
+var slackUser = regexp.MustCompile(`^[UW][A-Z0-9]+$`)
 
 // handoffRoute takes the task to the new thread; tests replace it.
 var handoffRoute = toThread
@@ -78,6 +93,11 @@ func ThreadHandoff(h *herdr.Herdr, args ThreadHandoffArgs) (exit.Code, error) {
 	}
 	if err := handoffCaller(me); err != nil {
 		return 0, err
+	}
+	for _, m := range args.Mentions {
+		if !slackUser.MatchString(m) {
+			return 0, exit.Refusedf("--mention %q is not a Slack user id, such as U012AB3CD: take it from the `user` of the person's message", m)
+		}
 	}
 	task, err := readTask(args.File)
 	if err != nil {
@@ -115,7 +135,7 @@ func ThreadHandoff(h *herdr.Herdr, args ThreadHandoffArgs) (exit.Code, error) {
 	if dir := MappingDir(cfg, mapping); !isDir(dir) {
 		return 0, exit.Refusedf("#%s runs its agents in %s, which is not on this machine; nothing is recorded", mapping, dir)
 	}
-	ho := &handoff{conn: conn, cfg: cfg, me: me, from: from, mapping: mapping, task: task}
+	ho := &handoff{conn: conn, cfg: cfg, me: me, from: from, mapping: mapping, task: task, mentions: args.Mentions}
 	if err := ho.find(); err != nil {
 		return 0, err
 	}
@@ -182,19 +202,20 @@ func isDir(path string) bool {
 }
 
 // handoff is one `thread handoff`: the caller and its thread, the
-// target's mapping, the task, and the ledger's row of it once recorded
-// (`id`), with the thread opened for it (`to`) and whether every step is
-// done.
+// target's mapping, the task, the users to mention, and the ledger's row
+// of it once recorded (`id`), with the thread opened for it (`to`) and
+// whether every step is done.
 type handoff struct {
-	conn    *sql.DB
-	cfg     *config.Scope
-	me      *identity.Identity
-	from    *threadRow
-	mapping string
-	task    string
-	id      int64
-	to      string
-	done    bool
+	conn     *sql.DB
+	cfg      *config.Scope
+	me       *identity.Identity
+	from     *threadRow
+	mapping  string
+	task     string
+	mentions []string
+	id       int64
+	to       string
+	done     bool
 }
 
 // find reads the newest handoff of this task from this thread agent to
@@ -261,8 +282,9 @@ func (ho *handoff) open() error {
 
 // finish runs the steps after the thread is open, each recorded under
 // `handoff:<id>`: the task to the new thread's agent, the line in the
-// caller's thread, and the relation of the two tickets. The line goes
-// before the relation, so the people see the handoff even while Linear
+// caller's thread, the mention in the new thread, and the relation of the
+// two tickets. The line goes before the mention and the relation, so the
+// people see the handoff even while fednet refuses a mention or Linear
 // fails.
 func (ho *handoff) finish(h *herdr.Herdr) (exit.Code, error) {
 	key := fmt.Sprintf("handoff:%d", ho.id)
@@ -281,6 +303,18 @@ func (ho *handoff) finish(h *herdr.Herdr) (exit.Code, error) {
 	line := fmt.Sprintf("已转到 <#%s> 的%s", channel, threadLink(ho.cfg.SlackURL, ho.to, "新线程", "一个新线程"))
 	if err := runStep(ho.conn, key, "post", func() error { return fednet.Post(ho.cfg.FednetSocket, ho.me.Thread, line) }); err != nil {
 		return 0, again(err)
+	}
+	if len(ho.mentions) > 0 {
+		err := runStep(ho.conn, key, "mention", func() error {
+			_, err := fednet.PostID(ho.cfg.FednetSocket, ho.to, "你要求的转交在这里", ho.mentions...)
+			if errors.Is(err, fednet.ErrMention) {
+				return exit.Environmentf("%v; run it again without that --mention", err)
+			}
+			return err
+		})
+		if err != nil {
+			return 0, again(err)
+		}
 	}
 	related, err := ho.relate(key)
 	if err != nil {

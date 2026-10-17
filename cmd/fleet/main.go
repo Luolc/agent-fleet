@@ -20,7 +20,7 @@ import (
 )
 
 // version is the fleet release version.
-const version = "0.2.2"
+const version = "0.2.3"
 
 const longAbout = "Runs and coordinates coding agents through herdr.\n\n" +
 	"A thread agent starts a job (`fleet job start`): its lead, which starts workers " +
@@ -165,7 +165,7 @@ Options:
   -h, --help  Print help
 `
 
-const threadHandoffUsage = "Usage: fleet thread handoff [OPTIONS] (--repo <REPO> | --initiative <INITIATIVE>) --file <PATH>"
+const threadHandoffUsage = "Usage: fleet thread handoff [OPTIONS] (--repo <REPO> | --initiative <INITIATIVE>) --file <PATH> [--mention <USER>]..."
 
 var threadHandoffHelp = cmd.ThreadHandoffLongAbout + "\n\n" + threadHandoffUsage + `
 
@@ -173,6 +173,7 @@ Options:
       --repo <REPO>              The repo whose channel takes the work: <repo prefix><REPO>
       --initiative <INITIATIVE>  The initiative whose channel takes the work: <initiative prefix><INITIATIVE>
       --file <PATH>              The task: what to do and why, the people's words with their thread key and ts
+      --mention <USER>           A Slack user id to mention in the new thread, when that person asked for the handoff; repeatable
       --scope <NAME>             ` + scopeHelp + `
   -h, --help                     Print help
 `
@@ -698,6 +699,8 @@ func runThreadHandoff(args []string, scope *cliargs.OptString) (exit.Code, error
 	fs.Var(&repo, "repo", "The repo whose channel takes the work")
 	fs.Var(&initiative, "initiative", "The initiative whose channel takes the work")
 	fs.Var(&file, "file", "The task")
+	var mention cliargs.Strings
+	fs.Var(&mention, "mention", "A Slack user id to mention in the new thread")
 	_, helped, err := parse(fs, args, threadHandoffHelp, threadHandoffUsage, nil, &file)
 	if err != nil || helped {
 		return exit.Ok, err
@@ -709,7 +712,8 @@ func runThreadHandoff(args []string, scope *cliargs.OptString) (exit.Code, error
 	if err != nil {
 		return 0, err
 	}
-	return cmd.ThreadHandoff(h, cmd.ThreadHandoffArgs{Repo: repo.Value, Initiative: initiative.Value, File: file.Value})
+	return cmd.ThreadHandoff(h, cmd.ThreadHandoffArgs{Repo: repo.Value, Initiative: initiative.Value, File: file.Value,
+		Mentions: mention.Values})
 }
 
 func runThreadPost(args []string, scope *cliargs.OptString) (exit.Code, error) {
