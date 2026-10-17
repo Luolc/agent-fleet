@@ -1,6 +1,6 @@
 // `fleet thread handoff`: a thread agent hands a piece of work to the
-// channel of another repo or initiative, where a thread agent of that
-// channel takes it on in a thread fleet opens there.
+// channel of a repo or initiative, its own included, where a thread agent
+// of that channel takes it on in a thread fleet opens there.
 
 package cmd
 
@@ -24,13 +24,14 @@ import (
 // ThreadHandoffAbout and ThreadHandoffLongAbout are the help texts of
 // `thread handoff`.
 const (
-	ThreadHandoffAbout     = "Hand work off to another repo's or initiative's channel, where a new thread agent takes it on (thread agents only)"
-	ThreadHandoffLongAbout = "Hand work off to another repo's or initiative's channel, where a new thread agent takes it on (thread agents only).\n\n" +
+	ThreadHandoffAbout     = "Hand work off to a repo's or initiative's channel, your own included, where a new thread agent takes it on (thread agents only)"
+	ThreadHandoffLongAbout = "Hand work off to a repo's or initiative's channel, your own included, where a new thread agent takes it on (thread agents only).\n\n" +
 		"Only a thread agent hands work off: a lead tells its home thread's agent, a worker its " +
 		"lead. What goes over is the task in --file, nothing else: a job of yours keeps running " +
 		"where it is. The target is a channel fleet already serves: --repo <R> is " +
 		"`<repo prefix><R>`, --initiative <I> `<initiative prefix><I>` (the prefixes are the " +
-		"scope's `channels`), and it must not be your own thread's. fleet takes the channel's id " +
+		"scope's `channels`); naming your own thread's channel opens a new thread beside yours, which is " +
+		"how a long thread is continued afresh. fleet takes the channel's id " +
 		"as `ask-thread` does for a home thread: from the newest thread of it this scope has seen, " +
 		"or else from fednet's routes (`fednet client routes -json`); it opens no channel and " +
 		"changes no route.\n\n" +
@@ -61,8 +62,8 @@ const (
 		"another.\n\n" +
 		"Exit: 0 when the new thread's agent has the task (or had it already); 1 when the caller " +
 		"is not a live thread agent, a --mention is not a Slack user id (U or W, then capitals " +
-		"and digits), the file is unreadable or empty, the target is not one directory name, is " +
-		"your own thread's channel, is not checked out on this machine, or fleet knows no id of " +
+		"and digits), the file is unreadable or empty, the target is not one directory name, " +
+		"is not checked out on this machine, or fleet knows no id of " +
 		"its channel, or the scope has no fednet socket (each before " +
 		"anything is recorded); 2/3/4 as `send` for the delivery; 3 when the new thread agent " +
 		"stops at an unknown screen; 5 when fednet refuses or fails to open the thread or to " +
@@ -128,9 +129,6 @@ func ThreadHandoff(h *herdr.Herdr, args ThreadHandoffArgs) (exit.Code, error) {
 	}
 	if from == nil {
 		return 0, exit.Refusedf("the ledger has no thread %s", me.Thread)
-	}
-	if from.Mapping == mapping {
-		return 0, exit.Refusedf("#%s is your own thread's channel: there is nothing to hand off to", mapping)
 	}
 	if dir := MappingDir(cfg, mapping); !isDir(dir) {
 		return 0, exit.Refusedf("#%s runs its agents in %s, which is not on this machine; nothing is recorded", mapping, dir)

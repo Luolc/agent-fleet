@@ -182,6 +182,41 @@ func TestAHandoffWithoutTheWorkspaceAddressLinksNoThreadAndShowsNoKey(t *testing
 	}
 }
 
+// A handoff to the caller's own channel opens a new thread beside the
+// caller's, taking the channel's id from the caller's thread.
+func TestAHandoffToItsOwnChannelOpensANewThreadThere(t *testing.T) {
+	conn, task, bin := handoffSetup(t)
+	if err := os.MkdirAll(filepath.Join(os.Getenv("HOME"), "dev", "example-a"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fail := false
+	got := fakeHandoffRoute(t, &fail)
+	if code, err := ThreadHandoff(nil, ThreadHandoffArgs{Repo: "example-a", File: task}); err != nil || code != exit.Ok {
+		t.Fatalf("exit %d, %v", code, err)
+	}
+	to := "C0SRC/1700000500.000"
+	want := []string{
+		"client open-thread -socket /run/fednet.sock -channel C0SRC -- 从 <#C0SRC> 的一个线程转来：Import the B table (" + handoffAgent + ")",
+		"client post -socket /run/fednet.sock -thread " + handoffFrom + " -- 已转到 <#C0SRC> 的一个新线程",
+	}
+	if calls := fednetCalls(t, bin); strings.Join(calls, "\n") != strings.Join(want, "\n") {
+		t.Errorf("fednet calls:\n%s\nwant:\n%s", strings.Join(calls, "\n"), strings.Join(want, "\n"))
+	}
+	if atbLog, _ := os.ReadFile(filepath.Join(bin, "atb.log")); string(atbLog) != "linear relate EX-2 EX-1\n" {
+		t.Errorf("atb calls %q", atbLog)
+	}
+	if len(*got) != 1 || (*got)[0].Thread != to {
+		t.Fatalf("deliveries %+v", *got)
+	}
+	var mapping, cwd string
+	if err := conn.QueryRow("SELECT mapping, cwd FROM threads WHERE thread = ?1", to).Scan(&mapping, &cwd); err != nil {
+		t.Fatal(err)
+	}
+	if mapping != "repo-example-a" || cwd != filepath.Join(os.Getenv("HOME"), "dev", "example-a") {
+		t.Errorf("new thread: mapping %q, cwd %q", mapping, cwd)
+	}
+}
+
 // A delivery that fails leaves the thread open and recorded: the next
 // run delivers to that thread and opens no other.
 func TestAHandoffRunAgainAfterAFailedDeliveryOpensNoSecondThread(t *testing.T) {
@@ -212,13 +247,10 @@ func TestAHandoffRunAgainAfterAFailedDeliveryOpensNoSecondThread(t *testing.T) {
 }
 
 // Refusals come before anything is recorded or opened.
-func TestAHandoffIsRefusedBeforeAnythingForOtherCallersItsOwnChannelAndAnUnknownChannel(t *testing.T) {
+func TestAHandoffIsRefusedBeforeAnythingForOtherCallersAndAnUnknownChannel(t *testing.T) {
 	conn, task, bin := handoffSetup(t)
 	fail := false
 	got := fakeHandoffRoute(t, &fail)
-	if err := os.MkdirAll(filepath.Join(os.Getenv("HOME"), "dev", "example-a"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	if err := os.MkdirAll(filepath.Join(os.Getenv("HOME"), "dev", "example-c"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -227,7 +259,6 @@ func TestAHandoffIsRefusedBeforeAnythingForOtherCallersItsOwnChannelAndAnUnknown
 	}{
 		{"a lead", "lead", "example-b", "", "a lead does not hand work off"},
 		{"a worker", "worker", "example-b", "", "a worker does not hand work off"},
-		{"its own channel", "thread", "example-a", "", "#repo-example-a is your own thread's channel"},
 		{"a channel without an id", "thread", "example-c", "", "fleet knows no id of #repo-example-c"},
 		{"a repo not checked out", "thread", "example-d", "", "not on this machine"},
 		{"a mention that is no user id", "thread", "example-b", "@alice", "is not a Slack user id"},
