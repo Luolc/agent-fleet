@@ -34,7 +34,8 @@ const (
 		"on, the task's first non-empty line gives a title; the name uses only [a-z0-9-], is " +
 		"not `watch`, and is not taken in the ledger or in herdr; the job's workspace exists; " +
 		"the job holds fewer than max_agents_per_job live agents including the lead; with " +
-		"resource_check, the 1-minute load average is below the CPU count (skipped with --light) " +
+		"resource_check, the 1-minute load average is below the CPU count times the scope's " +
+		"`resources.load_multiplier` (default 1; skipped with --light) " +
 		"and available memory is above 2 GiB; last, for a cross-repo job, the parent's team and project are " +
 		"read from Linear.\n\n" +
 		"Then the worker's row is reserved as `starting`, in one transaction with the name and " +
@@ -189,7 +190,7 @@ func (c *spawnChecked) ledgerAndHerdr(h *herdr.Herdr, conn *sql.DB) error {
 		return exit.Environmentf("expected one workspace labelled %s, herdr has %d", c.me.Job, len(workspaces))
 	}
 	c.workspace = workspaces[0]
-	if err := resources(c.cfg, c.light); err != nil {
+	if err := resources(c.cfg, c.sc, c.light); err != nil {
 		return err
 	}
 	return c.linear.resolve()

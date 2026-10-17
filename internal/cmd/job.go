@@ -62,7 +62,8 @@ const (
 		"lead has the same parent issue (the lead is named: talk to it instead); the lead's " +
 		"name is free in the ledger and in herdr; no workspace is labelled after the job and, " +
 		"for a cross-repo job, <initiatives>/<I>/<job>/ does not exist; with resource_check, the " +
-		"1-minute load average is below the CPU count (skipped with --light, as for `fleet spawn " +
+		"1-minute load average is below the CPU count times the scope's `resources.load_multiplier` " +
+		"(default 1; skipped with --light, as for `fleet spawn " +
 		"--light`; see its help) and available memory is above 2 GiB; " +
 		"last, for a cross-repo job, the parent's team and project are read from Linear.\n\n" +
 		"Then the job is reserved: the job's row (open, with the caller's thread as the job's " +
@@ -446,7 +447,7 @@ func (c *jobChecked) ledgerAndHerdr(h *herdr.Herdr, conn *sql.DB) error {
 		return exit.Refusedf("job %s already has a workspace or the directory %s; if it is left over, "+
 			"clean up with `fleet job end %s --force`", job, c.cwd, job)
 	}
-	if err := resources(c.cfg, c.light); err != nil {
+	if err := resources(c.cfg, c.sc, c.light); err != nil {
 		return err
 	}
 	return c.linear.resolve()

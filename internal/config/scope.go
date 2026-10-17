@@ -39,6 +39,9 @@ type Scope struct {
 	// Models are the --model and --effort `job start` and `spawn` pass
 	// when the command gives none.
 	Models Models
+	// LoadMultiplier scales the CPU count that `job start` and `spawn`
+	// keep the 1-minute load average below; above 0, default 1.
+	LoadMultiplier float64
 	// Watches are the policy watches of `fleet watch`, the defaults
 	// included, in name order.
 	Watches []Entry
@@ -96,6 +99,9 @@ type scopeFile struct {
 	Unblock *struct {
 		Project string `json:"project"`
 	} `json:"unblock"`
+	Resources *struct {
+		LoadMultiplier *float64 `json:"load_multiplier"`
+	} `json:"resources"`
 	Paths *struct {
 		Checkouts   *string `json:"checkouts"`
 		Initiatives *string `json:"initiatives"`
@@ -194,7 +200,8 @@ func ParseScope(data []byte, home string) (*Scope, error) {
 	if err := refuseNulls(data, ""); err != nil {
 		return nil, err
 	}
-	t := &Scope{Paths: DefaultPaths, Channels: DefaultChannels, Watch: DefaultWatch, home: filepath.Clean(home)}
+	t := &Scope{Paths: DefaultPaths, Channels: DefaultChannels, Watch: DefaultWatch, LoadMultiplier: 1,
+		home: filepath.Clean(home)}
 	if err := f.sections(t); err != nil {
 		return nil, err
 	}
@@ -259,6 +266,15 @@ func (f *scopeFile) sections(t *Scope) error {
 			return errors.New("unblock.project: must be set when unblock is")
 		}
 		t.UnblockProject = f.Unblock.Project
+	}
+	if f.Resources != nil {
+		if f.Resources.LoadMultiplier == nil {
+			return errors.New("resources.load_multiplier: must be set when resources is")
+		}
+		if *f.Resources.LoadMultiplier <= 0 {
+			return errors.New("resources.load_multiplier: must be above 0")
+		}
+		t.LoadMultiplier = *f.Resources.LoadMultiplier
 	}
 	return nil
 }

@@ -216,11 +216,11 @@ func TestResourcesNeedLoadBelowCPUsAndMoreThan2GiB(t *testing.T) {
 	mem := func(kib uint64) string {
 		return "MemTotal: 99999999 kB\nMemAvailable: " + strconv.FormatUint(kib, 10) + " kB\n"
 	}
-	if err := CheckResources("1.50 1.0 1.0 1/100 42\n", 2, mem(3*1024*1024), false); err != nil {
+	if err := CheckResources("1.50 1.0 1.0 1/100 42\n", 2, 1, mem(3*1024*1024), false); err != nil {
 		t.Fatal(err)
 	}
 	refused := func(load string, cpus int, kib uint64) exit.Code {
-		return code(CheckResources(load, cpus, mem(kib), false))
+		return code(CheckResources(load, cpus, 1, mem(kib), false))
 	}
 	if got := refused("2.00 0 0", 2, 3*1024*1024); got != exit.Refused {
 		t.Errorf("load at the cpu count: %d", got)
@@ -236,14 +236,32 @@ func TestResourcesNeedLoadBelowCPUsAndMoreThan2GiB(t *testing.T) {
 func TestALightAgentSkipsTheLoadButNotTheMemory(t *testing.T) {
 	mem := func(kib uint64) string { return "MemAvailable: " + strconv.FormatUint(kib, 10) + " kB\n" }
 	busy := "26.00 18.0 11.0 9/900 42\n"
-	if err := CheckResources(busy, 8, mem(3*1024*1024), true); err != nil {
+	if err := CheckResources(busy, 8, 1, mem(3*1024*1024), true); err != nil {
 		t.Errorf("light at load 26 on 8 CPUs: %v", err)
 	}
-	if got := code(CheckResources(busy, 8, mem(3*1024*1024), false)); got != exit.Refused {
+	if got := code(CheckResources(busy, 8, 1, mem(3*1024*1024), false)); got != exit.Refused {
 		t.Errorf("not light at load 26 on 8 CPUs: %d", got)
 	}
-	if got := code(CheckResources(busy, 8, mem(1024*1024), true)); got != exit.Refused {
+	if got := code(CheckResources(busy, 8, 1, mem(1024*1024), true)); got != exit.Refused {
 		t.Errorf("light with 1 GiB available: %d", got)
+	}
+}
+
+func TestTheLoadMultiplierScalesTheCPUCount(t *testing.T) {
+	mem := "MemAvailable: 3145728 kB\n"
+	if err := CheckResources("10.00 9.0 8.0 9/900 42\n", 8, 1.5, mem, false); err != nil {
+		t.Errorf("load 10 on 8 CPUs × 1.5: %v", err)
+	}
+	err := CheckResources("12.00 9.0 8.0 9/900 42\n", 8, 1.5, mem, false)
+	if code(err) != exit.Refused || !strings.Contains(err.Error(), "not below 12 (8 CPUs × load_multiplier 1.5)") {
+		t.Errorf("load 12 on 8 CPUs × 1.5: %v", err)
+	}
+	sc, err := config.ParseScope([]byte(`{}`), "/home/u")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := code(CheckResources("8.00 9.0 8.0 9/900 42\n", 8, sc.LoadMultiplier, mem, false)); got != exit.Refused {
+		t.Errorf("load 8 on 8 CPUs with the default multiplier: %d", got)
 	}
 }
 
@@ -296,18 +314,22 @@ func TestWorkOrderTitleIsTheFirstNonEmptyLine(t *testing.T) {
 func TestTheResourceCheckFollowsTheConfig(t *testing.T) {
 	saved := machineResources
 	defer func() { machineResources = saved }()
-	machineResources = func(light bool) error {
-		if light {
+	machineResources = func(multiplier float64, light bool) error {
+		if light || multiplier > 2 {
 			return nil
 		}
 		return exit.Refusedf("the machine is busy")
 	}
+	sc := &config.Scope{LoadMultiplier: 1}
+	if err := resources(&config.Config{ResourceCheck: true}, &config.Scope{LoadMultiplier: 3}, false); err != nil {
+		t.Errorf("the scope's load_multiplier is not passed on: %v", err)
+	}
 	for _, on := range []bool{true, false} {
 		cfg := &config.Config{MaxAgentsPerJob: 4, ResourceCheck: on}
-		if refused := resources(cfg, false) != nil; refused != on {
+		if refused := resources(cfg, sc, false) != nil; refused != on {
 			t.Errorf("resource_check %v: refused %v", on, refused)
 		}
-		if err := resources(cfg, true); err != nil {
+		if err := resources(cfg, sc, true); err != nil {
 			t.Errorf("resource_check %v, light: %v", on, err)
 		}
 	}
