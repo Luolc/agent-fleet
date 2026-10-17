@@ -113,6 +113,58 @@ func TestSyncCheckoutLeavesACheckoutThatIsUpToDateOrAhead(t *testing.T) {
 	}
 }
 
+// fakeStatuteOnPath puts a statute on PATH that appends its argv and cwd
+// to the returned file and exits 3 for `statute upgrade`, 0 otherwise.
+func fakeStatuteOnPath(t *testing.T) string {
+	t.Helper()
+	bin := t.TempDir()
+	calls := filepath.Join(bin, "calls")
+	script := "#!/bin/sh\necho \"$* in $(pwd)\" >> " + calls + "\nif [ \"$1\" = upgrade ]; then exit 3; fi\n"
+	if err := os.WriteFile(filepath.Join(bin, "statute"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+	return calls
+}
+
+func TestSyncCheckoutRefreshesStatuteAfterTheFastForwardOrWithout(t *testing.T) {
+	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+	calls := fakeStatuteOnPath(t)
+	stderr, err := os.Create(filepath.Join(t.TempDir(), "stderr"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved := os.Stderr
+	os.Stderr = stderr
+	t.Cleanup(func() { os.Stderr = saved })
+
+	// statute.toml comes with the commit the fast-forward brings in.
+	checkout, other := behindOrigin(t)
+	commit(t, other, "statute.toml")
+	gitIn(t, other, "push", "--quiet", "origin", "main")
+	if note := syncCheckout(checkout); note != "" {
+		t.Fatalf("behind: %q", note)
+	}
+	want := "upgrade --private in " + checkout + "\ncompile --private-only in " + checkout + "\n"
+	if got, _ := os.ReadFile(calls); string(got) != want {
+		t.Errorf("behind: statute calls = %q, want %q", got, want)
+	}
+	out, _ := os.ReadFile(stderr.Name())
+	if !strings.Contains(string(out), "warning: `statute upgrade --private` in "+checkout+" failed") {
+		t.Errorf("stderr = %q, want the upgrade's warning", out)
+	}
+
+	// A checkout left as it is still gets the refresh.
+	_ = os.Remove(calls)
+	commit(t, checkout, "c")
+	if note := syncCheckout(checkout); !strings.Contains(note, "it is ahead of origin/main by 1") {
+		t.Errorf("ahead: %q", note)
+	}
+	if got, _ := os.ReadFile(calls); string(got) != want {
+		t.Errorf("ahead: statute calls = %q, want %q", got, want)
+	}
+}
+
 func TestNoteSectionKeepsOnlyTheNotesGiven(t *testing.T) {
 	if got := noteSection("", ""); got != "" {
 		t.Errorf("no notes: %q", got)

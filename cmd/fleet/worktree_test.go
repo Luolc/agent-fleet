@@ -340,15 +340,16 @@ func (w *world) withStatute(seed string) {
 
 // fakeStatute puts a statute on PATH that appends its argv and cwd to
 // <dir>/statute-calls, prints a line to stdout and one to stderr, and
-// exits `code`.
-func (w *world) fakeStatute(code int) {
+// exits `upgrade` for `statute upgrade` and `compile` otherwise.
+func (w *world) fakeStatute(upgrade, compile int) {
 	w.t.Helper()
 	script := fmt.Sprintf(`#!/bin/sh
 echo "$* in $(pwd)" >> %q
 echo "statute out"
 echo "statute err" >&2
+if [ "$1" = upgrade ]; then exit %d; fi
 exit %d
-`, filepath.Join(w.dir, "statute-calls"), code)
+`, filepath.Join(w.dir, "statute-calls"), upgrade, compile)
 	if err := os.WriteFile(filepath.Join(w.dir, "fake-herdr", "statute"), []byte(script), 0o755); err != nil {
 		w.t.Fatal(err)
 	}
@@ -364,18 +365,18 @@ func (w *world) statuteCalls() string {
 	return string(out)
 }
 
-func TestWorktreeRunsStatuteCompileInTheRootWithStatuteToml(t *testing.T) {
+func TestWorktreeRunsStatuteUpgradeThenCompileInTheRootWithStatuteToml(t *testing.T) {
 	w := newWorld(t)
 	_, seed := w.origin()
 	w.withStatute(seed)
-	w.fakeStatute(0)
+	w.fakeStatute(0, 0)
 	path := filepath.Join(w.dir, "home", "wt", dataset, "item-1")
 
 	out := w.worktree("item-1", dataset)
 	if out.code != 0 || out.stdout != path+"\n" {
 		t.Fatalf("%+v", out)
 	}
-	if got, want := w.statuteCalls(), "compile --private-only in "+path+"\n"; got != want {
+	if got, want := w.statuteCalls(), "upgrade --private in "+path+"\ncompile --private-only in "+path+"\n"; got != want {
 		t.Errorf("statute calls = %q, want %q", got, want)
 	}
 	if !strings.Contains(out.stderr, "statute out") || !strings.Contains(out.stderr, "statute err") {
@@ -386,7 +387,7 @@ func TestWorktreeRunsStatuteCompileInTheRootWithStatuteToml(t *testing.T) {
 func TestWorktreeWithoutStatuteTomlRunsNoStatute(t *testing.T) {
 	w := newWorld(t)
 	w.origin()
-	w.fakeStatute(0)
+	w.fakeStatute(0, 0)
 
 	out := w.worktree("item-1", dataset)
 	if out.code != 0 || out.stderr != "" {
@@ -412,7 +413,7 @@ func TestWorktreeWarnsWhenStatuteIsMissingOrFails(t *testing.T) {
 		t.Errorf("no statute: the worktree is not there")
 	}
 
-	w.fakeStatute(3)
+	w.fakeStatute(3, 3)
 	out = w.worktree("item-2", dataset)
 	if out.code != 0 || out.stdout != filepath.Join(wt, "item-2")+"\n" ||
 		!strings.Contains(out.stderr, "`statute compile --private-only` in "+filepath.Join(wt, "item-2")+" failed") ||
@@ -421,6 +422,24 @@ func TestWorktreeWarnsWhenStatuteIsMissingOrFails(t *testing.T) {
 	}
 	if len(w.worktreeRows()) != 2 {
 		t.Errorf("rows = %q, want both worktrees", w.worktreeRows())
+	}
+}
+
+func TestWorktreeStillCompilesWhenTheStatuteUpgradeFails(t *testing.T) {
+	w := newWorld(t)
+	_, seed := w.origin()
+	w.withStatute(seed)
+	w.fakeStatute(3, 0)
+	path := filepath.Join(w.dir, "home", "wt", dataset, "item-1")
+
+	out := w.worktree("item-1", dataset)
+	if out.code != 0 || out.stdout != path+"\n" ||
+		!strings.Contains(out.stderr, "warning: `statute upgrade --private` in "+path+" failed") ||
+		strings.Contains(out.stderr, "`statute compile --private-only` in "+path+" failed") {
+		t.Errorf("%+v, want exit 0, the path and a warning for the upgrade alone", out)
+	}
+	if got, want := w.statuteCalls(), "upgrade --private in "+path+"\ncompile --private-only in "+path+"\n"; got != want {
+		t.Errorf("statute calls = %q, want %q", got, want)
 	}
 }
 

@@ -12,7 +12,7 @@ import (
 
 // The end-to-end tests of `worktree` are in cmd/fleet; this one needs a
 // shorter statuteTimeout, which only a test in this package can set.
-func TestCompileStatuteKillsAHungStatuteAndOnlyWarns(t *testing.T) {
+func TestRefreshStatuteKillsAHungStatuteAndOnlyWarns(t *testing.T) {
 	dir, bin := t.TempDir(), t.TempDir()
 	pidFile := filepath.Join(dir, "child")
 	script := "#!/bin/sh\nsleep 30 &\necho $! > " + pidFile + "\nwait\n"
@@ -35,9 +35,9 @@ func TestCompileStatuteKillsAHungStatuteAndOnlyWarns(t *testing.T) {
 	t.Cleanup(func() { os.Stderr = saved })
 
 	start := time.Now()
-	compileStatute(dir)
+	refreshStatute(dir)
 	if took := time.Since(start); took > 5*time.Second {
-		t.Errorf("compileStatute took %v", took)
+		t.Errorf("refreshStatute took %v", took)
 	}
 	out, _ := os.ReadFile(stderr.Name())
 	if want := "warning: `statute compile --private-only` in " + dir + " timed out"; !strings.Contains(string(out), want) {

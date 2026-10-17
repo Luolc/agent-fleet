@@ -25,8 +25,13 @@ var fetchTimeout = 30 * time.Second
 // ignored file alone. It never stops a start: anything
 // else leaves the checkout as it is, and the returned sentence says why,
 // for the agent's first message; "" when the checkout is up to date.
+// Either way it then refreshes statute's private lock and output, which
+// are not tracked, so a checkout left as it is still gets current private
+// rules.
 func syncCheckout(dir string) string {
-	if reason := fastForward(dir); reason != "" {
+	reason := fastForward(dir)
+	refreshStatute(dir)
+	if reason != "" {
 		fmt.Fprintf(os.Stderr, "note: %s was not updated from origin: %s\n", dir, reason)
 		return fmt.Sprintf("The checkout %s was not updated from origin before you started: %s. What you read there "+
 			"(AGENTS.md, a charter, the docs) may be behind origin; leave the checkout itself as it is.", dir, reason)
