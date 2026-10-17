@@ -872,13 +872,21 @@ check "handoff: again, exit 0" 0 "$rc"
 has "handoff: again, nothing done" "$out" "already handed off to thread $KD"
 check "handoff: again, one thread opened and one line posted" "1 1" \
   "$(grep -c open-thread /home/agent/fednet.log) $(grep -c '已转到' /home/agent/fednet.log)"
+check "handoff without --mention: no line in the new thread mentions anyone" 0 "$(grep -c -- '-mention' /home/agent/fednet.log)"
 # Without the scope's fednet.slack_url, the lines link no thread and show
-# no thread key.
+# no thread key. With --mention, the person is mentioned in the new thread
+# once.
 echo TH-8 > /home/agent/next-ticket
-out=$(thra "$KH" TH-6 -- thread handoff --repo example-plain --file "$(task handoff-plain 'Import the plain table 0xHAND2')" 2>&1); rc=$?
+hplain=$(task handoff-plain 'Import the plain table 0xHAND2')
+out=$(thra "$KH" TH-6 -- thread handoff --repo example-plain --file "$hplain" --mention U0JUDGE 2>&1); rc=$?
 check "handoff without slack_url: exit 0" 0 "$rc"
 [ "$rc" = 0 ] || printf '%s\n' "$out"
 check "handoff without slack_url: both lines link no thread and show no thread key" "1 1" \
   "$(grep -Fxc "client open-thread -socket /home/agent/fednet.sock -channel C0HP -- 从 <#C0HS> 的一个线程转来：Import the plain table 0xHAND2 ($AH)" /home/agent/fednet.log) $(grep -Fxc "client post -socket /home/agent/fednet.sock -thread $KH -- 已转到 <#C0HP> 的一个新线程" /home/agent/fednet.log)"
+check "handoff with --mention: one line in the new thread mentions the person" 1 \
+  "$(grep -Fxc "client post -socket /home/agent/fednet.sock -thread C0HP/1700000500.000 -mention U0JUDGE -- 你要求的转交在这里" /home/agent/fednet.log)"
+out=$(thra "$KH" TH-6 -- thread handoff --repo example-plain --file "$hplain" --mention U0LATER 2>&1); rc=$?
+check "handoff with --mention: again, exit 0" 0 "$rc"
+check "handoff with --mention: again, nobody mentioned a second time" 1 "$(grep -c -- '-mention' /home/agent/fednet.log)"
 settled thread-c0hp-1700000500-000
 rm -f /home/agent/next-ticket

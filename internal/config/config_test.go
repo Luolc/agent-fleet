@@ -92,6 +92,10 @@ func TestScopeConfigIsOptionalAndStrict(t *testing.T) {
 	if err != nil || got.SlackURL != "https://slack.example.test" {
 		t.Errorf("slack_url: %+v, %v", got, err)
 	}
+	got, err = ParseScope([]byte(`{"fednet": {"socket": "/run/fednet.sock", "slack_url": "https://slack.example.test?"}}`), "/home/u")
+	if err != nil || got.SlackURL != "https://slack.example.test" {
+		t.Errorf("slack_url ending in ?: %+v, %v", got, err)
+	}
 	for _, bad := range []string{`""`, `"http://slack.example.test"`, `"slack.example.test"`, `"https://slack.example.test/archives"`} {
 		if _, err := ParseScope([]byte(`{"fednet": {"socket": "/run/fednet.sock", "slack_url": `+bad+`}}`), "/home/u"); err == nil ||
 			!strings.Contains(err.Error(), "fednet.slack_url") {

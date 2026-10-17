@@ -33,7 +33,9 @@ func handoffSetup(t *testing.T) (*sql.DB, string, string) {
 		"fednet": "#!/bin/sh\necho \"$*\" >> " + filepath.Join(bin, "fednet.log") + "\n" +
 			"[ \"$2\" = routes ] && { echo '{\"routes\":[{\"channel\":\"C0DST\",\"name\":\"repo-example-b\"}]}'; exit 0; }\n" +
 			"[ \"$2\" = open-thread ] && { echo \"$6/1700000500.000\"; exit 0; }\n" +
-			"[ -f " + filepath.Join(bin, "post-down") + " ] && [ \"$2\" = post ] && exit 4\necho m-1\n",
+			"[ -f " + filepath.Join(bin, "post-down") + " ] && [ \"$2\" = post ] && exit 4\n" +
+			"[ -f " + filepath.Join(bin, "mention-refused") + " ] && [ \"$7\" = -mention ] && " +
+			"{ echo 'U0NOBODY is not on the user list' >&2; exit 3; }\necho m-1\n",
 		"atb": "#!/bin/sh\necho \"$*\" >> " + filepath.Join(bin, "atb.log") + "\n",
 	}
 	for name, script := range scripts {
@@ -163,8 +165,6 @@ func TestAHandoffOpensAThreadStartsItsAgentTellsTheThreadAndRelatesTheTickets(t 
 	}
 }
 
-// A delivery that fails leaves the thread open and recorded: the next
-// run delivers to that thread and opens no other.
 func TestAHandoffWithoutTheWorkspaceAddressLinksNoThreadAndShowsNoKey(t *testing.T) {
 	_, task, bin := handoffSetup(t)
 	fail := false
@@ -182,6 +182,8 @@ func TestAHandoffWithoutTheWorkspaceAddressLinksNoThreadAndShowsNoKey(t *testing
 	}
 }
 
+// A delivery that fails leaves the thread open and recorded: the next
+// run delivers to that thread and opens no other.
 func TestAHandoffRunAgainAfterAFailedDeliveryOpensNoSecondThread(t *testing.T) {
 	conn, task, bin := handoffSetup(t)
 	fail := true
@@ -221,16 +223,21 @@ func TestAHandoffIsRefusedBeforeAnythingForOtherCallersItsOwnChannelAndAnUnknown
 		t.Fatal(err)
 	}
 	for _, c := range []struct {
-		name, role, repo, want string
+		name, role, repo, mention, want string
 	}{
-		{"a lead", "lead", "example-b", "a lead does not hand work off"},
-		{"a worker", "worker", "example-b", "a worker does not hand work off"},
-		{"its own channel", "thread", "example-a", "#repo-example-a is your own thread's channel"},
-		{"a channel without an id", "thread", "example-c", "fleet knows no id of #repo-example-c"},
-		{"a repo not checked out", "thread", "example-d", "not on this machine"},
+		{"a lead", "lead", "example-b", "", "a lead does not hand work off"},
+		{"a worker", "worker", "example-b", "", "a worker does not hand work off"},
+		{"its own channel", "thread", "example-a", "", "#repo-example-a is your own thread's channel"},
+		{"a channel without an id", "thread", "example-c", "", "fleet knows no id of #repo-example-c"},
+		{"a repo not checked out", "thread", "example-d", "", "not on this machine"},
+		{"a mention that is no user id", "thread", "example-b", "@alice", "is not a Slack user id"},
 	} {
 		t.Setenv("FLEET_ROLE", c.role)
-		_, err := ThreadHandoff(nil, ThreadHandoffArgs{Repo: c.repo, File: task})
+		args := ThreadHandoffArgs{Repo: c.repo, File: task}
+		if c.mention != "" {
+			args.Mentions = []string{c.mention}
+		}
+		_, err := ThreadHandoff(nil, args)
 		if code(err) != exit.Refused || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: %v", c.name, err)
 		}
@@ -286,5 +293,69 @@ func TestAHandoffRunAgainRelatesTheTicketsOnceBothThreadsHaveOne(t *testing.T) {
 	if err := conn.QueryRow("SELECT count(*) FROM handoffs WHERE done_at IS NOT NULL").Scan(&done); err != nil ||
 		opened != 1 || posted != 1 || len(*got) != 1 || done != 1 {
 		t.Errorf("%d opened, %d posted, %d deliveries, %d done, %v", opened, posted, len(*got), done, err)
+	}
+}
+
+// The person who asked for the handoff is mentioned in the new thread
+// once, after the line in the source thread: a rerun mentions nobody
+// again, whatever its --mention.
+func TestAHandoffWithMentionMentionsThemInTheNewThreadOnce(t *testing.T) {
+	ledger, task, bin := handoffSetup(t)
+	fail := false
+	fakeHandoffRoute(t, &fail)
+	if _, err := ledger.Exec("UPDATE threads SET ticket = '' WHERE thread = ?1", handoffFrom); err != nil {
+		t.Fatal(err)
+	}
+	args := ThreadHandoffArgs{Repo: "example-b", File: task, Mentions: []string{"U0PERSON", "W0OTHER"}}
+	if code, err := ThreadHandoff(nil, args); err != nil || code != exit.Ok {
+		t.Fatalf("exit %d, %v", code, err)
+	}
+	want := []string{
+		"client routes -socket /run/fednet.sock -json",
+		"client open-thread -socket /run/fednet.sock -channel C0DST -- 从 <#C0SRC> 的一个线程转来：Import the B table (" + handoffAgent + ")",
+		"client post -socket /run/fednet.sock -thread " + handoffFrom + " -- 已转到 <#C0DST> 的一个新线程",
+		"client post -socket /run/fednet.sock -thread " + handoffTo + " -mention U0PERSON -mention W0OTHER -- 你要求的转交在这里",
+	}
+	if calls := fednetCalls(t, bin); strings.Join(calls, "\n") != strings.Join(want, "\n") {
+		t.Errorf("fednet calls:\n%s\nwant:\n%s", strings.Join(calls, "\n"), strings.Join(want, "\n"))
+	}
+
+	// The handoff is unfinished (no ticket to relate yet), so a rerun runs.
+	args.Mentions = []string{"U0LATER"}
+	if code, err := ThreadHandoff(nil, args); err != nil || code != exit.Ok {
+		t.Fatalf("again: exit %d, %v", code, err)
+	}
+	if calls := fednetCalls(t, bin); len(calls) != len(want) {
+		t.Errorf("again: fednet calls %q", calls)
+	}
+}
+
+// A mention fednet refuses fails the run after the line in the source
+// thread; a rerun without it finishes the handoff.
+func TestAHandoffWithARefusedMentionFinishesOnARunWithoutIt(t *testing.T) {
+	c, task, bin := handoffSetup(t)
+	fail := false
+	got := fakeHandoffRoute(t, &fail)
+	if err := os.WriteFile(filepath.Join(bin, "mention-refused"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := ThreadHandoff(nil, ThreadHandoffArgs{Repo: "example-b", File: task, Mentions: []string{"U0NOBODY"}})
+	if code(err) != exit.Environment || !strings.Contains(err.Error(), "U0NOBODY is not on the user list") ||
+		!strings.Contains(err.Error(), "without that --mention") {
+		t.Fatalf("first run: %v", err)
+	}
+	if code, err := ThreadHandoff(nil, ThreadHandoffArgs{Repo: "example-b", File: task}); err != nil || code != exit.Ok {
+		t.Fatalf("second run: exit %d, %v", code, err)
+	}
+	posted := 0
+	for _, call := range fednetCalls(t, bin) {
+		if strings.HasPrefix(call, "client post -socket /run/fednet.sock -thread "+handoffFrom+" ") {
+			posted++
+		}
+	}
+	var done int
+	if err := c.QueryRow("SELECT count(*) FROM handoffs WHERE done_at IS NOT NULL").Scan(&done); err != nil ||
+		posted != 1 || len(*got) != 1 || done != 1 {
+		t.Errorf("%d posted to the source thread, %d deliveries, %d done, %v", posted, len(*got), done, err)
 	}
 }
