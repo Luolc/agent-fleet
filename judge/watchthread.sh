@@ -22,7 +22,7 @@ QD=/home/agent/quiet
 QB=$QD/bin
 QDB=/home/agent/.local/state/$T/quiet.db
 mkdir -p "$QB" "$QD/threads" /home/agent/.config/$T /home/agent/events /home/agent/run
-echo '{"fednet": {"socket": "/home/agent/quiet/fednet.sock"}}' > "/home/agent/.config/$T/quiet.json"
+echo '{"fednet": {"socket": "/home/agent/quiet/fednet.sock"}}' | scope_config quiet
 cat > "$QB/fednet" <<'FEDNET'
 #!/bin/sh
 [ "$2" = react ] && { echo "$*" >> /home/agent/quiet/react.log; exit 0; }

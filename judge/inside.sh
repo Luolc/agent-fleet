@@ -74,6 +74,16 @@ as() {
 }
 R=example-dataset
 DB=/home/agent/.local/state/$T/$SCOPE.db
+# <scope>: the JSON on stdin as that scope's config, with the load check's
+# multiplier raised far above any load. The container sees the host's load
+# average, so on a busy shared host `job start` and `spawn` would otherwise
+# be refused; no suite tests the load check, and the memory check still runs.
+# Every scope config the suites write goes through this.
+scope_config() {
+  mkdir -p "/home/agent/.config/$T"
+  jq -c '. + {"resources": {"load_multiplier": 1000}}' > "/home/agent/.config/$T/$1.json"
+}
+echo '{}' | scope_config "$SCOPE"
 # The checkouts of the initiatives' repos: fleet never makes them.
 mkdir -p /home/agent/x-repo/general /home/agent/x-repo/example-init
 ledger() { sqlite3 "$DB" "$1" | tr '\n' ' '; }

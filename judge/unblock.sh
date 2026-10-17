@@ -18,6 +18,7 @@ SCOPE=screens
 S=(herdr --session fleet-$SCOPE)
 DB=/home/agent/.local/state/$T/$SCOPE.db
 start_server fleet-$SCOPE
+echo '{}' | scope_config "$SCOPE"
 thr job start setup --task-file "$(task setup 'makes the ledger')" >/dev/null 2>&1
 thr job end setup --force >/dev/null 2>&1
 check "unblock: the scope's ledger exists" yes "$([ -e "$DB" ] && echo yes || echo no)"
@@ -25,7 +26,7 @@ mkdir -p /home/agent/.config/$T /home/agent/fake-screens
 # prompts.screen_guidance names a file that is not there: the key is
 # retired, so it is accepted, named, and not read.
 echo '{"linear": {"team": "SC"}, "unblock": {"project": "Example project"}, "fednet": {"socket": "/home/agent/screens.sock"},
-  "prompts": {"screen_guidance": {"append": "missing.md"}}}' > "/home/agent/.config/$T/$SCOPE.json"
+  "prompts": {"screen_guidance": {"append": "missing.md"}}}' | scope_config "$SCOPE"
 cat > /home/agent/fake-screens/atb <<'ATB'
 #!/bin/sh
 echo "$*" >> /home/agent/screens-atb.log

@@ -116,7 +116,7 @@ check "job end --force: the initiative's worktrees removed and their branch dele
 # A scope whose settings move the worktrees and rename the initiative
 # prefix: the same initiative's repo is then multi-<I>, under ~/trees.
 mkdir -p "/home/agent/.config/$T"
-echo '{"paths": {"worktrees": "~/trees"}, "channels": {"initiative_prefix": "multi-"}}' > "/home/agent/.config/$T/custom.json"
+echo '{"paths": {"worktrees": "~/trees"}, "channels": {"initiative_prefix": "multi-"}}' | scope_config custom
 out=$(SCOPE=custom in_job item-11 worktree "multi-$I" 2>&1); rc=$?
 check "worktree in a scope with paths and channels set: exit 0 under its worktrees" "0 /home/agent/trees/multi-$I/item-11" "$rc $out"
 out=$(SCOPE=custom in_job item-11 worktree "x-repo-$I" 2>&1); rc=$?

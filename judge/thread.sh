@@ -9,7 +9,7 @@ S=(herdr --session fleet-main)
 TDB=/home/agent/.local/state/$T/main.db
 tledger() { sqlite3 "$TDB" "$1" | tr '\n' ' '; }
 mkdir -p /home/agent/.config/$T /home/agent/fake-thread /home/agent/events
-echo '{"linear": {"team": "TH"}, "fednet": {"socket": "/home/agent/fednet.sock"}}' > "/home/agent/.config/$T/main.json"
+echo '{"linear": {"team": "TH"}, "fednet": {"socket": "/home/agent/fednet.sock"}}' | scope_config main
 # The fake atb fails every call (exit 4) while /home/agent/linear-down exists;
 # `create` prints TH-5, `query` prints the team and project of an issue
 # when asked for them, else one earlier summary; /home/agent/next-ticket,
@@ -393,7 +393,7 @@ git -C "$DEV" checkout -q -- ff.txt && git -C "$DEV" merge -q --ff-only origin/m
 : > /home/agent/fednet.log
 cp "/home/agent/.config/$T/main.json" /home/agent/main.json.keep
 echo '{"linear": {"team": "TH"}, "fednet": {"socket": "/home/agent/fednet.sock"},
-  "prompts": {"thread": {"replace": "prompts/thread.md"}}}' > "/home/agent/.config/$T/main.json"
+  "prompts": {"thread": {"replace": "prompts/thread.md"}}}' | scope_config main
 out=$(inbox "$(event m4p C0998/1.1 'hello 0xMSG4P')" 2>&1); rc=$?
 mv /home/agent/main.json.keep "/home/agent/.config/$T/main.json"
 check "inbox: a broken thread prompt, exit 0 once the thread is told" 0 "$rc"
@@ -572,7 +572,7 @@ done
 lead8 thread post --body-file /home/agent/tasks/post.md >/dev/null 2>&1; rc=$?
 check "thread post: exit 1 from a lead" 1 "$rc"
 cp "/home/agent/.config/$T/main.json" /home/agent/main.json.keep
-echo '{"linear": {"team": "TH"}}' > "/home/agent/.config/$T/main.json"
+echo '{"linear": {"team": "TH"}}' | scope_config main
 out=$(thra "$K" TH-5 -- thread post --body-file /home/agent/tasks/post.md 2>&1); rc=$?
 mv /home/agent/main.json.keep "/home/agent/.config/$T/main.json"
 check "thread post: exit 1 without a socket" 1 "$rc"
@@ -772,7 +772,7 @@ SYSTEMCTL
 chmod +x /home/agent/fake-thread/systemctl
 mkdir -p /home/agent/run
 L=(herdr --session fleet-lazy)
-echo '{"fednet": {"socket": "/home/agent/fednet.sock"}}' > "/home/agent/.config/$T/lazy.json"
+echo '{"fednet": {"socket": "/home/agent/fednet.sock"}}' | scope_config lazy
 lazy_tabs() { "${L[@]}" tab list | jq -r '[.result.tabs[].label] | join(" ")'; }
 check "the scope lazy has no session yet" false "$("${L[@]}" status server --json | jq .running)"
 out=$(PATH=/home/agent/fake-thread:$PATH "$T" inbox "$(event m19 C0LZ/0.0 'lazy' '' '"channel_name":"repo-'"$R"'","scope":"lazy"')" 2>&1); rc=$?
@@ -844,7 +844,7 @@ check "handoff: the refusals opened no thread and recorded nothing" "0 0 " \
   "$(grep -c open-thread /home/agent/fednet.log) $(tledger "SELECT count(*) FROM handoffs")"
 cp "/home/agent/.config/$T/main.json" /home/agent/main.json.keep
 echo '{"linear": {"team": "TH"}, "fednet": {"socket": "/home/agent/fednet.sock", "slack_url": "https://slack.example.test"}}' \
-  > "/home/agent/.config/$T/main.json"
+  | scope_config main
 out=$(thra "$KH" TH-6 -- thread handoff --repo example-target --file "$htask" 2>&1); rc=$?
 mv /home/agent/main.json.keep "/home/agent/.config/$T/main.json"
 check "handoff: exit 0" 0 "$rc"
