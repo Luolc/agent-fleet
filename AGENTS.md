@@ -221,11 +221,6 @@ A lower-ranking provision or a principal may depart from a higher-ranking provis
 - R259 In a public repository's files, commit messages, pull requests, comments and reviews, write nothing that identifies or locates a private resource, a private repository, an agent instance or session, or the scope it runs in, and nothing about an agent's usage, quota, model or effort.
 - R52 Before you push to a public repository, have a reviewer read the diff, the commit messages and the pull request text for private material, and push only the head that reviewer passed.
 
-### Shared Machines
-
-- R66 Give every loop that waits for something an exit for when what it waits for is gone.
-- R73 Before you start a background process that keeps holding resources, record what stops it if you are closed before you stop it yourself.
-
 ## Collaboration
 
 ### Writing
@@ -407,6 +402,13 @@ A lower-ranking provision or a principal may depart from a higher-ranking provis
 - L8 Pin the Go version in `go.mod` with a single `go` line and no `toolchain` line.
 - L9 Raise the `go` line of `go.mod` only to a Go version already installed where the checks run, so the installed Go is raised first.
 - L20 Before a change adds to fleet a new dependence on git, GitHub, Linear or Slack (a new call to `git`, `gh`, `atb`, `fednet` or the services behind them, a new step that uses them in a built-in prompt, or a feature that fails without them), look for a way to reach the same goal without it, take that way when one exists, and say in the pull request description which ways you looked at and why each falls short; a feature a principal asked for is still built when it needs such a dependence.
+
+### Shared Resources
+
+- R335 When you share a resource whose capacity is limited with other tasks, such as a machine's processors and memory, an API account with a shared quota or a service with a rate limit, use only your fair share of it, and never take so much at once that it slows or stops the other tasks.
+- R336 Before you start a task or hand one to another agent, consider whether it would harm tasks already running, for example by taking resources they share, deadlocking with them, changing the same code or stopping their processes; where it would, follow the way of resolving such conflicts that is set or agreed in advance, and where there is none, avoid the harm or first ask whoever delegated the work.
+- R337 When you wait for something to finish, such as a process, a CI run or a merge, end the wait not only when it succeeds but also as soon as it fails, errs or can no longer finish, instead of waiting out a time limit.
+- R338 Before you start a background process that keeps holding resources, arrange a fallback in case you do not stop it yourself: a mechanism that stops it on its own, such as a time limit or a watcher that reclaims it, or another agent or a person responsible for the work who knows it is running and how to stop it. Never leave it running where no one knows of it.
 
 ### Pull Requests
 
