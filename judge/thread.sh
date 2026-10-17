@@ -835,8 +835,6 @@ out=$(PATH=/home/agent/fake-thread:$PATH env "${P}AGENT=$AH-lead" "${P}ROLE=lead
   "${P}JOB=x" "${P}ISSUE=" "${P}THREAD=" "$T" thread handoff --repo example-target --file "$htask" 2>&1); rc=$?
 check "handoff: exit 1 from a lead" 1 "$rc"
 has "handoff: a lead is pointed at its home thread's agent" "$out" "a lead does not hand work off"
-out=$(thra "$KH" TH-6 -- thread handoff --repo "$R" --file "$htask" 2>&1); rc=$?
-check "handoff: exit 1 to the thread's own channel" 1 "$rc"
 out=$(thra "$KH" TH-6 -- thread handoff --repo example-unrouted --file "$htask" 2>&1); rc=$?
 check "handoff: exit 1 to a channel fleet knows no id of" 1 "$rc"
 has "handoff: says fleet opens no channel" "$out" "fleet knows no id of #repo-example-unrouted" "fleet opens no channel"
@@ -889,4 +887,24 @@ out=$(thra "$KH" TH-6 -- thread handoff --repo example-plain --file "$hplain" --
 check "handoff with --mention: again, exit 0" 0 "$rc"
 check "handoff with --mention: again, nobody mentioned a second time" 1 "$(grep -c -- '-mention' /home/agent/fednet.log)"
 settled thread-c0hp-1700000500-000
+# A handoff to the thread's own channel opens a new thread beside it, its
+# channel id taken from the first thread.
+echo TH-9 > /home/agent/next-ticket
+: > /home/agent/fednet.log
+: > /home/agent/atb.log
+KS=C0HS/1700000500.000
+AS=thread-c0hs-1700000500-000
+hsame=$(task handoff-same 'Carry on the long tracking work 0xHAND3')
+out=$(thra "$KH" TH-6 -- thread handoff --repo "$R" --file "$hsame" 2>&1); rc=$?
+check "handoff to its own channel: exit 0" 0 "$rc"
+[ "$rc" = 0 ] || printf '%s\n' "$out"
+has "handoff to its own channel: reports the new thread" "$out" "handed off to thread $KS in #repo-$R" "TH-9 is related to TH-6"
+check "handoff to its own channel: the thread opens in the same channel, and the first thread is told" "1 1" \
+  "$(grep -Fxc "client open-thread -socket /home/agent/fednet.sock -channel C0HS -- 从 <#C0HS> 的一个线程转来：Carry on the long tracking work 0xHAND3 ($AH)" /home/agent/fednet.log) $(grep -Fxc "client post -socket /home/agent/fednet.sock -thread $KH -- 已转到 <#C0HS> 的一个新线程" /home/agent/fednet.log)"
+check "handoff to its own channel: the new thread is recorded in the same channel and checkout, its ticket related" \
+  "repo-$R|/home/agent/dev/$R|TH-9 1" \
+  "$(tledger "SELECT mapping, cwd, ticket FROM threads WHERE thread = '$KS'")$(grep -c 'linear relate TH-9 TH-6' /home/agent/atb.log)"
+has "handoff to its own channel: its agent's first message is the task" "$(received "$AS")" \
+  "[HANDOFF from $AH in thread $KH]" "0xHAND3"
+settled "$AS"
 rm -f /home/agent/next-ticket
