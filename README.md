@@ -20,11 +20,11 @@ go build -o fleet ./cmd/fleet
 
 Each release has a binary for linux and darwin on amd64 and arm64, built
 without cgo (static on linux; on darwin it links only system libraries),
-and their SHA-256 sums in `SHA256SUMS`. To install v0.2.4 on
+and their SHA-256 sums in `SHA256SUMS`. To install v0.2.5 on
 linux/amd64:
 
 ```sh
-v=0.2.4 bin=fleet-linux-amd64
+v=0.2.5 bin=fleet-linux-amd64
 curl -fLO "https://github.com/Luolc/agent-fleet/releases/download/v$v/$bin"
 curl -fLO "https://github.com/Luolc/agent-fleet/releases/download/v$v/SHA256SUMS"
 grep " $bin\$" SHA256SUMS | sha256sum -c   # macOS: shasum -a 256 -c
@@ -35,7 +35,7 @@ fleet --version
 With the Go version named in `go.mod`, this builds the same release instead:
 
 ```sh
-go install github.com/Luolc/agent-fleet/cmd/fleet@v0.2.4
+go install github.com/Luolc/agent-fleet/cmd/fleet@v0.2.5
 ```
 
 ## Release
