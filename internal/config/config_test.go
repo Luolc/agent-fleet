@@ -110,6 +110,28 @@ func TestScopeConfigIsOptionalAndStrict(t *testing.T) {
 	}
 }
 
+func TestTheLoadMultiplierDefaultsTo1AndMustBeAbove0(t *testing.T) {
+	for body, want := range map[string]float64{`{}`: 1, `{"resources": {"load_multiplier": 1.5}}`: 1.5,
+		`{"resources": {"load_multiplier": 0.5}}`: 0.5} {
+		got, err := ParseScope([]byte(body), "/home/u")
+		if err != nil || got.LoadMultiplier != want {
+			t.Errorf("%s: %+v, %v", body, got, err)
+		}
+	}
+	for body, says := range map[string]string{
+		`{"resources": {"load_multiplier": 0}}`:     "resources.load_multiplier: must be above 0",
+		`{"resources": {"load_multiplier": -1}}`:    "resources.load_multiplier: must be above 0",
+		`{"resources": {"load_multiplier": null}}`:  "resources.load_multiplier: must not be null",
+		`{"resources": {"load_multiplier": "1.5"}}`: "resources.load_multiplier: expected float64",
+		`{"resources": {}}`:                         "resources.load_multiplier: must be set when resources is",
+		`{"resources": null}`:                       "resources: must not be null",
+	} {
+		if _, err := ParseScope([]byte(body), "/home/u"); err == nil || !strings.Contains(err.Error(), says) {
+			t.Errorf("%s: %v, want it to say %s", body, err, says)
+		}
+	}
+}
+
 func TestScopePathsAndChannelsDefaultToTheConventionsAndCanBeSet(t *testing.T) {
 	got, err := ParseScope([]byte(`{}`), "/home/u")
 	if err != nil {

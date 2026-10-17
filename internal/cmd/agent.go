@@ -467,9 +467,9 @@ func lines(text string) []string {
 }
 
 // CheckResources refuses unless the 1-minute load average is below `cpus`
-// and MemAvailable is above 2 GiB; a `light` agent skips the load. Inputs
-// are the texts of /proc/loadavg and /proc/meminfo.
-func CheckResources(loadavg string, cpus int, meminfo string, light bool) error {
+// times `multiplier` and MemAvailable is above 2 GiB; a `light` agent
+// skips the load. Inputs are the texts of /proc/loadavg and /proc/meminfo.
+func CheckResources(loadavg string, cpus int, multiplier float64, meminfo string, light bool) error {
 	fields := strings.Fields(loadavg)
 	if len(fields) == 0 {
 		return exit.Environmentf("cannot parse /proc/loadavg")
@@ -497,9 +497,9 @@ func CheckResources(loadavg string, cpus int, meminfo string, light bool) error 
 	if !found {
 		return exit.Environmentf("cannot find MemAvailable in /proc/meminfo")
 	}
-	if !light && load >= float64(cpus) {
-		return exit.Refusedf("the 1-minute load average is %s, not below the %d CPUs; try again later",
-			strconv.FormatFloat(load, 'f', -1, 64), cpus)
+	if limit := float64(cpus) * multiplier; !light && load >= limit {
+		return exit.Refusedf("the 1-minute load average is %s, not below %.4g (%d CPUs × load_multiplier %g); "+
+			"try again later", strconv.FormatFloat(load, 'f', -1, 64), limit, cpus, multiplier)
 	}
 	if availableKiB <= minAvailableKiB {
 		return exit.Refusedf("available memory is %d MiB, not above 2048 MiB; try again later",
@@ -512,7 +512,7 @@ func CheckResources(loadavg string, cpus int, meminfo string, light bool) error 
 // test can stand in for the machine. `runtime.NumCPU` honors the affinity
 // mask, not a cgroup CPU quota: in a container with a quota the load may
 // be compared with more CPUs than the quota allows.
-var machineResources = func(light bool) error {
+var machineResources = func(multiplier float64, light bool) error {
 	loadavg, err := os.ReadFile("/proc/loadavg")
 	if err != nil {
 		return exit.IO(err)
@@ -521,15 +521,16 @@ var machineResources = func(light bool) error {
 	if err != nil {
 		return exit.IO(err)
 	}
-	return CheckResources(string(loadavg), runtime.NumCPU(), string(meminfo), light)
+	return CheckResources(string(loadavg), runtime.NumCPU(), multiplier, string(meminfo), light)
 }
 
-// resources is machineResources, unless the config turns the check off.
-func resources(cfg *config.Config, light bool) error {
+// resources is machineResources with the scope's load multiplier, unless
+// the repo's config turns the check off.
+func resources(cfg *config.Config, sc *config.Scope, light bool) error {
 	if !cfg.ResourceCheck {
 		return nil
 	}
-	return machineResources(light)
+	return machineResources(sc.LoadMultiplier, light)
 }
 
 // CheckName refuses a name that is empty, has characters outside
