@@ -3,6 +3,15 @@ repos:
     rev: v8.30.1
     hooks:
       - id: gitleaks
+  # AGENTS.md and the skills statute copies and links must match a fresh
+  # compile of statute.toml and statute.lock; the private output, which git
+  # ignores, is not compared. rev must name the statute version in
+  # statute.lock: statute refuses a lock another version wrote, so the hook
+  # fails until the two agree.
+  - repo: https://github.com/Luolc/statute-pre-commit
+    rev: v0.1.19
+    hooks:
+      - id: statute-compile
   - repo: local
     hooks:
       - id: gofmt
@@ -10,12 +19,3 @@ repos:
         language: system
         entry: bash -c 'out=$(gofmt -l "$@") && [ -z "$out" ] || { echo "$out"; exit 1; }' --
         types: [go]
-      # AGENTS.md and the skills statute copies and
-      # links must match a fresh compile of statute.toml and statute.lock.
-      # The private output, which git ignores, is not compared.
-      - id: statute-compile
-        name: statute compile check
-        entry: statute compile --check
-        language: system
-        files: ^(statute\.(toml|lock)$|AGENTS\.md$|\.statute/|\.agents/|\.claude/)
-        pass_filenames: false
