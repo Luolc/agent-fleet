@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -22,6 +23,9 @@ type Scope struct {
 	// FednetSocket is the fednet client's socket, for `fednet client
 	// post`; empty means fleet cannot post to a thread.
 	FednetSocket string
+	// SlackURL is the Slack workspace's address, `https://<host>` with no
+	// path, from which fleet links a thread; empty means no thread links.
+	SlackURL string
 	// UnblockProject is the Linear project of the tickets `watch` opens
 	// for the screens its `blocked-screens` workers handle, in LinearTeam;
 	// empty (or no team) means no tickets.
@@ -94,7 +98,8 @@ type scopeFile struct {
 		Team string `json:"team"`
 	} `json:"linear"`
 	Fednet *struct {
-		Socket string `json:"socket"`
+		Socket   string  `json:"socket"`
+		SlackURL *string `json:"slack_url"`
 	} `json:"fednet"`
 	Unblock *struct {
 		Project string `json:"project"`
@@ -260,6 +265,14 @@ func (f *scopeFile) sections(t *Scope) error {
 			return errors.New("fednet.socket: must be set when fednet is")
 		}
 		t.FednetSocket = f.Fednet.Socket
+		if u := f.Fednet.SlackURL; u != nil {
+			parsed, err := url.Parse(*u)
+			if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil ||
+				strings.Trim(parsed.Path, "/") != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+				return errors.New("fednet.slack_url: must be the workspace's https address with no path, like https://<workspace>.slack.com")
+			}
+			t.SlackURL = strings.TrimRight(*u, "/")
+		}
 	}
 	if f.Unblock != nil {
 		if f.Unblock.Project == "" {

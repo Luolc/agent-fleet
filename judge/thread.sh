@@ -44,7 +44,8 @@ ATB
 # The fake fednet logs a `react` apart, in /home/agent/react.log, and
 # fails (exit 4, one line on stderr) while
 # /home/agent/fednet-down exists; `ask` posts card-<n>, n the ref's id;
-# `routes` names #repo-example-target (C0HD), and `open-thread` opens
+# `routes` names #repo-example-target (C0HD) and #repo-example-plain
+# (C0HP), and `open-thread` opens
 # <channel>/1700000500.000.
 cat > /home/agent/fake-thread/fednet <<'FEDNET'
 #!/bin/sh
@@ -52,7 +53,7 @@ cat > /home/agent/fake-thread/fednet <<'FEDNET'
 echo "$*" >> /home/agent/fednet.log
 [ -e /home/agent/fednet-down ] && { echo "post: hub unreachable" >&2; exit 4; }
 [ "$2" = ask ] && { echo '{"id":"card-'"${8#*:}"'","channel":"C0","ts":"1.0","permalink":"https://slack.example.test/card-'"${8#*:}"'"}'; exit 0; }
-[ "$2" = routes ] && { echo '{"routes":[{"channel":"C0HD","name":"repo-example-target"}]}'; exit 0; }
+[ "$2" = routes ] && { echo '{"routes":[{"channel":"C0HD","name":"repo-example-target"},{"channel":"C0HP","name":"repo-example-plain"}]}'; exit 0; }
 [ "$2" = open-thread ] && { echo "$6/1700000500.000"; exit 0; }
 echo m-posted
 FEDNET
@@ -815,7 +816,7 @@ check "inbox: the workspace and its shell tab restored" "shell c0lz-3-3" "$(lazy
 # A thread agent hands work off to the channel of another repo: fleet opens
 # a thread there, starts its agent with the task, tells the first thread
 # and relates the two tickets.
-mkdir -p /home/agent/dev/example-target /home/agent/dev/example-unrouted
+mkdir -p /home/agent/dev/example-target /home/agent/dev/example-plain /home/agent/dev/example-unrouted
 KH=C0HS/1700000600.100
 AH=thread-c0hs-1700000600-100
 KD=C0HD/1700000500.000
@@ -841,14 +842,18 @@ check "handoff: exit 1 to a channel fleet knows no id of" 1 "$rc"
 has "handoff: says fleet opens no channel" "$out" "fleet knows no id of #repo-example-unrouted" "fleet opens no channel"
 check "handoff: the refusals opened no thread and recorded nothing" "0 0 " \
   "$(grep -c open-thread /home/agent/fednet.log) $(tledger "SELECT count(*) FROM handoffs")"
+cp "/home/agent/.config/$T/main.json" /home/agent/main.json.keep
+echo '{"linear": {"team": "TH"}, "fednet": {"socket": "/home/agent/fednet.sock", "slack_url": "https://slack.example.test"}}' \
+  > "/home/agent/.config/$T/main.json"
 out=$(thra "$KH" TH-6 -- thread handoff --repo example-target --file "$htask" 2>&1); rc=$?
+mv /home/agent/main.json.keep "/home/agent/.config/$T/main.json"
 check "handoff: exit 0" 0 "$rc"
 [ "$rc" = 0 ] || printf '%s\n' "$out"
 has "handoff: reports the new thread" "$out" "handed off to thread $KD in #repo-example-target" "TH-7 is related to TH-6"
 has "handoff: the thread opens in the target channel with fleet's line" "$(cat /home/agent/fednet.log)" \
-  "client open-thread -socket /home/agent/fednet.sock -channel C0HD -- 从#repo-$R的线程 $KH 转来 ($AH)：Import the target table 0xHAND1"
+  "client open-thread -socket /home/agent/fednet.sock -channel C0HD -- 从 <#C0HS> 的[原线程](https://slack.example.test/archives/C0HS/p1700000600100)转来：Import the target table 0xHAND1 ($AH)"
 has "handoff: the first thread is told where the work went" "$(cat /home/agent/fednet.log)" \
-  "-thread $KH -- 已转到 #repo-example-target 的线程 $KD"
+  "-thread $KH -- 已转到 <#C0HD> 的[新线程](https://slack.example.test/archives/C0HD/p1700000500000)"
 check "handoff: the new thread's ticket is created, claimed for its agent, and related to the first one's" \
   "linear create|linear claim TH-7 --agent $AD|linear relate TH-7 TH-6|" \
   "$(sed -E 's/^(linear create|linear claim TH-7 --agent [^ ]*).*/\1/' /home/agent/atb.log | tr '\n' '|')"
@@ -867,4 +872,13 @@ check "handoff: again, exit 0" 0 "$rc"
 has "handoff: again, nothing done" "$out" "already handed off to thread $KD"
 check "handoff: again, one thread opened and one line posted" "1 1" \
   "$(grep -c open-thread /home/agent/fednet.log) $(grep -c '已转到' /home/agent/fednet.log)"
+# Without the scope's fednet.slack_url, the lines link no thread and show
+# no thread key.
+echo TH-8 > /home/agent/next-ticket
+out=$(thra "$KH" TH-6 -- thread handoff --repo example-plain --file "$(task handoff-plain 'Import the plain table 0xHAND2')" 2>&1); rc=$?
+check "handoff without slack_url: exit 0" 0 "$rc"
+[ "$rc" = 0 ] || printf '%s\n' "$out"
+check "handoff without slack_url: both lines link no thread and show no thread key" "1 1" \
+  "$(grep -Fxc "client open-thread -socket /home/agent/fednet.sock -channel C0HP -- 从 <#C0HS> 的一个线程转来：Import the plain table 0xHAND2 ($AH)" /home/agent/fednet.log) $(grep -Fxc "client post -socket /home/agent/fednet.sock -thread $KH -- 已转到 <#C0HP> 的一个新线程" /home/agent/fednet.log)"
+settled thread-c0hp-1700000500-000
 rm -f /home/agent/next-ticket

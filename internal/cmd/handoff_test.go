@@ -110,6 +110,10 @@ func fednetCalls(t *testing.T, bin string) []string {
 
 func TestAHandoffOpensAThreadStartsItsAgentTellsTheThreadAndRelatesTheTickets(t *testing.T) {
 	conn, task, bin := handoffSetup(t)
+	if err := os.WriteFile(filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "fleet", "main.json"), []byte(`{"linear": {"team": "EX"}, `+
+		`"fednet": {"socket": "/run/fednet.sock", "slack_url": "https://slack.example.test/"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	fail := false
 	got := fakeHandoffRoute(t, &fail)
 	if code, err := ThreadHandoff(nil, ThreadHandoffArgs{Repo: "example-b", File: task}); err != nil || code != exit.Ok {
@@ -117,9 +121,10 @@ func TestAHandoffOpensAThreadStartsItsAgentTellsTheThreadAndRelatesTheTickets(t 
 	}
 	want := []string{
 		"client routes -socket /run/fednet.sock -json",
-		"client open-thread -socket /run/fednet.sock -channel C0DST -- 从#repo-example-a的线程 " + handoffFrom + " 转来 (" +
-			handoffAgent + ")：Import the B table",
-		"client post -socket /run/fednet.sock -thread " + handoffFrom + " -- 已转到 #repo-example-b 的线程 " + handoffTo,
+		"client open-thread -socket /run/fednet.sock -channel C0DST -- 从 <#C0SRC> 的" +
+			"[原线程](https://slack.example.test/archives/C0SRC/p1700000000100)转来：Import the B table (" + handoffAgent + ")",
+		"client post -socket /run/fednet.sock -thread " + handoffFrom + " -- 已转到 <#C0DST> 的" +
+			"[新线程](https://slack.example.test/archives/C0DST/p1700000500000)",
 	}
 	if calls := fednetCalls(t, bin); strings.Join(calls, "\n") != strings.Join(want, "\n") {
 		t.Errorf("fednet calls:\n%s\nwant:\n%s", strings.Join(calls, "\n"), strings.Join(want, "\n"))
@@ -160,6 +165,23 @@ func TestAHandoffOpensAThreadStartsItsAgentTellsTheThreadAndRelatesTheTickets(t 
 
 // A delivery that fails leaves the thread open and recorded: the next
 // run delivers to that thread and opens no other.
+func TestAHandoffWithoutTheWorkspaceAddressLinksNoThreadAndShowsNoKey(t *testing.T) {
+	_, task, bin := handoffSetup(t)
+	fail := false
+	fakeHandoffRoute(t, &fail)
+	if code, err := ThreadHandoff(nil, ThreadHandoffArgs{Repo: "example-b", File: task}); err != nil || code != exit.Ok {
+		t.Fatalf("exit %d, %v", code, err)
+	}
+	want := []string{
+		"client routes -socket /run/fednet.sock -json",
+		"client open-thread -socket /run/fednet.sock -channel C0DST -- 从 <#C0SRC> 的一个线程转来：Import the B table (" + handoffAgent + ")",
+		"client post -socket /run/fednet.sock -thread " + handoffFrom + " -- 已转到 <#C0DST> 的一个新线程",
+	}
+	if calls := fednetCalls(t, bin); strings.Join(calls, "\n") != strings.Join(want, "\n") {
+		t.Errorf("fednet calls:\n%s\nwant:\n%s", strings.Join(calls, "\n"), strings.Join(want, "\n"))
+	}
+}
+
 func TestAHandoffRunAgainAfterAFailedDeliveryOpensNoSecondThread(t *testing.T) {
 	conn, task, bin := handoffSetup(t)
 	fail := true
