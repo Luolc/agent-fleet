@@ -42,11 +42,12 @@ const (
 		"printed and nothing changes, so every agent of a job gets the same worktree. A path " +
 		"that exists otherwise is refused. stdout carries only the path.\n\n" +
 		"When the new worktree's root has statute.toml and statute is on PATH, `statute " +
-		"compile --private-only` runs there, to generate the private output the checkout " +
-		"does not track without touching tracked files; its output goes to stderr. A " +
-		"missing statute, a failed compile or one still running after 60 s (it is then " +
-		"killed) is only a warning on stderr: the worktree stays and the exit code is " +
-		"unchanged.\n\n" +
+		"upgrade --private` runs there, to fetch the private sources and lock them for this " +
+		"worktree alone, then `statute compile --private-only`, to generate the private " +
+		"output the checkout does not track; neither touches tracked files, and their output " +
+		"goes to stderr. A missing statute, or a command that fails or is still running after " +
+		"60 s (it is then killed), is only a warning on stderr: a failed upgrade still leaves " +
+		"the compile to run, the worktree stays and the exit code is unchanged.\n\n" +
 		"Exit: 0 when the path is printed; 1 when FLEET_JOB is not set, <repo> has no " +
 		"checkout, the scope config is invalid, --name or --branch is invalid, --detach comes " +
 		"with --branch or names no commit of the checkout, the branch already exists, or the " +
@@ -230,46 +231,56 @@ func Worktree(args WorktreeArgs) (exit.Code, error) {
 		}
 		return 0, err
 	}
-	compileStatute(path)
+	refreshStatute(path)
 	fmt.Fprintln(os.Stdout, path)
 	return exit.Ok, nil
 }
 
-// statuteTimeout bounds `statute compile --private-only`, which does not
-// touch the network; a hung one must not hold up the worktree. A variable
-// so the test can shorten it.
+// statuteTimeout bounds each statute command; a hung one must not hold up
+// the worktree or the start. A variable so the test can shorten it.
 var statuteTimeout = 60 * time.Second
 
-// compileStatute runs `statute compile --private-only` in a new worktree
-// whose root has statute.toml: the private output statute writes is not
-// tracked, so a fresh checkout lacks it, and the full compile would rewrite
-// tracked files. statute is optional, so its absence, failure or timeout is
-// only a warning, and its output goes to stderr: stdout carries the path.
-func compileStatute(path string) {
-	if !exists(filepath.Join(path, "statute.toml")) {
+// refreshStatute runs, in `dir` when its root has statute.toml, `statute
+// upgrade --private`, which fetches the private sources and writes only
+// the lock in the worktree's own git directory, then `statute compile
+// --private-only`: the private output statute writes is not tracked, so a
+// fresh checkout lacks it, a checkout's private lock goes stale unless
+// something fetches, and the full commands would rewrite tracked files.
+// statute is optional, so its absence, failure or timeout is only a
+// warning, and the upgrade's failure still leaves the compile to run on
+// the old lock; their output goes to stderr: stdout carries the path.
+func refreshStatute(dir string) {
+	if !exists(filepath.Join(dir, "statute.toml")) {
 		return
 	}
 	bin, err := exec.LookPath("statute")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "fleet worktree: warning: %s has statute.toml but statute is not on PATH; "+
-			"its private output was not generated\n", path)
+		fmt.Fprintf(os.Stderr, "fleet: warning: %s has statute.toml but statute is not on PATH; "+
+			"its private output was not generated\n", dir)
 		return
 	}
+	runStatute(bin, dir, "upgrade", "--private")
+	runStatute(bin, dir, "compile", "--private-only")
+}
+
+// runStatute runs `statute <args>` in `dir` within statuteTimeout, warning
+// on stderr when it fails or times out.
+func runStatute(bin, dir string, args ...string) {
 	ctx, cancel := context.WithTimeout(context.Background(), statuteTimeout)
 	defer cancel()
-	compile := exec.CommandContext(ctx, bin, "compile", "--private-only")
-	compile.Dir = path
-	compile.Stdout, compile.Stderr = os.Stderr, os.Stderr
+	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd.Dir = dir
+	cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
 	// Its own process group, killed whole, so nothing it started outlives
 	// the deadline.
-	compile.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	compile.Cancel = func() error { return syscall.Kill(-compile.Process.Pid, syscall.SIGKILL) }
-	err = compile.Run()
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	err := cmd.Run()
+	name := "statute " + strings.Join(args, " ")
 	switch {
 	case ctx.Err() != nil:
-		fmt.Fprintf(os.Stderr, "fleet worktree: warning: `statute compile --private-only` in %s timed out "+
-			"after %v and was killed\n", path, statuteTimeout)
+		fmt.Fprintf(os.Stderr, "fleet: warning: `%s` in %s timed out after %v and was killed\n", name, dir, statuteTimeout)
 	case err != nil:
-		fmt.Fprintf(os.Stderr, "fleet worktree: warning: `statute compile --private-only` in %s failed: %v\n", path, err)
+		fmt.Fprintf(os.Stderr, "fleet: warning: `%s` in %s failed: %v\n", name, dir, err)
 	}
 }
