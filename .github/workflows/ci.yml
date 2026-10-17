@@ -70,33 +70,6 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: tools/*.sum
 
-      # The statute-compile hook runs the statute that statute.lock names, the
-      # version that compiled the files it compares.
-      - name: statute version
-        id: statute
-        run: |
-          version=$(sed -n 's/^statute = "\(.*\)"$/\1/p' statute.lock)
-          [ -n "$version" ] || { echo "no statute version in statute.lock" >&2; exit 1; }
-          echo "statute version: $version"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-
-      - name: install statute
-        env:
-          VERSION: ${{ steps.statute.outputs.version }}
-          TARGET: statute-x86_64-unknown-linux-musl
-        run: |
-          dir=$(mktemp -d)
-          base="https://github.com/Luolc/agent-constitution/releases/download/statute-v${VERSION}"
-          curl --fail --silent --show-error --location --output "$dir/$TARGET.tar.gz" "$base/$TARGET.tar.gz"
-          curl --fail --silent --show-error --location --output "$dir/$TARGET.sha256" "$base/$TARGET.sha256"
-          (cd "$dir" && sha256sum --check --strict "$TARGET.sha256")
-          mkdir "$dir/unpacked"
-          tar -xzf "$dir/$TARGET.tar.gz" -C "$dir/unpacked" statute
-          mkdir -p "$HOME/.local/bin"
-          install -m 0755 "$dir/unpacked/statute" "$HOME/.local/bin/statute"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          "$HOME/.local/bin/statute" --version
-
       - name: pre-commit
         env:
           SKIP: gitleaks
