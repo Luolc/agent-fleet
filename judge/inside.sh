@@ -137,11 +137,19 @@ herdr_state=/home/agent/.local/state/herdr
 mkdir -p /home/agent/.config/herdr
 printf '[update]\nmanifest_check = false\n' > /home/agent/.config/herdr/config.toml
 
-for session in fleet-$SCOPE fleet-main; do
-  herdr --session "$session" server >"/home/agent/server-$session.log" 2>&1 &
-  for _ in $(seq 1 100); do herdr --session "$session" status server >/dev/null 2>&1 && break; sleep 0.2; done
-  herdr --session "$session" status server >/dev/null || { echo "FAIL herdr server $session did not start"; cat "/home/agent/server-$session.log"; exit 1; }
-done
+# <session>: a headless herdr server, waited for until it answers. `status
+# server` exits 0 whether or not a server runs, so the wait reads `.running`.
+start_server() {
+  herdr --session "$1" server >"/home/agent/server-$1.log" 2>&1 &
+  local pid=$!
+  for _ in $(seq 1 100); do
+    [ "$(herdr --session "$1" status server --json | jq .running)" = true ] && return
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.2
+  done
+  echo "FAIL herdr server $1 did not start"; cat "/home/agent/server-$1.log"; exit 1
+}
+for session in fleet-$SCOPE fleet-main; do start_server "$session"; done
 
 for suite in $all; do
   case " $suites " in *" $suite "*) . "$here/$suite.sh" ;; esac

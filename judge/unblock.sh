@@ -17,8 +17,7 @@ saved=("$SCOPE" "$DB")
 SCOPE=screens
 S=(herdr --session fleet-$SCOPE)
 DB=/home/agent/.local/state/$T/$SCOPE.db
-herdr --session fleet-$SCOPE server >"/home/agent/server-fleet-$SCOPE.log" 2>&1 &
-for _ in $(seq 1 100); do "${S[@]}" status server >/dev/null 2>&1 && break; sleep 0.2; done
+start_server fleet-$SCOPE
 thr job start setup --task-file "$(task setup 'makes the ledger')" >/dev/null 2>&1
 thr job end setup --force >/dev/null 2>&1
 check "unblock: the scope's ledger exists" yes "$([ -e "$DB" ] && echo yes || echo no)"
