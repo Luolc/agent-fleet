@@ -23,7 +23,8 @@ const (
 // thread ticket EX-1, fake fednet and atb that log their calls, and a
 // checkout of example-b; fednet's routes name #repo-example-b, with no
 // machine, unless the file routes.json in the log directory gives them,
-// and fail while the file routes-down is there. It returns
+// and fail while the file routes-down is there; whoami names this machine
+// machine-here, and fails while whoami-fails is there. It returns
 // the ledger, the task file and the directory the calls are logged in.
 func handoffSetup(t *testing.T) (*sql.DB, string, string) {
 	t.Helper()
@@ -36,6 +37,8 @@ func handoffSetup(t *testing.T) (*sql.DB, string, string) {
 			"[ \"$2\" = routes ] && [ -f " + filepath.Join(bin, "routes-down") + " ] && exit 4\n" +
 			"[ \"$2\" = routes ] && [ -f " + filepath.Join(bin, "routes.json") + " ] && { cat " + filepath.Join(bin, "routes.json") + "; exit 0; }\n" +
 			"[ \"$2\" = routes ] && { echo '{\"routes\":[{\"channel\":\"C0DST\",\"name\":\"repo-example-b\"}]}'; exit 0; }\n" +
+			"[ \"$2\" = whoami ] && [ -f " + filepath.Join(bin, "whoami-fails") + " ] && exit 2\n" +
+			"[ \"$2\" = whoami ] && { echo '{\"text\":\"machine-here\"}'; exit 0; }\n" +
 			"[ \"$2\" = open-thread ] && { echo \"$6/1700000500.000\"; exit 0; }\n" +
 			"[ -f " + filepath.Join(bin, "post-down") + " ] && [ \"$2\" = post ] && exit 4\n" +
 			"[ -f " + filepath.Join(bin, "mention-refused") + " ] && [ \"$7\" = -mention ] && " +
@@ -404,31 +407,116 @@ func TestAHandoffWithARefusedMentionFinishesOnARunWithoutIt(t *testing.T) {
 	}
 }
 
-// A target whose route gives its new threads to another machine is
-// refused before anything is recorded or opened, named by repo or by
-// channel; one routed to this machine, its hostname, is handed off.
-func TestAHandoffToAChannelRoutedToAnotherMachineIsRefused(t *testing.T) {
+// handoffRoutes makes fednet's routes give #repo-example-b and
+// #data-example to `machine`, and its whoami name this machine
+// `machine-here`.
+func handoffRoutes(t *testing.T, bin, machine string) {
+	t.Helper()
+	reply := `{"routes":[{"channel":"C0DST","machine":"` + machine + `","name":"repo-example-b"},` +
+		`{"channel":"C0DATA","machine":"` + machine + `","name":"data-example"}]}`
+	if err := os.WriteFile(filepath.Join(bin, "routes.json"), []byte(reply), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A target whose route gives its new threads to another machine, named
+// by repo or by channel (another machine's prefix, no checkout here), is
+// handed off there: the thread is opened as the route's, from the
+// caller's thread, its first message carrying the task and the signed
+// line, and the caller's thread is told; no agent starts here, nothing is
+// recorded as a thread of this scope and no tickets are related. A rerun
+// does nothing.
+func TestAHandoffToAChannelRoutedToAnotherMachineOpensItsThreadThere(t *testing.T) {
 	conn, task, bin := handoffSetup(t)
 	fail := false
 	got := fakeHandoffRoute(t, &fail)
-	host, err := os.Hostname()
-	if err != nil {
+	handoffRoutes(t, bin, "machine-elsewhere")
+	if code, err := ThreadHandoff(nil, ThreadHandoffArgs{Channel: "data-example", File: task}); err != nil || code != exit.Ok {
+		t.Fatalf("exit %d, %v", code, err)
+	}
+	log, _ := os.ReadFile(filepath.Join(bin, "fednet.log"))
+	want := "client routes -socket /run/fednet.sock -json\n" +
+		"client whoami -socket /run/fednet.sock -json\n" +
+		"client open-thread -socket /run/fednet.sock -channel C0DATA -owner route -from-thread " + handoffFrom +
+		" -- 从 <#C0SRC> 的一个线程转来：Import the B table (" + handoffAgent + ")\n\n# Import the B table\n\n" +
+		"The people asked for it at C0SRC/1700000000.100, ts 1700000001.000.\n\n— " + handoffAgent + " · " + handoffFrom + "\n" +
+		"client post -socket /run/fednet.sock -thread " + handoffFrom + " -- 已转到 <#C0DATA> 的一个新线程\n"
+	if string(log) != want {
+		t.Errorf("fednet calls:\n%s\nwant:\n%s", log, want)
+	}
+	if len(*got) != 0 {
+		t.Errorf("deliveries %+v", *got)
+	}
+	if atbLog, _ := os.ReadFile(filepath.Join(bin, "atb.log")); len(atbLog) != 0 {
+		t.Errorf("atb calls %q", atbLog)
+	}
+	var threads, done int
+	if err := conn.QueryRow("SELECT (SELECT count(*) FROM threads WHERE thread = 'C0DATA/1700000500.000'), "+
+		"(SELECT count(*) FROM handoffs WHERE to_thread = 'C0DATA/1700000500.000' AND done_at IS NOT NULL)").
+		Scan(&threads, &done); err != nil || threads != 0 || done != 1 {
+		t.Errorf("%d thread rows, %d done handoffs, %v", threads, done, err)
+	}
+	if code, err := ThreadHandoff(nil, ThreadHandoffArgs{Channel: "data-example", File: task}); err != nil || code != exit.Ok {
+		t.Fatalf("again: exit %d, %v", code, err)
+	}
+	if again, _ := os.ReadFile(filepath.Join(bin, "fednet.log")); string(again) != want {
+		t.Errorf("again: fednet called:\n%s", again[len(log):])
+	}
+}
+
+// A run stopped after the thread for another machine was opened finishes
+// on the next run without opening another or starting an agent here.
+func TestAHandoffToAnotherMachineRunAgainFinishesWithoutASecondThread(t *testing.T) {
+	_, task, bin := handoffSetup(t)
+	fail := false
+	got := fakeHandoffRoute(t, &fail)
+	handoffRoutes(t, bin, "machine-elsewhere")
+	if err := os.WriteFile(filepath.Join(bin, "post-down"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	routes := func(machine string) {
-		t.Helper()
-		reply := `{"routes":[{"channel":"C0DST","machine":"` + machine + `","name":"repo-example-b"},` +
-			`{"channel":"C0DATA","machine":"` + machine + `","name":"data-example"}]}`
-		if err := os.WriteFile(filepath.Join(bin, "routes.json"), []byte(reply), 0o644); err != nil {
-			t.Fatal(err)
-		}
+	if _, err := ThreadHandoff(nil, ThreadHandoffArgs{Repo: "example-b", File: task}); code(err) != exit.Environment {
+		t.Fatalf("first run: %v", err)
 	}
-	routes("machine-elsewhere")
-	for _, args := range []ThreadHandoffArgs{{Repo: "example-b", File: task}, {Channel: "data-example", File: task}} {
-		_, err := ThreadHandoff(nil, args)
-		if code(err) != exit.Refused || !strings.Contains(err.Error(), "is routed to machine machine-elsewhere, not to this one ("+host+")") {
-			t.Errorf("%+v: %v", args, err)
-		}
+	if err := os.Remove(filepath.Join(bin, "post-down")); err != nil {
+		t.Fatal(err)
+	}
+	if code, err := ThreadHandoff(nil, ThreadHandoffArgs{Repo: "example-b", File: task}); err != nil || code != exit.Ok {
+		t.Fatalf("second run: exit %d, %v", code, err)
+	}
+	log, _ := os.ReadFile(filepath.Join(bin, "fednet.log"))
+	if n := strings.Count(string(log), "client open-thread "); n != 1 || len(*got) != 0 {
+		t.Errorf("%d threads opened, deliveries %+v", n, *got)
+	}
+}
+
+// What cannot go to another machine is refused before anything is
+// recorded or opened: a task over fednet's first message, a whoami that
+// fails (a fednet before v0.9.0), routes fednet cannot give, a channel
+// name with its #, and, on this machine, a name the scope's prefixes do
+// not serve. A target routed to this machine, as whoami names it, is
+// handed off here.
+func TestAHandoffIsRefusedWhenItCannotGoWhereItsChannelIsRouted(t *testing.T) {
+	conn, task, bin := handoffSetup(t)
+	fail := false
+	got := fakeHandoffRoute(t, &fail)
+	handoffRoutes(t, bin, "machine-elsewhere")
+	long := filepath.Join(t.TempDir(), "long.md")
+	if err := os.WriteFile(long, []byte("# Long\n\n"+strings.Repeat("字", 4000)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ThreadHandoff(nil, ThreadHandoffArgs{Channel: "data-example", File: long}); code(err) != exit.Refused ||
+		!strings.Contains(err.Error(), "over fednet's 4000") {
+		t.Errorf("a long task: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, "whoami-fails"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ThreadHandoff(nil, ThreadHandoffArgs{Channel: "data-example", File: task}); code(err) != exit.Environment ||
+		!strings.Contains(err.Error(), "fednet v0.9.0 or later") {
+		t.Errorf("whoami fails: %v", err)
+	}
+	if err := os.Remove(filepath.Join(bin, "whoami-fails")); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := ThreadHandoff(nil, ThreadHandoffArgs{Channel: "#repo-example-b", File: task}); code(err) != exit.Refused ||
 		!strings.Contains(err.Error(), "is not a Slack channel's name") {
@@ -438,7 +526,7 @@ func TestAHandoffToAChannelRoutedToAnotherMachineIsRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(bin, "routes.json"),
-		[]byte(`{"routes":[{"channel":"C0UNS","name":"example-unserved"}]}`), 0o644); err != nil {
+		[]byte(`{"routes":[{"channel":"C0UNS","machine":"machine-here","name":"example-unserved"}]}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := ThreadHandoff(nil, ThreadHandoffArgs{Channel: "example-unserved", File: task}); code(err) != exit.Refused ||
@@ -457,18 +545,21 @@ func TestAHandoffToAChannelRoutedToAnotherMachineIsRefused(t *testing.T) {
 		t.Errorf("%d rows, %v", rows, err)
 	}
 	for _, call := range fednetCalls(t, bin) {
-		if !strings.HasPrefix(call, "client routes ") {
+		if !strings.HasPrefix(call, "client routes ") && !strings.HasPrefix(call, "client whoami ") {
 			t.Errorf("fednet called: %s", call)
 		}
 	}
 	if err := os.Remove(filepath.Join(bin, "routes-down")); err != nil {
 		t.Fatal(err)
 	}
-	routes(host)
+	handoffRoutes(t, bin, "machine-here")
 	if code, err := ThreadHandoff(nil, ThreadHandoffArgs{Channel: "repo-example-b", File: task}); err != nil || code != exit.Ok {
 		t.Fatalf("routed here: exit %d, %v", code, err)
 	}
 	if len(*got) != 1 || (*got)[0].Thread != handoffTo {
 		t.Errorf("deliveries %+v", *got)
+	}
+	if log, _ := os.ReadFile(filepath.Join(bin, "fednet.log")); strings.Contains(string(log), "-owner") {
+		t.Errorf("routed here, opened as the route's:\n%s", log)
 	}
 }

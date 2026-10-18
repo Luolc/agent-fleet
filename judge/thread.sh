@@ -45,8 +45,8 @@ ATB
 # fails (exit 4, one line on stderr) while
 # /home/agent/fednet-down exists; `ask` posts card-<n>, n the ref's id;
 # `routes` names #repo-example-target (C0HD), #repo-example-plain
-# (C0HP) and #data-example-remote (C0HR, routed to another machine), and
-# `open-thread` opens
+# (C0HP) and #data-example-remote (C0HR, routed to another machine),
+# `whoami` names this machine judge-here, and `open-thread` opens
 # <channel>/1700000500.000.
 cat > /home/agent/fake-thread/fednet <<'FEDNET'
 #!/bin/sh
@@ -55,6 +55,7 @@ echo "$*" >> /home/agent/fednet.log
 [ -e /home/agent/fednet-down ] && { echo "post: hub unreachable" >&2; exit 4; }
 [ "$2" = ask ] && { echo '{"id":"card-'"${8#*:}"'","channel":"C0","ts":"1.0","permalink":"https://slack.example.test/card-'"${8#*:}"'"}'; exit 0; }
 [ "$2" = routes ] && { echo '{"routes":[{"channel":"C0HD","name":"repo-example-target"},{"channel":"C0HP","name":"repo-example-plain"},{"channel":"C0HR","machine":"judge-elsewhere","name":"data-example-remote"}]}'; exit 0; }
+[ "$2" = whoami ] && { echo '{"text":"judge-here"}'; exit 0; }
 [ "$2" = open-thread ] && { echo "$6/1700000500.000"; exit 0; }
 echo m-posted
 FEDNET
@@ -839,9 +840,6 @@ has "handoff: a lead is pointed at its home thread's agent" "$out" "a lead does 
 out=$(thra "$KH" TH-6 -- thread handoff --repo example-unrouted --file "$htask" 2>&1); rc=$?
 check "handoff: exit 1 to a channel fleet knows no id of" 1 "$rc"
 has "handoff: says fleet opens no channel" "$out" "fleet knows no id of #repo-example-unrouted" "fleet opens no channel"
-out=$(thra "$KH" TH-6 -- thread handoff --channel data-example-remote --file "$htask" 2>&1); rc=$?
-check "handoff: exit 1 to a channel routed to another machine" 1 "$rc"
-has "handoff: names the machine the channel is routed to" "$out" "#data-example-remote is routed to machine judge-elsewhere"
 check "handoff: the refusals opened no thread and recorded nothing" "0 0 " \
   "$(grep -c open-thread /home/agent/fednet.log) $(tledger "SELECT count(*) FROM handoffs")"
 cp "/home/agent/.config/$T/main.json" /home/agent/main.json.keep
@@ -911,4 +909,29 @@ check "handoff to its own channel: the new thread is recorded in the same channe
 has "handoff to its own channel: its agent's first message is the task" "$(received "$AS")" \
   "[HANDOFF from $AH in thread $KH]" "0xHAND3"
 settled "$AS"
+
+# A handoff to a channel routed to another machine opens the thread as
+# that machine's, from the caller's thread, the task and the signed line in
+# its first message, and starts no agent here; a relay from that machine's
+# agent reaches the caller's agent as that agent's words.
+: > /home/agent/fednet.log
+hremote=$(task handoff-remote 'Run the remote import 0xHAND4')
+out=$(thra "$KH" TH-6 -- thread handoff --channel data-example-remote --file "$hremote" 2>&1); rc=$?
+check "handoff to another machine: exit 0" 0 "$rc"
+has "handoff to another machine: says fednet hands the task over" "$out" \
+  "handed off to thread C0HR/1700000500.000 in #data-example-remote" "fednet hands the task to the machine its channel is routed to"
+check "handoff to another machine: the thread is opened as the route's, from the caller's thread" 1 \
+  "$(grep -c -- "-channel C0HR -owner route -from-thread $KH -- " /home/agent/fednet.log)"
+check "handoff to another machine: its first message has the title in fleet's line, the task and the signed line" "2 1" \
+  "$(grep -c 0xHAND4 /home/agent/fednet.log) $(grep -Fxc -- "— $AH · $KH" /home/agent/fednet.log)"
+check "handoff to another machine: no thread of this scope is recorded for it" "0 " \
+  "$(tledger "SELECT count(*) FROM threads WHERE thread = 'C0HR/1700000500.000'")"
+ev=$(event r1 "$KH" 'Remote import done 0xRELAY1\n\n— thread-c0hr-1700000500-000 · C0HR/1700000500.000' '' \
+  '"channel_name":"repo-'"$R"'","trigger":"relay","from_client":"judge-elsewhere"')
+inbox "$ev" >/dev/null 2>&1; rc=$?
+check "relay: exit 0" 0 "$rc"
+has "relay: the thread's agent gets it headed by the other machine's agent" "$(received "$AH")" \
+  "[RELAY from judge-elsewhere/thread-c0hr-1700000500-000 in thread C0HR/1700000500.000]" "0xRELAY1"
+check "relay: not recorded as the latest message from a person" 0 \
+  "$(tledger "SELECT count(*) FROM threads WHERE thread = '$KH' AND last_text LIKE '%0xRELAY1%'" | tr -d ' ')"
 rm -f /home/agent/next-ticket
