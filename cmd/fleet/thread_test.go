@@ -1852,11 +1852,23 @@ func TestInboxDropsTheLeadingMentionsFromTheTicketTitle(t *testing.T) {
 // reaches the thread's agent as that agent's words, headed with the
 // authenticated machine and the agent and thread its last line names, or
 // with the machine alone when that line is missing; it is never recorded
-// as the latest message a person posted.
+// as the latest message a person posted, and answers no question a
+// person's message would.
 func TestInboxDeliversARelayAsAnAgentsWordsNotAPersons(t *testing.T) {
 	w := threadWorld(t, "")
 	if out := w.inbox(w.event("m1", "Please import the A table", "")); out.code != 0 {
 		t.Fatalf("%+v", out)
+	}
+	w.exec("INSERT INTO questions (job, thread, asked_by, text, state, asked_at) VALUES ('', '" + threadKey +
+		"', 'thread-c0123-1700000000-123', 'Which month?', 'pending', 0)")
+	question := func() string {
+		conn := w.defaultLedger()
+		defer conn.Close()
+		var state string
+		if err := conn.QueryRow("SELECT state FROM questions WHERE text = 'Which month?'").Scan(&state); err != nil {
+			return err.Error()
+		}
+		return state
 	}
 	latest := func() string {
 		conn := w.defaultLedger()
@@ -1887,6 +1899,15 @@ func TestInboxDeliversARelayAsAnAgentsWordsNotAPersons(t *testing.T) {
 	}
 	if got := latest(); got != "Please import the A table" {
 		t.Errorf("latest = %q, want the person's message", got)
+	}
+	if got := question(); got != "pending" {
+		t.Errorf("after the relays: question %s, want pending", got)
+	}
+	if out := w.inbox(w.event("m4", "March", "")); out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	if got := question(); got != "answered" {
+		t.Errorf("after a person's message: question %s, want answered", got)
 	}
 }
 
@@ -1942,6 +1963,7 @@ func TestThreadPostDeliverPostsToTheGivenThreadSigned(t *testing.T) {
 		{"--thread alone", w.asThreadAgent("TH-5", "thread", "post", "--thread", "C0B/1700000009.000", "--body-file", body)},
 		{"--attach", w.asThreadAgent("TH-5", "thread", "post", "--deliver", "--thread", "C0B/1700000009.000", "--attach", "a.png", "--body-file", body)},
 		{"not a key", w.asThreadAgent("TH-5", "thread", "post", "--deliver", "--thread", "repo-x", "--body-file", body)},
+		{"a thread of this machine", w.asThreadAgent("TH-5", "thread", "post", "--deliver", "--thread", threadKey, "--body-file", body)},
 	} {
 		if c.out.code != 1 {
 			t.Errorf("%s: %+v", c.label, c.out)

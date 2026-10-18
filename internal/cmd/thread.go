@@ -40,7 +40,8 @@ const (
 		"machine that owns the thread, as a message of trigger `relay` (nothing when this machine owns it). fleet adds " +
 		"one last line, `— <your name> · <your thread>`, which the receiving fleet shows as who it is from and where to " +
 		"answer; it is a label you give, only the machine is checked. fednet refuses (exit 3) when its relay list does not " +
-		"let this machine deliver there, and exits 1 for a thread without an owner. --deliver takes no --attach.\n\n" +
+		"let this machine deliver there, and exits 1 for a thread without an owner. --deliver takes no --attach, and is " +
+		"refused (exit 1) for a thread this scope's ledger records, one of this machine's: tell its agent with `fleet send`.\n\n" +
 		"The text is read from --body-file and posted with `fednet client post` to the " +
 		"thread your row in the ledger records, through the socket in the scope's settings " +
 		"(`fednet.socket`); you never name either. Each --attach is passed to fednet as " +
@@ -1008,10 +1009,33 @@ func ThreadPost(args ThreadPostArgs) (exit.Code, error) {
 		if !threadKey.MatchString(args.Thread) {
 			return 0, exit.Refusedf("--thread %q is not a thread key, CHANNEL/TS such as C012AB3CD/1700000000.000100", args.Thread)
 		}
+		if err := notOurs(me.Scope, args.Thread); err != nil {
+			return 0, err
+		}
 		text = strings.TrimRight(text, " \t\r\n") + "\n\n" + relaySignature(me.Agent, thread)
 		return handBack(fednet.RelayDeliver(socket, args.Thread, text))
 	}
 	return handBack(fednet.Relay(socket, thread, text, args.Attach))
+}
+
+// notOurs refuses a --deliver to a thread this scope's ledger records:
+// fednet delivers nothing to the machine that owns the thread itself, so
+// its agent would never hear of the post.
+func notOurs(scope, thread string) error {
+	conn, err := db.Open(scope)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	row, err := threadByKey(conn, thread)
+	if err != nil {
+		return err
+	}
+	if row != nil {
+		return exit.Refusedf("thread %s is this machine's, so --deliver would deliver it to no one: tell its agent "+
+			"with `fleet send`", thread)
+	}
+	return nil
 }
 
 // liveThreadOf is the thread the caller's live row records, which must
