@@ -33,10 +33,14 @@ const (
 		"--cwd is a directory; the job is open in the ledger; the config is valid; with Linear " +
 		"on, the task gives a title; the name uses only [a-z0-9-], is " +
 		"not `watch`, and is not taken in the ledger or in herdr; the job's workspace exists; " +
-		"the job holds fewer than max_agents_per_job live agents including the lead; with " +
+		"the job holds fewer than max_agents_per_job live agents including the lead, and its " +
+		"workspace fewer than that many panes (`herdr pane list`; a pane a gone or ended agent left " +
+		"counts until it is closed); with " +
 		"resource_check, the 1-minute load average is below the CPU count times the scope's " +
 		"`resources.load_multiplier` (default 1; skipped with --light) " +
-		"and available memory is above 2 GiB; last, for a cross-repo job, the parent's team and project are " +
+		"and available memory is at least `resources.min_available_mib` (default 2048) plus " +
+		"`resources.agent_mib` (default 512), the new agent's share, in MiB; " +
+		"last, for a cross-repo job, the parent's team and project are " +
 		"read from Linear.\n\n" +
 		"Then the worker's row is reserved as `starting`, in one transaction with the name and " +
 		"cap checks, so two spawns cannot both pass them. With Linear on, the work order is " +
@@ -100,7 +104,10 @@ type spawnChecked struct {
 	title     string
 	cwd       string
 	workspace string
-	light     bool
+	// panes is how many panes the job's workspace has; 0 until herdr is
+	// read.
+	panes int
+	light bool
 }
 
 // spawnChecks runs every check in order: the caller and the names, the
@@ -189,15 +196,23 @@ func (c *spawnChecked) ledgerAndHerdr(h *herdr.Herdr, conn *sql.DB) error {
 		return exit.Environmentf("expected one workspace labelled %s, herdr has %d", c.me.Job, len(workspaces))
 	}
 	c.workspace = workspaces[0]
+	if c.panes, err = workspacePanes(h, c.workspace); err != nil {
+		return err
+	}
+	if err := c.dedup(conn); err != nil {
+		return err
+	}
 	if err := resources(c.cfg, c.sc, c.light); err != nil {
 		return err
 	}
 	return c.linear.resolve()
 }
 
-// dedup is the ledger checks on the worker: its name is free and the job
-// is under its cap. Run once before herdr is asked, and again inside the
-// reservation.
+// dedup is the checks on the worker's name and the job's cap: the name is
+// free, and both the job's live rows and the panes of its workspace are
+// under the cap, so panes that ended rows left behind count too. Run
+// before herdr is asked (no panes read yet), after the panes are read, and
+// again inside the reservation.
 func (c *spawnChecked) dedup(conn querier) error {
 	if err := liveNameTaken(conn, c.id.Agent); err != nil {
 		return err
@@ -206,9 +221,9 @@ func (c *spawnChecked) dedup(conn querier) error {
 	if err := conn.QueryRow("SELECT count(*) FROM agents WHERE job = ?1 AND state != 'ended'", c.me.Job).Scan(&live); err != nil {
 		return exit.Database(err)
 	}
-	if limit := int64(c.cfg.MaxAgentsPerJob); live >= limit {
-		return exit.Refusedf("job %s already has %d live agents; the cap is %d including the lead",
-			c.me.Job, live, limit)
+	if limit := int64(c.cfg.MaxAgentsPerJob); max(live, int64(c.panes)) >= limit {
+		return exit.Refusedf("job %s already has %d live agents and %d panes in its workspace; "+
+			"the cap is %d including the lead, on the larger of the two", c.me.Job, live, c.panes, limit)
 	}
 	return nil
 }

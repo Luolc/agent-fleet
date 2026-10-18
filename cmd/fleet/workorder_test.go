@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,7 +19,9 @@ import (
 
 // startHerdr is a fake herdr that lets a start run to the end: a workspace
 // labelled item-1, plus one labelled wire once <dir>/wire-workspace
-// exists (none for any other label), an agent that
+// exists (none for any other label), one pane in it unless
+// <dir>/panes.json says otherwise (`pane list` keeps its argv in
+// <dir>/pane-list-argv), an agent that
 // starts at its input box, and a prompt that is delivered. `workspace
 // create`, `tab create`, `agent start` and `agent prompt` keep their argv
 // in <dir>/workspace-argv, <dir>/tab-argv, <dir>/start-argv and <dir>/argv.
@@ -34,6 +37,10 @@ case "$1 $2" in
     else
       echo '{"result":{"workspaces":[{"workspace_id":"w1","label":"item-1"}]}}'
     fi ;;
+  "pane list")
+    printf '%s\n' "$@" > "$dir/pane-list-argv"
+    if [ -e "$dir/panes.json" ]; then cat "$dir/panes.json"
+    else echo '{"result":{"panes":[{"pane_id":"p0","tab_id":"t0"}]}}'; fi ;;
   "workspace create")
     printf '%s\n' "$@" > "$dir/workspace-argv"
     echo '{"result":{"root_pane":{"workspace_id":"w2","tab_id":"t2","pane_id":"p2"}}}' ;;
@@ -289,6 +296,7 @@ func TestSpawnCreatesAndClaimsTheWorkOrderBeforeAnythingElse(t *testing.T) {
 	want := []string{
 		"herdr agent list",
 		"herdr workspace list",
+		"herdr pane list",
 		"atb linear create --team EX --project Example project --parent EX-10 --label worker --title Import the A table " +
 			"--description-file " + resolved + " --json key=set",
 		"atb linear claim EX-12 --agent item-1-a --source item-1-lead --scope example-dataset: job item-1 key=set",
@@ -464,6 +472,44 @@ func TestSpawnChecksTheConfigAndTheParentIssueBeforeAnythingIsCreated(t *testing
 		}
 		if w.calls() != "" {
 			t.Errorf("%s: calls = %q", c.name, w.calls())
+		}
+	}
+}
+
+// Panes that ended or gone agents left in the job's workspace count
+// against the cap even when the ledger has fewer live rows.
+func TestSpawnCountsTheWorkspacesPanesAgainstTheCap(t *testing.T) {
+	for _, c := range []struct {
+		panes int
+		code  int
+	}{{3, 1}, {2, 0}} {
+		w := newWorld(t)
+		w.configure(`{"max_agents_per_job": 3, "resource_check": false}`)
+		openJobWithLead(w, "")
+		w.useStartHerdr()
+		panes := make([]string, c.panes)
+		for i := range panes {
+			panes[i] = fmt.Sprintf(`{"pane_id":"p%d","tab_id":"t%d"}`, i, i)
+		}
+		if err := os.WriteFile(filepath.Join(w.dir, "panes.json"),
+			[]byte(`{"result":{"panes":[`+strings.Join(panes, ",")+`]}}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		out := w.spawnWorker("--task-file", task(w, "task.md", "# Import\n"), "--cwd", dir(w, "wt"))
+		if out.code != c.code {
+			t.Fatalf("%d panes: %+v, want exit %d", c.panes, out, c.code)
+		}
+		if argv := w.file("pane-list-argv"); !strings.Contains(argv, "--workspace\nw1\n") {
+			t.Errorf("%d panes: pane list argv = %q", c.panes, argv)
+		}
+		if c.code == 0 {
+			continue
+		}
+		if !strings.Contains(out.stderr, "job item-1 already has 1 live agents and 3 panes in its workspace; the cap is 3") {
+			t.Errorf("3 panes: stderr = %q", out.stderr)
+		}
+		if strings.Contains(w.calls(), "herdr tab create") {
+			t.Errorf("3 panes: calls = %q", w.calls())
 		}
 	}
 }
@@ -709,13 +755,14 @@ func TestJobStartOfACrossRepoJobReadsTheParentsTeamAndProject(t *testing.T) {
 	want = []string{
 		"herdr agent list",
 		"herdr workspace list",
+		"herdr pane list",
 		"atb linear query { issue(id: \"EX-10\") { team { key } project { name } } } key=set",
 		"atb linear create --team QT --project Queried project --parent EX-10 --label worker --title Wire the two repos " +
 			"--description-file " + resolved + " --json key=set",
 		"atb linear claim EX-12 --agent wire-a --source wire-lead --scope cross-repo: job wire key=set",
 		"herdr tab create",
 	}
-	if got := strings.Split(strings.TrimSpace(w.calls()), "\n"); strings.Join(got[:6], "\n") != strings.Join(want, "\n") {
+	if got := strings.Split(strings.TrimSpace(w.calls()), "\n"); strings.Join(got[:7], "\n") != strings.Join(want, "\n") {
 		t.Errorf("spawn calls = %q, want %q first", got, want)
 	}
 	if got := row(w, "wire-a"); got != "EX-12 EX-10 active "+cwd {

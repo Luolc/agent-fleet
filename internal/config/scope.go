@@ -46,6 +46,10 @@ type Scope struct {
 	// LoadMultiplier scales the CPU count that `job start` and `spawn`
 	// keep the 1-minute load average below; above 0, default 1.
 	LoadMultiplier float64
+	// MinAvailableMiB plus AgentMiB is the MemAvailable `job start` and
+	// `spawn` need: the floor left to the machine and the new agent's
+	// own use. Both at least 0, default 2048 and 512.
+	MinAvailableMiB, AgentMiB int
 	// Watches are the policy watches of `fleet watch`, the defaults
 	// included, in name order.
 	Watches []Entry
@@ -105,7 +109,9 @@ type scopeFile struct {
 		Project string `json:"project"`
 	} `json:"unblock"`
 	Resources *struct {
-		LoadMultiplier *float64 `json:"load_multiplier"`
+		LoadMultiplier  *float64 `json:"load_multiplier"`
+		MinAvailableMiB *int     `json:"min_available_mib"`
+		AgentMiB        *int     `json:"agent_mib"`
 	} `json:"resources"`
 	Paths *struct {
 		Checkouts   *string `json:"checkouts"`
@@ -206,7 +212,7 @@ func ParseScope(data []byte, home string) (*Scope, error) {
 		return nil, err
 	}
 	t := &Scope{Paths: DefaultPaths, Channels: DefaultChannels, Watch: DefaultWatch, LoadMultiplier: 1,
-		home: filepath.Clean(home)}
+		MinAvailableMiB: 2048, AgentMiB: 512, home: filepath.Clean(home)}
 	if err := f.sections(t); err != nil {
 		return nil, err
 	}
@@ -280,14 +286,37 @@ func (f *scopeFile) sections(t *Scope) error {
 		}
 		t.UnblockProject = f.Unblock.Project
 	}
-	if f.Resources != nil {
-		if f.Resources.LoadMultiplier == nil {
-			return errors.New("resources.load_multiplier: must be set when resources is")
-		}
-		if *f.Resources.LoadMultiplier <= 0 {
+	return f.resources(t)
+}
+
+// resources sets the `resources` keys that are given; the section, when
+// there, must give one.
+func (f *scopeFile) resources(t *Scope) error {
+	r := f.Resources
+	if r == nil {
+		return nil
+	}
+	if r.LoadMultiplier == nil && r.MinAvailableMiB == nil && r.AgentMiB == nil {
+		return errors.New("resources: must set load_multiplier, min_available_mib or agent_mib when resources is")
+	}
+	if r.LoadMultiplier != nil {
+		if *r.LoadMultiplier <= 0 {
 			return errors.New("resources.load_multiplier: must be above 0")
 		}
-		t.LoadMultiplier = *f.Resources.LoadMultiplier
+		t.LoadMultiplier = *r.LoadMultiplier
+	}
+	for _, m := range []struct {
+		key   string
+		value *int
+		into  *int
+	}{{"resources.min_available_mib", r.MinAvailableMiB, &t.MinAvailableMiB}, {"resources.agent_mib", r.AgentMiB, &t.AgentMiB}} {
+		if m.value == nil {
+			continue
+		}
+		if *m.value < 0 {
+			return errors.New(m.key + ": must be at least 0")
+		}
+		*m.into = *m.value
 	}
 	return nil
 }

@@ -212,21 +212,39 @@ func TestInputBoxIsRecognisedAndMenusAreNot(t *testing.T) {
 	}
 }
 
-func TestResourcesNeedLoadBelowCPUsAndMoreThan2GiB(t *testing.T) {
+// defaults is the default scope's resource settings with load multiplier
+// `m`.
+func defaults(m float64) *config.Scope {
+	return &config.Scope{LoadMultiplier: m, MinAvailableMiB: 2048, AgentMiB: 512}
+}
+
+func TestResourcesNeedLoadBelowCPUsAndTheMemoryFloorPlusAnAgent(t *testing.T) {
 	mem := func(kib uint64) string {
 		return "MemTotal: 99999999 kB\nMemAvailable: " + strconv.FormatUint(kib, 10) + " kB\n"
 	}
-	if err := CheckResources("1.50 1.0 1.0 1/100 42\n", 2, 1, mem(3*1024*1024), false); err != nil {
+	if err := CheckResources("1.50 1.0 1.0 1/100 42\n", 2, mem(3*1024*1024), defaults(1), false); err != nil {
 		t.Fatal(err)
 	}
 	refused := func(load string, cpus int, kib uint64) exit.Code {
-		return code(CheckResources(load, cpus, 1, mem(kib), false))
+		return code(CheckResources(load, cpus, mem(kib), defaults(1), false))
 	}
 	if got := refused("2.00 0 0", 2, 3*1024*1024); got != exit.Refused {
 		t.Errorf("load at the cpu count: %d", got)
 	}
 	if got := refused("0.10 0 0", 2, 2*1024*1024); got != exit.Refused {
 		t.Errorf("memory at 2 GiB: %d", got)
+	}
+	// Above the floor, but not by an agent's share: refused, naming both.
+	err := CheckResources("0.10 0 0", 2, mem(2*1024*1024+256*1024), defaults(1), false)
+	if code(err) != exit.Refused ||
+		!strings.Contains(err.Error(), "available memory is 2304 MiB, below 2560 MiB (min_available_mib 2048 + agent_mib 512") {
+		t.Errorf("memory at 2.25 GiB: %v", err)
+	}
+	if err := CheckResources("0.10 0 0", 2, mem(2*1024*1024+512*1024), defaults(1), false); err != nil {
+		t.Errorf("memory at 2.5 GiB: %v", err)
+	}
+	if err := CheckResources("0.10 0 0", 2, mem(2*1024*1024+768*1024), defaults(1), false); err != nil {
+		t.Errorf("memory at 2.75 GiB: %v", err)
 	}
 	if got := refused("", 2, 3*1024*1024); got != exit.Environment {
 		t.Errorf("empty loadavg: %d", got)
@@ -236,23 +254,23 @@ func TestResourcesNeedLoadBelowCPUsAndMoreThan2GiB(t *testing.T) {
 func TestALightAgentSkipsTheLoadButNotTheMemory(t *testing.T) {
 	mem := func(kib uint64) string { return "MemAvailable: " + strconv.FormatUint(kib, 10) + " kB\n" }
 	busy := "26.00 18.0 11.0 9/900 42\n"
-	if err := CheckResources(busy, 8, 1, mem(3*1024*1024), true); err != nil {
+	if err := CheckResources(busy, 8, mem(3*1024*1024), defaults(1), true); err != nil {
 		t.Errorf("light at load 26 on 8 CPUs: %v", err)
 	}
-	if got := code(CheckResources(busy, 8, 1, mem(3*1024*1024), false)); got != exit.Refused {
+	if got := code(CheckResources(busy, 8, mem(3*1024*1024), defaults(1), false)); got != exit.Refused {
 		t.Errorf("not light at load 26 on 8 CPUs: %d", got)
 	}
-	if got := code(CheckResources(busy, 8, 1, mem(1024*1024), true)); got != exit.Refused {
+	if got := code(CheckResources(busy, 8, mem(1024*1024), defaults(1), true)); got != exit.Refused {
 		t.Errorf("light with 1 GiB available: %d", got)
 	}
 }
 
 func TestTheLoadMultiplierScalesTheCPUCount(t *testing.T) {
 	mem := "MemAvailable: 3145728 kB\n"
-	if err := CheckResources("10.00 9.0 8.0 9/900 42\n", 8, 1.5, mem, false); err != nil {
+	if err := CheckResources("10.00 9.0 8.0 9/900 42\n", 8, mem, defaults(1.5), false); err != nil {
 		t.Errorf("load 10 on 8 CPUs × 1.5: %v", err)
 	}
-	err := CheckResources("12.00 9.0 8.0 9/900 42\n", 8, 1.5, mem, false)
+	err := CheckResources("12.00 9.0 8.0 9/900 42\n", 8, mem, defaults(1.5), false)
 	if code(err) != exit.Refused || !strings.Contains(err.Error(), "not below 12 (8 CPUs × load_multiplier 1.5)") {
 		t.Errorf("load 12 on 8 CPUs × 1.5: %v", err)
 	}
@@ -260,8 +278,27 @@ func TestTheLoadMultiplierScalesTheCPUCount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := code(CheckResources("8.00 9.0 8.0 9/900 42\n", 8, sc.LoadMultiplier, mem, false)); got != exit.Refused {
+	if got := code(CheckResources("8.00 9.0 8.0 9/900 42\n", 8, mem, sc, false)); got != exit.Refused {
 		t.Errorf("load 8 on 8 CPUs with the default multiplier: %d", got)
+	}
+}
+
+func TestTheMemorySettingsMoveTheThreshold(t *testing.T) {
+	mem := "MemAvailable: 3145728 kB\n" // 3072 MiB
+	sc, err := config.ParseScope([]byte(`{"resources": {"min_available_mib": 2048, "agent_mib": 1536}}`), "/home/u")
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = CheckResources("0.10 0 0", 8, mem, sc, false)
+	if code(err) != exit.Refused || !strings.Contains(err.Error(), "below 3584 MiB (min_available_mib 2048 + agent_mib 1536") {
+		t.Errorf("3072 MiB with a 1536 MiB agent: %v", err)
+	}
+	sc, err = config.ParseScope([]byte(`{"resources": {"min_available_mib": 1024}}`), "/home/u")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckResources("0.10 0 0", 8, "MemAvailable: 1835008 kB\n", sc, false); err != nil {
+		t.Errorf("1792 MiB over a 1024 MiB floor plus 512: %v", err)
 	}
 }
 
@@ -325,8 +362,8 @@ func TestWorkOrderTitleOfACardIsItsQuestion(t *testing.T) {
 func TestTheResourceCheckFollowsTheConfig(t *testing.T) {
 	saved := machineResources
 	defer func() { machineResources = saved }()
-	machineResources = func(multiplier float64, light bool) error {
-		if light || multiplier > 2 {
+	machineResources = func(sc *config.Scope, light bool) error {
+		if light || sc.LoadMultiplier > 2 {
 			return nil
 		}
 		return exit.Refusedf("the machine is busy")
