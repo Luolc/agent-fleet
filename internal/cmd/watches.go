@@ -343,6 +343,10 @@ func (r *watchRun) actOn(e config.Entry, role, prompt *promptText, subjects []su
 		if !due {
 			continue
 		}
+		to, ok := r.tellTargetOf(e, s)
+		if !ok {
+			continue
+		}
 		acts++
 		var err error
 		switch {
@@ -351,7 +355,7 @@ func (r *watchRun) actOn(e config.Entry, role, prompt *promptText, subjects []su
 		case e.Do == "worker":
 			err = r.workers.startFor(e, role, prompt, s)
 		default:
-			err = r.tellSubject(e, prompt, s)
+			err = r.tellSubject(e, prompt, s, to)
 		}
 		if err != nil {
 			r.failed(fmt.Errorf("watch %s, subject %s: %w", e.Name, s.Key, err))
@@ -421,25 +425,69 @@ func (r *watchRun) syncSubjects(name string, subjects []subject) (map[string]wat
 	return rows, dbErr(tx.Commit())
 }
 
-// tellSubject sends the subject's text and the prompt to the agent it
-// concerns: the agent named, else the live lead of the job, else the
-// thread's agent, started for it when none is live. Only a tell that
-// landed (exit 0, or 2: it may have) counts as an act; any other is tried
-// again next run.
-func (r *watchRun) tellSubject(e config.Entry, prompt *promptText, s subject) error {
-	text := fmt.Sprintf("fleet watch, watch `%s`, subject `%s`:\n\n%s\n", e.Name, s.Key, strings.TrimRight(s.Text, "\n"))
-	body := watchMessage(prompt, s.Key, text)
-	to := s.Agent
-	if to == "" && s.Job != "" {
-		lead, err := liveLead(r.conn, s.Job)
-		if err != nil {
-			return err
-		}
-		if lead == "" {
-			return exit.New(exit.NotFound, "job "+s.Job+" has no live lead to tell; the next run tries again")
-		}
-		to = lead
+// tellTarget is whom a tell about a subject goes to: the agent, else
+// the agent of the thread; `skip`, when set, says why no one is, and
+// `leadless` that it goes to the thread for want of the job's lead.
+type tellTarget struct {
+	agent, thread, skip string
+	leadless            bool
+}
+
+// tellTargetOf is whom a tell about `s` goes to: the agent named, else
+// the live lead of the job, else the thread's agent: the subject's
+// thread, else the home thread of its job while the job is open. A job
+// that is no longer open, or has neither, is told nothing, said on
+// stdout, so the subject does not fail every run once its lead is gone.
+// `ok` is false when no tell is made, a failure the run's; a watch that
+// does not tell gets none and `ok`.
+func (r *watchRun) tellTargetOf(e config.Entry, s subject) (to tellTarget, ok bool) {
+	if e.Do != "tell" {
+		return to, true
 	}
+	if s.Agent != "" || s.Job == "" {
+		return tellTarget{agent: s.Agent, thread: s.Thread}, true
+	}
+	lead, err := liveLead(r.conn, s.Job)
+	var job *jobRow
+	if err == nil && lead == "" {
+		job, err = openJob(r.conn, s.Job)
+	}
+	switch {
+	case err != nil:
+		r.failed(fmt.Errorf("watch %s, subject %s: %w", e.Name, s.Key, err))
+		return to, false
+	case lead != "":
+		return tellTarget{agent: lead}, true
+	case job == nil:
+		to.skip = "job " + s.Job + " is not open, so no one is told"
+	default:
+		to = tellTarget{thread: s.Thread, leadless: true}
+		if to.thread == "" {
+			to.thread = job.HomeThread
+		}
+		if to.thread == "" {
+			to.skip = "job " + s.Job + " has no live lead and no home thread to tell"
+		}
+	}
+	if to.skip != "" {
+		fmt.Fprintf(os.Stdout, "watch %s: skipped %s: %s\n", e.Name, s.Key, to.skip)
+		return to, false
+	}
+	return to, true
+}
+
+// tellSubject sends the subject's text and the prompt to `t`, the thread's
+// agent started for it when none is live; a tell about a job whose lead
+// has ended says so. Only a tell that landed (exit 0, or 2: it may have)
+// counts as an act; any other is tried again next run.
+func (r *watchRun) tellSubject(e config.Entry, prompt *promptText, s subject, t tellTarget) error {
+	about := ""
+	if t.leadless {
+		about = fmt.Sprintf(" (job %s has no live lead)", s.Job)
+	}
+	text := fmt.Sprintf("fleet watch, watch `%s`, subject `%s`%s:\n\n%s\n", e.Name, s.Key, about, strings.TrimRight(s.Text, "\n"))
+	body := watchMessage(prompt, s.Key, text)
+	to := t.agent
 	var code exit.Code
 	var err error
 	if to != "" {
@@ -449,8 +497,8 @@ func (r *watchRun) tellSubject(e config.Entry, prompt *promptText, s subject) er
 		}
 		code, err = Deliver(r.h, to, message)
 	} else {
-		to = "the agent of thread " + s.Thread
-		code, err = toThread(r.h, r.conn, r.scope, r.cfg, inboundMessage{Thread: s.Thread, Text: body, Watch: true})
+		to = "the agent of thread " + t.thread
+		code, err = toThread(r.h, r.conn, r.scope, r.cfg, inboundMessage{Thread: t.thread, Text: body, Watch: true})
 	}
 	if err != nil {
 		return err

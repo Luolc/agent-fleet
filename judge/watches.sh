@@ -5,8 +5,9 @@
 # reporting to it. Its config turns the default quiet-threads off and has
 # three command watches, all running the same source script, which prints
 # the file of subjects its argument names: `ci` (per_run 3, a prompt file,
-# one variable passed) tells a subject to an agent, to a job's lead and to
-# a thread's agent; `nag` (per_run 1, again 1h, max 1) tells one subject a
+# one variable passed) tells a subject to an agent, to a job's lead (once
+# it ended, to the job's home thread's agent; once the job ended, to
+# nobody) and to a thread's agent; `nag` (per_run 1, again 1h, max 1) tells one subject a
 # run, then asks the people once instead; `bad` fails while
 # <dir>/bad-fail exists. Two `worker` watches join later (below).
 need_repo
@@ -202,5 +203,19 @@ check "watches: once the people answer, a new worker before again has passed" "2
 has "watches: it gets the question and the press" "$(creceived watch-fix-p1)" "## Earlier" "0xQUESTION" \
   "The last press on its card:" '"note":"rebase it 0xANSWER"'
 lacks "watches: and not the message typed in the thread" "$(creceived watch-fix-p1)" "0xTYPED"
+
+# The job's lead ends: a subject about the job goes to its home thread's
+# agent; once the job ends, to nobody, and the run still exits 0.
+echo '{"key": "f", "text": "PR 3 waits. 0xCFGWF", "job": "cw"}' > "$CD/ci.jsonl"
+sqlite3 "$CDB" "UPDATE agents SET state = 'ended', ended_at = $T0 WHERE name = 'cw-lead'"
+cwatch 150 0
+has "watches: with the job's lead ended, a subject naming the job is told to its home thread's agent" "$(creceived "$CA")" \
+  "fleet watch, watch \`ci\`, subject \`f\` (job cw has no live lead):" "0xCFGWF"
+sqlite3 "$CDB" "UPDATE jobs SET state = 'ended', outcome = 'done', ended_at = $T0 WHERE job = 'cw'"
+echo '{"key": "f", "text": "PR 3 is merged. 0xCFGWG", "job": "cw"}' > "$CD/ci.jsonl"
+cwatch 155 0
+has "watches: once the job ended, its subject is skipped" "$(cat "$CD/watch-155.out")" \
+  "watch ci: skipped f: job cw is not open, so no one is told"
+lacks "watches: and told to nobody" "$(creceived "$CA")" "0xCFGWG"
 
 "${CS[@]}" server stop >/dev/null
