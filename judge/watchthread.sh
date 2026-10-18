@@ -14,7 +14,8 @@
 # vanishes (the session ended as broken off, the people reminded); Q5 a job whose thread agent ended (watch starts one to ask
 # about it); Q6 a job its lead ended with its question pending (the
 # question moves to the thread: its agent told and reminded, closed without
-# reclaiming).
+# reclaiming); Q7 a job whose lead vanishes (its row ended after 10
+# minutes, the thread agent told once, the job left open).
 need_repo
 QS=(herdr --session fleet-quiet)
 start_server fleet-quiet
@@ -81,8 +82,8 @@ qlead() { # <job> <thread> -- <arguments...>: as the job's lead
 }
 last_msg() { printf '%s.000100\n' "$2" > "$QD/threads/$(printf %s "$1" | tr / _)"; }
 
-Q1=C0701/1.1 Q2=C0702/2.2 Q3=C0703/3.3 Q4=C0704/4.4 Q5=C0705/5.5 Q6=C0706/6.6
-for q in 1 2 3 4 5 6; do
+Q1=C0701/1.1 Q2=C0702/2.2 Q3=C0703/3.3 Q4=C0704/4.4 Q5=C0705/5.5 Q6=C0706/6.6 Q7=C0707/7.7
+for q in 1 2 3 4 5 6 7; do
   key=C070$q/$q.$q
   qinbox "wq$q" "$key" >/home/agent/quiet/inbox$q.out 2>&1; rc=$?
   check "watch threads: inbox starts the agent of Q$q" "0 $(qname "$key")" "$rc $(qfield "$(qname "$key")" name)"
@@ -91,7 +92,7 @@ done
 printf '{"question": "Which month should the import cover? 0xQW1"}\n' > "$QD/q1.json"
 qthr "$Q1" -- ask-human --card "$QD/q1.json" >/dev/null 2>&1
 check "watch threads: Q1's agent asked" "pending " "$(qledger "SELECT state FROM questions WHERE thread = '$Q1'")"
-for q in 2 3 5 6; do
+for q in 2 3 5 6 7; do
   key=C070$q/$q.$q
   out=$(qthr "$key" -- job start "q$q" --repo "$R" --task-file "$(task "q$q" "job of Q$q")" 2>&1); rc=$?
   check "watch threads: job q$q started from Q$q" 0 "$rc"
@@ -114,9 +115,11 @@ printf 'Started q5.\n' > "$QD/summary5.md"
 qthr "$Q5" -- thread end --summary-file "$QD/summary5.md" --asked-to-end >/dev/null 2>&1
 check "watch threads: Q5's session ended with its job open" "agent_not_found open " \
   "$(qfield "$(qname "$Q5")" name) $(qledger "SELECT state FROM jobs WHERE job = 'q5'")"
+"${QS[@]}" pane close "$(qfield q7-lead pane_id)" >/dev/null
+check "watch threads: q7's lead is gone" agent_not_found "$(qfield q7-lead name)"
 
 T0=$(date +%s)
-for q in 1 2 3 4 5; do last_msg "C070$q/$q.$q" "$T0"; done
+for q in 1 2 3 4 5 7; do last_msg "C070$q/$q.$q" "$T0"; done
 last_msg "$Q6" $((T0 + 60 * 60))
 : > "$QD/fednet.log"
 qwatch() { # <minutes>: one run at T0 + minutes, its output in watch-<minutes>.out
@@ -125,6 +128,7 @@ qwatch() { # <minutes>: one run at T0 + minutes, its output in watch-<minutes>.o
   [ "$rc" = 0 ] || cat "$QD/watch-$1.out"
 }
 quiet2="rule \`thread quiet, jobs open\`: thread $Q2"
+gone7="rule \`lead gone\`: q7-lead, the lead of job q7"
 
 qwatch 29
 has "watch threads: the vanished agent's session ended, the thread told" "$(cat "$QD/fednet.log")" \
@@ -166,7 +170,15 @@ has "watch threads: Q5 got a new agent, asked about its job" "$(qreceived "$(qna
   "[FROM: watch]" "rule \`thread quiet, jobs open\`: thread $Q5" "- job q5: lead q5-lead "
 check "watch threads: Q5's new session is live" "active " "$(qledger "SELECT state FROM agents WHERE name = '$(qname "$Q5")' AND state != 'ended'")"
 
+check "watch threads: q7's lead, gone for 1 minute, keeps its row" "active " \
+  "$(qledger "SELECT state FROM agents WHERE name = 'q7-lead'")"
+check "watch threads: and Q7's agent is not told" 0 "$(count "$(qreceived "$(qname "$Q7")")" "$gone7")"
+
 qwatch 40
+check "watch threads: q7's lead, gone for 11 minutes, has its row ended, its job left open" "ended open " \
+  "$(qledger "SELECT state FROM agents WHERE name = 'q7-lead'")$(qledger "SELECT state FROM jobs WHERE job = 'q7'")"
+has "watch threads: Q7's agent is told, to decide about the job" "$(qreceived "$(qname "$Q7")")" \
+  "[FROM: watch]" "$gone7" "is gone from herdr for 11m" "fleet job end q7 --force"
 check "watch threads: Q6's agent is told once" 1 "$(count "$(qreceived "$(qname "$Q6")")" "rule \`questions of an ended job\`")"
 check "watch threads: the same quiet spell is asked about once" 1 "$(count "$(qreceived "$(qname "$Q2")")" "$quiet2")"
 last_msg "$Q2" $((T0 + 50 * 60))
@@ -174,6 +186,7 @@ qwatch 79
 check "watch threads: a new message restarts the count" 1 "$(count "$(qreceived "$(qname "$Q2")")" "$quiet2")"
 qwatch 80
 check "watch threads: asked again after 30m of the new spell" 2 "$(count "$(qreceived "$(qname "$Q2")")" "$quiet2")"
+check "watch threads: Q7's agent is told once that its lead is gone" 1 "$(count "$(qreceived "$(qname "$Q7")")" "$gone7")"
 
 printf 'Done. 0xQ2DONE\n' > "$QD/report2.md"
 qlead q2 "$Q2" -- job end --report-file "$QD/report2.md" >/dev/null 2>&1

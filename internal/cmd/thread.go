@@ -1358,6 +1358,13 @@ func closeOwnTab(h *herdr.Herdr, conn querier, name string) error {
 	if pane == "" {
 		return exit.Environmentf("the ledger recorded no pane for %s; close its tab by hand", name)
 	}
+	return closePaneTab(h, pane, name)
+}
+
+// closePaneTab closes the tab of `pane`, the pane of the agent `name`; a
+// pane herdr no longer has means the tab is gone. The close is checked:
+// the tab must be gone afterwards.
+func closePaneTab(h *herdr.Herdr, pane, name string) error {
 	reply, err := h.Call("pane", "get", pane)
 	if err != nil {
 		return err

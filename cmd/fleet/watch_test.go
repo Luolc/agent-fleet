@@ -25,7 +25,8 @@ const rule = "──────────────────────
 // `agent prompt` appends the target and the text to <dir>/prompts and
 // answers with `reply`; `agent get` finds the agents of list.json; a pane
 // has the tab `tab-<pane>`, and `tab close` writes the pane to
-// <dir>/closed, after which neither is found.
+// <dir>/closed, after which neither is found; `pane list` prints
+// <dir>/panes.json, or no pane without it.
 func watchHerdr(dir, reply string) string {
 	return `#!/bin/sh
 if [ "$1" = --session ]; then shift 2; fi
@@ -78,6 +79,9 @@ REPLY
     ;;
   "workspace list")
     echo '{"result":{"workspaces":[]}}'
+    ;;
+  "pane list")
+    cat "$dir/panes.json" 2>/dev/null || echo '{"result":{"panes":[]}}'
     ;;
   *)
     echo "fake herdr: unexpected command: $*" >&2
@@ -830,16 +834,18 @@ func TestWatchAsksAboutAQuietThreadOncePerSpell(t *testing.T) {
 			t.Errorf("%q missing:\n%s", want, prompts[1][1])
 		}
 	}
-	// The same quiet spell: not asked again.
+	// The same quiet spell: not asked again. The worker, gone for over
+	// 10 minutes, is ended, and its lead told.
 	w.watchAt(2*time.Hour, 0)
-	if got := len(w.prompts()); got != 2 {
-		t.Fatalf("%q", w.prompts())
+	if prompts := w.prompts(); len(prompts) != 3 || prompts[2][0] != "j-lead" ||
+		!strings.Contains(prompts[2][1], "rule `worker gone`: your worker j-w") {
+		t.Fatalf("%q", prompts)
 	}
 	// A new message starts the count again.
 	w.lastMessage("C2/2.0", t0+3*3600)
 	w.watchAt(3*time.Hour+29*time.Minute, 0)
 	w.watchAt(3*time.Hour+30*time.Minute, 0)
-	if prompts := w.prompts(); len(prompts) != 3 || !strings.Contains(prompts[2][1], "rule `thread quiet, jobs open`") {
+	if prompts := w.prompts(); len(prompts) != 4 || !strings.Contains(prompts[3][1], "rule `thread quiet, jobs open`") {
 		t.Fatalf("%q", prompts)
 	}
 	// The job ended: the live agent is asked once why it has not ended.
@@ -848,18 +854,18 @@ func TestWatchAsksAboutAQuietThreadOncePerSpell(t *testing.T) {
 	w.watchAt(4*time.Hour+30*time.Minute, 0)
 	w.watchAt(5*time.Hour, 0)
 	prompts = w.prompts()
-	if len(prompts) != 4 || prompts[3][0] != "thread-c2" {
+	if len(prompts) != 5 || prompts[4][0] != "thread-c2" {
 		t.Fatalf("%q", prompts)
 	}
 	for _, want := range []string{"rule `thread quiet, nothing open`", "when nothing is left to do, end the session", "no message for 3d00h"} {
-		if !strings.Contains(prompts[3][1], want) {
+		if !strings.Contains(prompts[4][1], want) {
 			t.Errorf("%q missing:\n%s", want, prompts[3][1])
 		}
 	}
 	// Three days without a message: the session is reclaimed.
 	w.watchAt(76*time.Hour, 0)
 	prompts = w.prompts()
-	if len(prompts) != 5 || !strings.Contains(prompts[4][1], "rule `thread idle`: thread C2/2.0 has had no message for 3d00h") {
+	if len(prompts) != 6 || !strings.Contains(prompts[5][1], "rule `thread idle`: thread C2/2.0 has had no message for 3d00h") {
 		t.Fatalf("%q", prompts)
 	}
 	if got := w.query("SELECT reclaim_at FROM agents WHERE name = 'thread-c2'"); got != fmt.Sprint(t0+76*3600+600) {
