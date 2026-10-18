@@ -37,7 +37,7 @@ const (
 		"changes no route.\n\n" +
 		"The steps: fleet records the handoff (table `handoffs`), opens a thread in the target " +
 		"channel with `fednet client open-thread`, its first message fleet's one line naming your " +
-		"channel (`<#<id>>`, which Slack shows as a link), your thread, the task's first line and " +
+		"channel (`<#<id>>`, which Slack shows as a link), your thread, the task's title (as `fleet job start --help` says) and " +
 		"you, and records it as a thread of that channel. Then it posts one line to your thread, " +
 		"`已转到 <#<id>> 的[新线程](<link>)`, so your thread shows where the work went before " +
 		"the new agent is up. Then it starts a thread agent there, as `fleet inbox` starts one " +

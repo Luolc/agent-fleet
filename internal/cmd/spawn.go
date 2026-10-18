@@ -31,7 +31,7 @@ const (
 		"whose team and project the work order goes to.\n\n" +
 		"Checks, all before anything is created: the task file is readable and not empty; " +
 		"--cwd is a directory; the job is open in the ledger; the config is valid; with Linear " +
-		"on, the task's first non-empty line gives a title; the name uses only [a-z0-9-], is " +
+		"on, the task gives a title; the name uses only [a-z0-9-], is " +
 		"not `watch`, and is not taken in the ledger or in herdr; the job's workspace exists; " +
 		"the job holds fewer than max_agents_per_job live agents including the lead; with " +
 		"resource_check, the 1-minute load average is below the CPU count times the scope's " +
@@ -41,8 +41,7 @@ const (
 		"Then the worker's row is reserved as `starting`, in one transaction with the name and " +
 		"cap checks, so two spawns cannot both pass them. With Linear on, the work order is " +
 		"created next, before anything else: `atb linear create` under the job's parent issue, " +
-		"titled with the task's first non-empty line without leading `#` (at most 80 " +
-		"characters) and described by the task file, written onto the row, then `atb linear " +
+		"titled with the task's title (as `fleet job start --help` says) and described by the task file, written onto the row, then `atb linear " +
 		"claim` in the worker's name. The worker gets FLEET_ISSUE and its task starts with a " +
 		"line naming the work order's URL. If an atb step fails, nothing else is created and the " +
 		"row is ended, so the name is free and `job end` does not wait for it; an issue created " +
