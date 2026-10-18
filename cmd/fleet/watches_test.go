@@ -127,6 +127,44 @@ func TestACommandWatchTellsTheAgentEachSubjectConcerns(t *testing.T) {
 	}
 }
 
+func TestACommandWatchTellsAJobsThreadOnceItsLeadEndedAndNobodyOnceTheJobEnded(t *testing.T) {
+	w := sourceWorld(t, `{"ci": {"source": {"command": ["SOURCE"]}, "do": "tell", "per_run": 2},
+		"quiet-threads": {"off": true}}`, nil)
+	w.subjects(`{"key": "b", "text": "PR 2 waits", "job": "j"}`, `{"key": "d", "text": "PR 4 waits", "agent": "thread-c1"}`)
+	w.watchAt(0, 0)
+	if got := strings.Join(w.told(0), " "); got != "j-lead:b thread-c1:d" {
+		t.Fatalf("with its lead live: told %s", got)
+	}
+
+	w.exec("UPDATE agents SET state = 'ended', ended_at = 1 WHERE name = 'j-lead'")
+	w.herdrList("thread-c1 idle 1")
+	w.subjects(`{"key": "b", "text": "PR 2 still waits", "job": "j"}`, `{"key": "d", "text": "PR 4 waits", "agent": "thread-c1"}`)
+	w.watchAt(5*time.Minute, 0)
+	if got := strings.Join(w.told(2), " "); got != "thread-c1:b" {
+		t.Fatalf("with its lead ended: told %s: %q", got, w.prompts())
+	}
+	if got := w.prompts()[2][1]; !strings.Contains(got, "fleet watch, watch `ci`, subject `b` (job j has no live lead):\n\nPR 2 still waits") {
+		t.Errorf("message:\n%s", got)
+	}
+	if got := w.query("SELECT group_concat(key || ':' || acts, ' ') FROM watch_subjects WHERE watch = 'ci'"); got != "b:2 d:1" {
+		t.Errorf("subjects %s", got)
+	}
+
+	w.exec("UPDATE jobs SET state = 'ended', outcome = 'done', ended_at = 6 WHERE job = 'j'")
+	w.subjects(`{"key": "b", "text": "PR 2 is merged", "job": "j"}`, `{"key": "d", "text": "PR 4 is red", "agent": "thread-c1"}`)
+	out := w.watchAt(10*time.Minute, 0)
+	if got := strings.Join(w.told(3), " "); got != "thread-c1:d" {
+		t.Errorf("with its job ended: told %s", got)
+	}
+	if !strings.Contains(out.stdout, "watch ci: skipped b: job j is not open, so no one is told\n") ||
+		!strings.Contains(out.stdout, "watch ci: 2 subject(s), acted on 1\n") {
+		t.Errorf("stdout:\n%s", out.stdout)
+	}
+	if got := w.query("SELECT group_concat(key || ':' || acts, ' ') FROM watch_subjects WHERE watch = 'ci'"); got != "b:2 d:2" {
+		t.Errorf("subjects %s", got)
+	}
+}
+
 func TestACommandWatchKeepsItsLimitsAndAsksThePeopleOnce(t *testing.T) {
 	w := sourceWorld(t, `{"nag": {"source": {"command": ["SOURCE"]}, "do": "tell", "every": "5m", "again": "1h", "max": 2},
 		"quiet-threads": {"off": true}}`, nil)
