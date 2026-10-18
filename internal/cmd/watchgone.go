@@ -26,12 +26,16 @@ const (
 	goneSecs int64 = 10 * 60
 )
 
-// herdrPane is one pane of `herdr pane list`.
+// herdrPane is one pane of `herdr pane list`; agent is whether an agent
+// runs in it.
 type herdrPane struct {
 	label, tab string
+	agent      bool
 }
 
-// herdrPanes is every pane herdr has in this session, by pane id.
+// herdrPanes is every pane herdr has in this session, by pane id. An
+// entry without a pane and a tab id fails the read: a pane missing from
+// the list ends an agent's row.
 func herdrPanes(h *herdr.Herdr) (map[string]herdrPane, error) {
 	result, err := h.CallOK("pane", "list")
 	if err != nil {
@@ -47,11 +51,35 @@ func herdrPanes(h *herdr.Herdr) (map[string]herdrPane, error) {
 		id, _ := pane["pane_id"].(string)
 		label, _ := pane["label"].(string)
 		tab, _ := pane["tab_id"].(string)
-		if id != "" && tab != "" {
-			panes[id] = herdrPane{label: label, tab: tab}
+		if id == "" || tab == "" {
+			return nil, exit.Environmentf("herdr pane list: an entry without pane_id or tab_id: %v", entry)
 		}
+		agent, _ := pane["agent"].(string)
+		panes[id] = herdrPane{label: label, tab: tab, agent: agent != ""}
 	}
 	return panes, nil
+}
+
+// confirmGone keeps as gone only the agents whose pane, as the ledger
+// records it, herdr does not have or has with no agent in it: an agent
+// running in its pane while missing from `herdr agent list` is a listing
+// watch cannot read, not a gone agent, so nothing is recorded for it.
+func confirmGone(all []watched, panes map[string]herdrPane) {
+	for i := range all {
+		w := &all[i]
+		if w.goneSince == nil {
+			continue
+		}
+		if p, ok := panes[w.live.Pane]; ok && p.agent {
+			fmt.Fprintf(os.Stderr, "note: %s is not in `herdr agent list`, but an agent runs in its pane %s; "+
+				"it is not taken as gone\n", w.live.Name, w.live.Pane)
+			w.goneSince, w.lastChangeAt = nil, nil
+			if w.live.LastChangeAt.Valid {
+				at := w.live.LastChangeAt.Int64
+				w.lastChangeAt = &at
+			}
+		}
+	}
 }
 
 // endGone ends the row of each active lead and job worker gone from herdr

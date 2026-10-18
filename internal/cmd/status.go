@@ -61,6 +61,7 @@ type Live struct {
 	LastChangeAt   sql.NullInt64
 	Suspect        bool
 	Light          bool
+	Pane           string
 }
 
 // InHerdr is what `herdr agent list` says about one agent.
@@ -110,7 +111,7 @@ func LiveRows(conn *sql.DB, job *string) ([]Live, error) {
 	}
 	rows, err := conn.Query(
 		"SELECT id, name, role, job, parent, state, started_at, last_status, last_seq, "+
-			"last_screen_hash, last_change_at, suspect, light FROM agents "+
+			"last_screen_hash, last_change_at, suspect, light, pane_id FROM agents "+
 			"WHERE state != 'ended' AND (?1 IS NULL OR job = ?1) ORDER BY job, started_at, id",
 		jobArg)
 	if err != nil {
@@ -121,7 +122,7 @@ func LiveRows(conn *sql.DB, job *string) ([]Live, error) {
 	for rows.Next() {
 		var l Live
 		if err := rows.Scan(&l.ID, &l.Name, &l.Role, &l.Job, &l.Parent, &l.State, &l.StartedAt,
-			&l.LastStatus, &l.LastSeq, &l.LastScreenHash, &l.LastChangeAt, &l.Suspect, &l.Light); err != nil {
+			&l.LastStatus, &l.LastSeq, &l.LastScreenHash, &l.LastChangeAt, &l.Suspect, &l.Light, &l.Pane); err != nil {
 			return nil, exit.Database(err)
 		}
 		lives = append(lives, l)

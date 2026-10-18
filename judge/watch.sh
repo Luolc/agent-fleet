@@ -12,7 +12,11 @@
 # or worker may be gone from herdr before its row is ended. e-old's row is
 # ended with its pane still there, as a crash or an older fleet leaves it;
 # an ended row of w-tick's name records the pane the live w-tick row
-# records, which watch must not close.
+# records, which watch must not close. w-alias is a row of job x whose
+# name `herdr agent list` lacks while an agent runs in the pane it records
+# (x-run's), as when watch cannot read the listing: it is no gone agent;
+# once ended, its row leaves that pane alone, since the pane is not named
+# after it.
 need_fake
 need_thread_agent
 if [ ! -e "$DB" ]; then
@@ -33,16 +37,18 @@ INSERT INTO agents (name, role, job, parent, state, started_at) VALUES
     ('w-hang', 'worker', 'w', 'w-lead', 'active', $now),
     ('w-gone', 'worker', 'w', 'w-lead', 'active', $now);
 SQL
-for name in u-lead w-lead w-tick w-hang e-old; do
+for name in u-lead w-lead w-tick w-hang e-old x-run; do
   check "watch: $name starts idle" idle "$(start_fake "$name")"
 done
 # Named after the agent, as fleet names the pane of each agent it starts.
-for name in w-tick e-old; do "${S[@]}" pane rename "$(agent_field "$name" pane_id)" "$name" >/dev/null; done
+for name in w-tick e-old x-run; do "${S[@]}" pane rename "$(agent_field "$name" pane_id)" "$name" >/dev/null; done
 sqlite3 "$DB" >/dev/null <<SQL
 UPDATE agents SET pane_id = '$(agent_field w-tick pane_id)' WHERE name = 'w-tick' AND state = 'active';
 INSERT INTO agents (name, role, job, parent, state, started_at, ended_at, pane_id) VALUES
     ('e-old', 'worker', 'e', 'e-lead', 'ended', $now, $now, '$(agent_field e-old pane_id)'),
     ('w-tick', 'worker', 'w', 'w-lead', 'ended', $now, $now, '$(agent_field w-tick pane_id)');
+INSERT INTO agents (name, role, job, parent, state, started_at, pane_id) VALUES
+    ('w-alias', 'worker', 'x', 'x-lead', 'active', $now, '$(agent_field x-run pane_id)');
 SQL
 for arm in w-tick:TICK w-hang:HANG; do
   "${S[@]}" agent prompt "${arm%%:*}" "${arm#*:}" --wait --until working --timeout 20000 >/dev/null
@@ -88,6 +94,11 @@ watch 11 >/home/agent/watch2.out 2>&1; rc=$?
 check "watch: second run exit 0" 0 "$rc"
 check "watch: gone for 11 minutes, the worker's row is ended" "ended " \
   "$(ledger "SELECT state FROM agents WHERE name = 'w-gone'")"
+check "watch: missing from the agent list with an agent in its pane, a row is not taken as gone" "active|- " \
+  "$(ledger "SELECT state || '|' || coalesce(last_status, '-') FROM agents WHERE name = 'w-alias'")"
+has "watch: and watch says so" "$(cat /home/agent/watch2.out)" \
+  "note: w-alias is not in \`herdr agent list\`, but an agent runs in its pane"
+sqlite3 "$DB" "UPDATE agents SET state = 'ended', ended_at = $now WHERE name = 'w-alias'"
 has "watch: and watch says so" "$(cat /home/agent/watch2.out)" \
   "watch: ended w-gone (worker, job w): gone from herdr for 11m"
 check "watch: the stuck worker and the idle lead are suspects, the moving worker and the told lead are not" "u-lead w-gone w-hang" "$(suspects)"
@@ -106,6 +117,7 @@ lacks "watch: the idle lead got no notice" "$(screen u-lead)" "[FROM: watch]"
 
 watch 22 >/home/agent/watch3.out 2>&1; rc=$?
 check "watch: third run exit 0" 0 "$rc"
+check "watch: an ended row's pane held by a pane named otherwise is not closed" idle "$(agent_field x-run agent_status)"
 has "watch: unchanged sets, no lead is told again" "$(cat /home/agent/watch3.out)" "suspect set unchanged for every lead (2 suspect)"
 lacks "watch: unchanged sets, nothing delivered" "$(cat /home/agent/watch3.out)" "delivered to"
 

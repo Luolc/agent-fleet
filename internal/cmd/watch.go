@@ -61,7 +61,9 @@ const (
 		"among its workers changes (the watch `stale-workers`); a lead blocked is told again next run, a lead gone from " +
 		"herdr is not told. A lead's own state goes into the quiet-thread notice below.\n\n" +
 		"Gone: an active lead or job worker gone from herdr for 10 minutes, counted from the first run that found it " +
-		"gone, has its row ended. A worker's work order, if any, first gets a line saying so and is released as " +
+		"gone, has its row ended; gone is missing from `herdr agent list` with no agent in the pane the ledger " +
+		"records for it, or no such pane (one with an agent is named on stderr, and nothing is recorded for it), and a " +
+		"pane list with an entry it cannot read is a failed read. A worker's work order, if any, first gets a line saying so and is released as " +
 		"abandoned (`atb linear`, each step recorded), and its lead, when in herdr, is told (rule `worker gone`). A " +
 		"lead's job stays open: the agent of its home thread (started for it when none is live; without a home thread " +
 		"or a fednet socket, stderr) is told once (rule `lead gone`), and decides whether to end it with `job end " +
@@ -303,6 +305,7 @@ func (r *watchRun) leadsAndWorkers(all []watched) ([]watched, error) {
 	if err != nil {
 		return nil, err
 	}
+	confirmGone(all, panes)
 	if err := saveReadings(r.conn, all); err != nil {
 		return nil, err
 	}

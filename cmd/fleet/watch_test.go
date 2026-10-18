@@ -1323,3 +1323,47 @@ func TestWatchClosesARevisitAgentOfBeforeAndAsksItsQuestion(t *testing.T) {
 		t.Errorf("reclaim_at %s", got)
 	}
 }
+
+// An agent missing from `herdr agent list` is gone only when herdr has no
+// agent in the pane the ledger records for it, as when the listing has an
+// entry watch cannot read; a pane listing watch cannot read does nothing.
+func TestWatchEndsAGoneAgentOnlyWhenItsPaneHasNoAgent(t *testing.T) {
+	w := newWatchWorld(t)
+	w.insert(watchRow{name: "a-lead", role: "lead", job: "a", parent: "thread-1", startedAt: t0 - 3600})
+	w.insert(watchRow{name: "a-w1", role: "worker", job: "a", parent: "a-lead", startedAt: t0 - 3600,
+		lastStatus: "working", lastSeq: 3, lastScreenHash: "h", lastChangeAt: t0 - 60})
+	w.exec("UPDATE agents SET pane_id = 'p1' WHERE name = 'a-lead'", "UPDATE agents SET pane_id = 'p2' WHERE name = 'a-w1'")
+	// a-w1's entry has no state_change_seq, so watch cannot read it.
+	if err := os.WriteFile(filepath.Join(w.dir, "list.json"),
+		[]byte(`{"result":{"agents":[{"agent":"claude","name":"a-w1","agent_status":"working"}]}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	w.file("panes.json", `{"result":{"panes":[{"pane_id":"p1","tab_id":"t1","label":"a-lead"},`+
+		`{"pane_id":"p2","tab_id":"t2","label":"a-w1","agent":"claude"}]}}`)
+	states := func() string {
+		t.Helper()
+		return w.query("SELECT group_concat(name || '=' || state || '|' || last_status, ' ') FROM " +
+			"(SELECT name, state, coalesce(last_status, '-') AS last_status FROM agents ORDER BY id)")
+	}
+	// A pane listing without a pane id: nothing is done.
+	good, err := os.ReadFile(filepath.Join(w.dir, "panes.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.file("panes.json", `{"result":{"panes":[{"tab_id":"t1","label":"a-lead"}]}}`)
+	if out := w.watchAt(0, 5); !strings.Contains(out.stderr, "herdr pane list: an entry without pane_id or tab_id") {
+		t.Errorf("%+v", out)
+	}
+	if got := states(); got != "a-lead=active|- a-w1=active|working" {
+		t.Errorf("after a pane listing it cannot read: %s", got)
+	}
+	w.file("panes.json", string(good))
+	out := w.watchAt(0, 0)
+	if !strings.Contains(out.stderr, "a-w1 is not in `herdr agent list`, but an agent runs in its pane p2") {
+		t.Errorf("%+v", out)
+	}
+	w.watchAt(10*time.Minute, 0)
+	if got := states(); got != "a-lead=ended|gone a-w1=active|working" {
+		t.Errorf("%s", got)
+	}
+}
