@@ -131,8 +131,12 @@ type event struct {
 		User    string `json:"user"`
 		TS      string `json:"ts"`
 		Context string `json:"context"`
-		// Trigger is `dm` for a direct message to the bot.
+		// Trigger is `dm` for a direct message to the bot, `handoff` or
+		// `relay` for what an agent on another machine passed here.
 		Trigger string `json:"trigger"`
+		// FromClient is the machine a handoff or relay came from, as the
+		// hub authenticated it.
+		FromClient string `json:"from_client"`
 		// ChannelName is the channel's name, absent in a direct message.
 		ChannelName string `json:"channel_name"`
 		// Scope is the fleet the hub routes the channel to; absent means
@@ -262,7 +266,10 @@ func Inbox(args InboxArgs) (exit.Code, error) {
 	}
 	msg := inboundMessage{Thread: e.Payload.Thread, Text: e.Payload.Text, User: e.Payload.User, TS: e.Payload.TS,
 		Context: e.Payload.Context, Mapping: mapping}
-	if err := answerByMessage(conn, msg.Thread); err != nil {
+	if t := e.Payload.Trigger; t == relayHandoff || t == relayPost {
+		msg.Relay, msg.FromClient = t, e.Payload.FromClient
+		msg.RelayAgent, msg.RelayThread = relaySigned(msg.Text)
+	} else if err := answerByMessage(conn, msg.Thread); err != nil {
 		return 0, err
 	}
 	code, dropped, err := route(h, conn, scope, cfg, msg)
@@ -279,8 +286,10 @@ func Inbox(args InboxArgs) (exit.Code, error) {
 	state = "delivered"
 	if dropped {
 		state = "dropped"
-	} else if err := recordLatest(conn, msg); err != nil {
-		return 0, err
+	} else if msg.Relay == "" {
+		if err := recordLatest(conn, msg); err != nil {
+			return 0, err
+		}
 	}
 	return exit.Ok, setMessage(conn, e.MsgID, state)
 }

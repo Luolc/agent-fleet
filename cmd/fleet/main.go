@@ -108,13 +108,15 @@ Options:
   -h, --help  Print help
 `
 
-const threadPostUsage = "Usage: fleet thread post [OPTIONS] --body-file <PATH>"
+const threadPostUsage = "Usage: fleet thread post [OPTIONS] --body-file <PATH>\n       fleet thread post [OPTIONS] --deliver --thread <KEY> --body-file <PATH>"
 
 var threadPostHelp = cmd.ThreadPostLongAbout + "\n\n" + threadPostUsage + `
 
 Options:
       --body-file <PATH>  The text to post, standard Markdown, at most 100 KiB
       --attach <PATH>     A file to upload with the text, passed to fednet as -file; repeatable
+      --deliver           Post to the thread --thread names and deliver the text to the machine that owns it
+      --thread <KEY>      With --deliver, the thread to post to, CHANNEL/TS
       --scope <NAME>      ` + scopeHelp + `
   -h, --help              Print help
 `
@@ -724,16 +726,26 @@ func runThreadPost(args []string, scope *cliargs.OptString) (exit.Code, error) {
 	fs := flagSet("thread post", scope)
 	body := cliargs.OptString{Name: "body-file", Placeholder: "PATH"}
 	var attach cliargs.Strings
+	deliver := cliargs.Bool{Name: "deliver"}
+	thread := cliargs.OptString{Name: "thread", Placeholder: "KEY"}
 	fs.Var(&body, "body-file", "The text to post")
 	fs.Var(&attach, "attach", "A file to upload with the text")
+	fs.Var(&deliver, "deliver", "Post to another thread and deliver the text to the machine that owns it")
+	fs.Var(&thread, "thread", "With --deliver, the thread to post to")
 	_, helped, err := parse(fs, args, threadPostHelp, threadPostUsage, nil, &body)
 	if err != nil || helped {
 		return exit.Ok, err
 	}
+	if deliver.Value != thread.Given {
+		return 0, &usageError{"--deliver and --thread <KEY> go together", threadPostUsage}
+	}
+	if deliver.Value && len(attach.Values) > 0 {
+		return 0, &usageError{"--deliver takes no --attach", threadPostUsage}
+	}
 	if _, err := scoped(scope); err != nil {
 		return 0, err
 	}
-	return cmd.ThreadPost(cmd.ThreadPostArgs{BodyFile: body.Value, Attach: attach.Values})
+	return cmd.ThreadPost(cmd.ThreadPostArgs{BodyFile: body.Value, Attach: attach.Values, Thread: thread.Value})
 }
 
 func runThreadProgress(args []string, scope *cliargs.OptString) (exit.Code, error) {
