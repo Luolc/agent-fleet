@@ -394,8 +394,14 @@ func (c *jobChecked) crossRepoDir(conn querier) error {
 
 // dedup is the dedup checks in the ledger: the job's name, its key and its
 // parent issue, then the lead's name. Run once before the Linear query,
-// so a refusal needs no Linear, and again inside the reservation.
-func (c *jobChecked) dedup(conn querier) error {
+// so a refusal needs no Linear, and again inside the reservation. With `h`,
+// a refusal for a live lead on the parent that herdr no longer has names
+// the cleanup of that lead's job.
+func (c *jobChecked) dedup(h *herdr.Herdr) func(conn querier) error {
+	return func(conn querier) error { return c.dedupIn(conn, h) }
+}
+
+func (c *jobChecked) dedupIn(conn querier, h *herdr.Herdr) error {
 	job := c.id.Job
 	var one int
 	err := conn.QueryRow("SELECT 1 FROM jobs WHERE job = ?1 AND state = 'open'", job).Scan(&one)
@@ -417,11 +423,16 @@ func (c *jobChecked) dedup(conn querier) error {
 		}
 	}
 	if c.parent != "" {
-		var lead string
-		err := conn.QueryRow("SELECT name FROM agents WHERE role = 'lead' AND parent_issue = ?1 AND state != 'ended' "+
-			"ORDER BY id LIMIT 1", c.parent).Scan(&lead)
+		var lead, leadJob, state, pane string
+		err := conn.QueryRow("SELECT name, job, state, pane_id FROM agents WHERE role = 'lead' AND parent_issue = ?1 "+
+			"AND state != 'ended' ORDER BY id LIMIT 1", c.parent).Scan(&lead, &leadJob, &state, &pane)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return exit.Database(err)
+		}
+		if err == nil && h != nil && state == "active" && goneFromHerdr(h, lead, pane) {
+			return exit.Refusedf("%s is live on parent issue %s in the ledger, but herdr no longer has it; "+
+				"if its job %s is left over, end it with `fleet job end %s --force` and start again",
+				lead, c.parent, leadJob, leadJob)
 		}
 		if err == nil {
 			return exit.Refusedf("%s is live on parent issue %s; talk to it with `fleet send %s` instead of "+
@@ -431,11 +442,32 @@ func (c *jobChecked) dedup(conn querier) error {
 	return liveNameTaken(conn, c.id.Agent)
 }
 
+// goneFromHerdr is whether the agent `name`, in the pane `pane` by the
+// ledger, is gone from herdr as `watch` takes it: missing from `herdr agent
+// list` and no agent in that pane. A failed read is not gone.
+func goneFromHerdr(h *herdr.Herdr, name, pane string) bool {
+	agents, err := HerdrAgentList(h)
+	if err != nil {
+		return false
+	}
+	for _, entry := range agents {
+		if a, _ := entry.(map[string]any); a["name"] == name {
+			return false
+		}
+	}
+	panes, err := herdrPanes(h)
+	if err != nil {
+		return false
+	}
+	p, ok := panes[pane]
+	return !ok || !p.agent
+}
+
 // ledgerAndHerdr is the dedup checks in the ledger, then herdr's view, then
 // the resources, then the parent's team and project.
 func (c *jobChecked) ledgerAndHerdr(h *herdr.Herdr, conn *sql.DB) error {
 	job := c.id.Job
-	if err := c.dedup(conn); err != nil {
+	if err := c.dedup(h)(conn); err != nil {
 		return err
 	}
 	if err := herdrHasAgent(h, c.id.Agent); err != nil {
@@ -459,7 +491,7 @@ func (c *jobChecked) ledgerAndHerdr(h *herdr.Herdr, conn *sql.DB) error {
 // immediate transaction with the dedup checks, so two starts on the same
 // parent, name or key cannot both pass.
 func (c *jobChecked) reserve(conn *sql.DB) error {
-	return reserve(conn, c.dedup, func(q querier) error {
+	return reserve(conn, c.dedup(nil), func(q querier) error {
 		if _, err := q.Exec(
 			"INSERT INTO jobs (job, parent_issue, key, repo, lead_cwd, home_thread, state, started_at) "+
 				"VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'open', ?7)",

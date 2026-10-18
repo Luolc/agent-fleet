@@ -588,6 +588,58 @@ func TestJobStartCreatesTheParentClaimsItAndMakesTheWorkOrderFirst(t *testing.T)
 	}
 }
 
+// listHerdr is a fake herdr whose `agent list` and `pane list` print
+// <dir>/agents.json and <dir>/panes.json.
+const listHerdr = `#!/bin/sh
+if [ "$1" = --session ]; then shift 2; fi
+dir="$(dirname "$0")/.."
+case "$1 $2" in
+  "agent list") cat "$dir/agents.json" ;;
+  "pane list") cat "$dir/panes.json" ;;
+  *) echo "fake herdr: unexpected command: $*" >&2; exit 2 ;;
+esac
+`
+
+func TestJobStartOnAParentWhoseLeadHerdrLostNamesTheForcedEnd(t *testing.T) {
+	w := newWorld(t)
+	w.configure(withLinear)
+	w.useStartHerdr()
+	w.fakeAtbCreating("")
+	taskFile := task(w, "task.md", "# Import the B table\nall rows\n")
+	if out := w.startJob("item-2", "--repo", "example-dataset", "--new-parent", "Import B",
+		"--task-file", taskFile); out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	if err := os.WriteFile(filepath.Join(w.dir, "fake-herdr", "herdr"), []byte(listHerdr), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name, agents, panes, says string
+	}{
+		{"in herdr", `{"result":{"agents":[{"name":"item-2-lead"}]}}`, `{"result":{"panes":[]}}`,
+			"item-2-lead is live on parent issue EX-11; talk to it with `fleet send item-2-lead`"},
+		{"not listed, but an agent in its pane", `{"result":{"agents":[]}}`,
+			`{"result":{"panes":[{"pane_id":"p2","tab_id":"t2","agent":"claude"}]}}`,
+			"item-2-lead is live on parent issue EX-11; talk to it with `fleet send item-2-lead`"},
+		{"pane list unreadable", `{"result":{"agents":[]}}`, `not json`,
+			"item-2-lead is live on parent issue EX-11; talk to it with `fleet send item-2-lead`"},
+		{"gone", `{"result":{"agents":[]}}`, `{"result":{"panes":[{"pane_id":"p2","tab_id":"t2"}]}}`,
+			"item-2-lead is live on parent issue EX-11 in the ledger, but herdr no longer has it; " +
+				"if its job item-2 is left over, end it with `fleet job end item-2 --force` and start again"},
+	} {
+		if err := os.WriteFile(filepath.Join(w.dir, "agents.json"), []byte(c.agents), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(w.dir, "panes.json"), []byte(c.panes), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		out := w.startJob("item-3", "--repo", "example-dataset", "--parent-issue", "EX-11", "--task-file", taskFile)
+		if out.code != 1 || !strings.Contains(out.stderr, c.says) {
+			t.Errorf("%s: %+v, want exit 1 saying %q", c.name, out, c.says)
+		}
+	}
+}
+
 func TestJobStartOfACrossRepoJobReadsTheParentsTeamAndProject(t *testing.T) {
 	w := newWorld(t)
 	w.useStartHerdr()
