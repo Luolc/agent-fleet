@@ -162,11 +162,33 @@ check "job end: exit 1 without a report file" 1 "$rc"
 has "job end: says the report file is required" "$out" "--report-file"
 
 # Completion reports: workers to the lead, the lead to the thread agent.
-for w in a b; do
-  settled item-1-lead
-  as "item-1-$w" worker item-1-lead item-1 -- done --report-file "/home/agent/tasks/$w.md" >/dev/null; rc=$?
-  check "done item-1-$w: exit 0" 0 "$rc"
-done
+# done closes the worker's own tab last; a worker that has not run done
+# keeps its tab. b's close fails once, through a herdr shim.
+tab_of() { "${S[@]}" pane get "$(agent_field "$1" pane_id)" | jq -r .result.pane.tab_id; }
+tab_state() { "${S[@]}" tab get "$1" 2>&1 | jq -r 'if .result.tab.tab_id then "open" else .error.code end'; }
+mkdir -p /home/agent/fake-herdr
+cat > /home/agent/fake-herdr/herdr <<'SHIM'
+#!/bin/bash
+args="$*"
+if [ -e /home/agent/tab-close-fails ] && [ "${args#*tab close}" != "$args" ]; then
+  rm /home/agent/tab-close-fails; echo '{"error":{"code":"internal","message":"tab busy"}}'; exit 1
+fi
+exec /usr/local/bin/herdr "$@"
+SHIM
+chmod +x /home/agent/fake-herdr/herdr
+tab_a=$(tab_of item-1-a) tab_b=$(tab_of item-1-b) tab_c=$(tab_of item-1-c)
+settled item-1-lead
+as item-1-a worker item-1-lead item-1 -- done --report-file /home/agent/tasks/a.md >/dev/null; rc=$?
+check "done item-1-a: exit 0" 0 "$rc"
+check "done: the worker's tab is closed" tab_not_found "$(tab_state "$tab_a")"
+check "done: a worker that has not run done keeps its tab" "open open" "$(tab_state "$tab_b") $(tab_state "$tab_c")"
+settled item-1-lead
+touch /home/agent/tab-close-fails
+out=$(PATH=/home/agent/fake-herdr:$PATH as item-1-b worker item-1-lead item-1 -- done --report-file /home/agent/tasks/b.md 2>&1); rc=$?
+check "done item-1-b: exit 0 when the tab close fails" 0 "$rc"
+has "done: a failed close says the row ended and not to run done again" "$out" "your row ended, but your tab is still open" "do not run \`done\` again"
+check "done: row ended, tab still open after the failed close" "ended open" \
+  "$(ledger "SELECT state FROM agents WHERE name = 'item-1-b'")$(tab_state "$tab_b")"
 has "done: report on the lead's screen" "$(screen item-1-lead)" "[FROM: item-1-b]" "item-1-b is done. Report: /home/agent/tasks/b.md"
 # With a work order the report goes to Linear first, through a fake atb
 # that logs its arguments.
@@ -177,6 +199,7 @@ settled item-1-lead
 PATH=/home/agent/fake-atb:$PATH ISSUE=EX-7 as item-1-c worker item-1-lead item-1 -- \
   done --report-file /home/agent/tasks/c.md --abandon >/dev/null; rc=$?
 check "done item-1-c with a work order: exit 0" 0 "$rc"
+check "done --abandon: the worker's tab is closed" tab_not_found "$(tab_state "$tab_c")"
 check "done: report written to the issue, then the issue released as abandoned" \
   "linear comment EX-7 --body-file /home/agent/tasks/c.md|linear release EX-7 --agent item-1-c --reason abandoned --abandon|" \
   "$(tr '\n' '|' < /home/agent/atb.log)"
@@ -293,7 +316,7 @@ check "spawn in a cross-repo job: the parent is queried, the work order created 
   "$(tr '\n' '|' < /home/agent/atb.log)"
 # The lead ends the cross-repo job: its own work order gets the report
 # and is released, the parent gets the conclusion and is released, the
-# worker's pane (done, still open) is closed, the directory removed.
+# workspace is closed, the directory removed.
 settled wire-a
 PATH=/home/agent/fake-atb:$PATH ISSUE=QT-12 as wire-a worker wire-lead wire -- done --report-file /home/agent/tasks/wirea.md >/dev/null 2>&1; rc=$?
 check "done wire-a: exit 0" 0 "$rc"

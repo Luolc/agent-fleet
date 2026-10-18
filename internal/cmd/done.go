@@ -3,6 +3,8 @@
 package cmd
 
 import (
+	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 
@@ -29,7 +31,11 @@ const (
 		"written.\n\n" +
 		"When herdr reports the report as delivered, " +
 		"your row in the ledger is marked ended, so `fleet status` stops listing you as " +
-		"owing work. On any other outcome the row stays live and you may run `done` again.\n\n" +
+		"owing work, and then, as the last step, the tab of the pane your row records is " +
+		"closed, which ends your shell and your agent; a row with no pane has no tab to close. " +
+		"If the close fails, `done` still exits 0 and says so on stderr: do not run it again, " +
+		"end your turn; `fleet job end` closes the tab. " +
+		"On any other outcome the row stays live and you may run `done` again.\n\n" +
 		"Exit: as `send`; 1 also when the caller is not a worker, FLEET_PARENT is empty, " +
 		"the report file cannot be read, FLEET_ISSUE is set " +
 		"and --report-file is not given, or --abandon is given while FLEET_ISSUE is empty; " +
@@ -121,23 +127,28 @@ func Done(h *herdr.Herdr, args DoneArgs) (exit.Code, error) {
 		}
 	}
 	code, err := Deliver(h, me.Parent, text)
-	if err != nil {
-		return 0, err
+	if err != nil || code != exit.Ok {
+		return code, err
 	}
-	if code == exit.Ok {
-		res, err := conn.Exec(
-			"UPDATE agents SET state = 'ended', ended_at = ?1 WHERE name = ?2 AND state != 'ended'",
-			db.Now(), me.Agent)
-		if err != nil {
-			return 0, exit.Database(err)
-		}
-		ended, err := res.RowsAffected()
-		if err != nil {
-			return 0, exit.Database(err)
-		}
-		if ended == 0 {
-			fmt.Fprintf(os.Stderr, "note: the ledger has no live row for %s\n", me.Agent)
-		}
+	var pane string
+	err = conn.QueryRow(
+		"UPDATE agents SET state = 'ended', ended_at = ?1 WHERE name = ?2 AND state != 'ended' RETURNING pane_id",
+		db.Now(), me.Agent).Scan(&pane)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		fmt.Fprintf(os.Stderr, "note: the ledger has no live row for %s\n", me.Agent)
+		return code, nil
+	case err != nil:
+		return 0, exit.Database(err)
+	case pane == "":
+		return code, nil
+	}
+	// Last: closing the tab ends the caller's own shell and agent. A failed
+	// close keeps exit 0, since running `done` again would repeat the
+	// Linear comment and the report.
+	if err := closeOwnTab(h, conn, me.Agent); err != nil {
+		fmt.Fprintf(os.Stderr, "note: your report is delivered and your row ended, but your tab is still open (%v); "+
+			"do not run `done` again: end your turn, and `fleet job end` closes the tab\n", err)
 	}
 	return code, nil
 }
