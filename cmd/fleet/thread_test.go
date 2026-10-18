@@ -1847,3 +1847,107 @@ func TestInboxDropsTheLeadingMentionsFromTheTicketTitle(t *testing.T) {
 		t.Errorf("description = %q", got)
 	}
 }
+
+// What an agent on another machine delivered (trigger relay or handoff)
+// reaches the thread's agent as that agent's words, headed with the
+// authenticated machine and the agent and thread its last line names, or
+// with the machine alone when that line is missing; it is never recorded
+// as the latest message a person posted.
+func TestInboxDeliversARelayAsAnAgentsWordsNotAPersons(t *testing.T) {
+	w := threadWorld(t, "")
+	if out := w.inbox(w.event("m1", "Please import the A table", "")); out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	latest := func() string {
+		conn := w.defaultLedger()
+		defer conn.Close()
+		var text string
+		if err := conn.QueryRow("SELECT last_text FROM threads WHERE thread = ?1", threadKey).Scan(&text); err != nil {
+			return "none"
+		}
+		return text
+	}
+	relay := `"channel_name":"repo-example-dataset","trigger":"relay","from_client":"machine-b"`
+	out := w.inbox(w.eventIn("m2", `Imported 0xRELAY\n\n— thread-c0b-1700000009-000 · C0B/1700000009.000`, "", relay))
+	if out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	argv := w.file("argv")
+	for _, want := range []string{"[FROM: machine-b/thread-c0b-1700000009-000]\n[RELAY from machine-b/thread-c0b-1700000009-000 in thread C0B/1700000009.000]\n",
+		"`fleet thread post --deliver --thread C0B/1700000009.000 --body-file <file>`", "Imported 0xRELAY"} {
+		if !strings.Contains(argv, want) {
+			t.Errorf("argv = %q, want %q in it", argv, want)
+		}
+	}
+	if out := w.inbox(w.eventIn("m3", `Unsigned 0xBARE\n\n— not a signature`, "", relay)); out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	if argv := w.file("argv"); !strings.Contains(argv, "[FROM: machine-b]\n[RELAY from machine-b]\n") {
+		t.Errorf("unsigned: argv = %q", argv)
+	}
+	if got := latest(); got != "Please import the A table" {
+		t.Errorf("latest = %q, want the person's message", got)
+	}
+}
+
+// A thread another machine opened for this one with work (trigger
+// handoff) starts a thread agent whose first message is the work, headed
+// as a handoff from that machine's agent.
+func TestInboxStartsAThreadAgentForAHandoffFromAnotherMachine(t *testing.T) {
+	w := threadWorld(t, "")
+	out := w.inbox(w.eventIn("m1", `从 <#C0B> 的一个线程转来：Import 0xHAND\n\n# Import\n\n— thread-c0b-1700000009-000 · C0B/1700000009.000`,
+		"", `"channel_name":"repo-example-dataset","trigger":"handoff","from_client":"machine-b"`))
+	if out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	argv := w.file("argv")
+	for _, want := range []string{"[HANDOFF from machine-b/thread-c0b-1700000009-000 in thread C0B/1700000009.000]\nWork an agent on machine machine-b handed off to this thread",
+		"0xHAND"} {
+		if !strings.Contains(argv, want) {
+			t.Errorf("argv = %q, want %q in it", argv, want)
+		}
+	}
+	conn := w.defaultLedger()
+	defer conn.Close()
+	var text string
+	if err := conn.QueryRow("SELECT last_text FROM threads WHERE thread = ?1", threadKey).Scan(&text); err != nil || text != "" {
+		t.Errorf("latest = %q, %v", text, err)
+	}
+}
+
+// `thread post --deliver --thread <key>` posts to that thread with
+// fednet's -deliver, the text signed with the caller and its thread; it
+// takes --deliver and --thread only together, and no --attach.
+func TestThreadPostDeliverPostsToTheGivenThreadSigned(t *testing.T) {
+	w := threadWorld(t, "")
+	if out := w.inbox(w.event("m1", "first", "")); out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	_ = os.Remove(filepath.Join(w.dir, "calls"))
+	body := task(w, "post.md", "Imported.\n")
+	out := w.asThreadAgent("TH-5", "thread", "post", "--deliver", "--thread", "C0B/1700000009.000", "--body-file", body)
+	if out.code != 0 {
+		t.Errorf("post: %+v", out)
+	}
+	if got := w.calls(); got != "fednet client post -socket /run/fednet.sock -thread C0B/1700000009.000 -deliver -- Imported.\n\n"+
+		"— thread-c0123-1700000000-123 · "+threadKey+"\n" {
+		t.Errorf("calls = %q", got)
+	}
+	_ = os.Remove(filepath.Join(w.dir, "calls"))
+	for _, c := range []struct {
+		label string
+		out   result
+	}{
+		{"--deliver alone", w.asThreadAgent("TH-5", "thread", "post", "--deliver", "--body-file", body)},
+		{"--thread alone", w.asThreadAgent("TH-5", "thread", "post", "--thread", "C0B/1700000009.000", "--body-file", body)},
+		{"--attach", w.asThreadAgent("TH-5", "thread", "post", "--deliver", "--thread", "C0B/1700000009.000", "--attach", "a.png", "--body-file", body)},
+		{"not a key", w.asThreadAgent("TH-5", "thread", "post", "--deliver", "--thread", "repo-x", "--body-file", body)},
+	} {
+		if c.out.code != 1 {
+			t.Errorf("%s: %+v", c.label, c.out)
+		}
+	}
+	if w.calls() != "" {
+		t.Errorf("a refusal called out: %q", w.calls())
+	}
+}

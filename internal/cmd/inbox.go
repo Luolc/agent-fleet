@@ -27,8 +27,16 @@ const (
 		"The fednet client runs `fleet inbox <event-file>` for every message a person posts in " +
 		"a thread this machine owns. The file is one JSON object: `msg_id` and `payload`; a " +
 		"payload of type `message` carries `thread` (CHANNEL/TS), `text`, `user`, `ts`, for a " +
-		"new thread the channel's `context`, and three optional fields: `trigger` (`dm` for a " +
-		"direct message to the bot), `channel_name` and `scope`. A payload of type `answer` is a " +
+		"new thread the channel's `context`, and optional fields: `trigger` (`dm` for a " +
+		"direct message to the bot; `handoff` and `relay` below), `channel_name` and `scope`. " +
+		"A message of trigger `handoff` (a thread another machine opened for this one with work) " +
+		"or `relay` (a post an agent on another machine delivered here with `fleet thread post " +
+		"--deliver`) is an agent's words: it reaches the thread's agent headed `[FROM: " +
+		"<from_client>/<agent>]` and `[HANDOFF from …]` or `[RELAY from …]` with ` in thread " +
+		"<key>`, the agent and thread read from the text's last line `— <agent> · <thread key>` " +
+		"(labels the sender gives; without that line the machine alone), is never recorded as " +
+		"the latest message a person posted and answers no question; `from_client` is the " +
+		"machine as the hub authenticated it. A payload of type `answer` is a " +
 		"press on a question card (below). A payload of type `reaction` is an emoji a person put on " +
 		"a thread's root message (`thread`, `user`, `reaction`, and `scope` as a message's): " +
 		"`package` (the people archived the thread) takes fleet's `eyes` off a thread the scope " +

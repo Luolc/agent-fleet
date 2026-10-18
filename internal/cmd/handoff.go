@@ -35,9 +35,17 @@ const (
 		"how a long thread is continued afresh. fleet takes the channel's id " +
 		"as `ask-thread` does for a home thread: from the newest thread of it this scope has seen, " +
 		"or else from fednet's routes (`fednet client routes -json`); it opens no channel and " +
-		"changes no route. The channel's new threads must come to this machine: when fednet's " +
-		"routes give it a machine (a fednet client's id), that is this machine's hostname, or " +
-		"the handoff is refused.\n\n" +
+		"changes no route.\n\n" +
+		"When fednet's routes give the channel a machine other than this one (`fednet client " +
+		"whoami`, fednet v0.9.0 or later), the work goes to that machine: fleet opens the thread " +
+		"with `fednet client open-thread -owner route -from-thread <your thread>`, so it is that " +
+		"machine's and fednet counts the hops from your thread, its first message fleet's line, " +
+		"the task and a last line `— <you> · <your thread>`; fednet delivers that message to the " +
+		"other machine (trigger `handoff`), whose fleet starts the thread agent there. At most " +
+		"4000 characters go in that message. fleet then posts the line in your thread and the " +
+		"mention, if any; it starts no agent here, records the thread only with the handoff, and " +
+		"relates no tickets (the new one is in the other machine's ledger). The prefixes and " +
+		"checkouts are the other machine's to check, not this one's.\n\n" +
 		"The steps: fleet records the handoff (table `handoffs`), opens a thread in the target " +
 		"channel with `fednet client open-thread`, its first message fleet's one line naming your " +
 		"channel (`<#<id>>`, which Slack shows as a link), your thread, the task's title (as `fleet job start --help` says) and " +
@@ -67,13 +75,13 @@ const (
 		"Exit: 0 when the new thread's agent has the task (or had it already); 1 when the caller " +
 		"is not a live thread agent, a --mention is not a Slack user id (U or W, then capitals " +
 		"and digits), the file is unreadable or empty, the target is not one directory name " +
-		"(for --channel, not a Slack channel name), is routed to another machine, has a name " +
-		"with neither of the scope's prefixes, " +
+		"(for --channel, not a Slack channel name), is for this machine and has a name " +
+		"with neither of the scope's prefixes, the task is too long for another machine, " +
 		"is not checked out on this machine, or fleet knows no id of " +
 		"its channel, or the scope has no fednet socket (each before " +
 		"anything is recorded); 2/3/4 as `send` for the delivery; 3 when the new thread agent " +
-		"stops at an unknown screen; 5 when fednet's routes cannot be read (before anything is " +
-		"recorded), when fednet refuses or fails to open the thread or to " +
+		"stops at an unknown screen; 5 when fednet's routes or `whoami` cannot be read (before anything is " +
+		"recorded), when fednet refuses (its relay list, the hop limit) or fails to open the thread or to " +
 		"post, or refuses a mention (a user not on the hub's user list, or a fednet too old for -mention: the " +
 		"line in your thread is posted by then), or herdr, atb or the database fails. After a failure, run it " +
 		"again to finish, without the refused --mention."
