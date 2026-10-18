@@ -297,16 +297,27 @@ func TestClaudeGetsTheFixedArguments(t *testing.T) {
 	}
 }
 
-func TestWorkOrderTitleIsTheFirstNonEmptyLine(t *testing.T) {
+func TestWorkOrderTitleIsTheFirstLineThatIsNoSubheading(t *testing.T) {
 	for task, want := range map[string]string{
-		"\n  \n## Import the A table  \nbody\n": "Import the A table",
-		"#\n# \nfix the timeout\n":              "fix the timeout",
-		"   plain first line\n":                 "plain first line",
-		strings.Repeat("é", 81) + "\n":          strings.Repeat("é", 80),
-		"#\n##\n":                               "",
+		"\n  \n## Your task\n\n### Goal\nImport the A table\n": "Import the A table",
+		"## Background\n# Import the A table  \nbody\n":        "Import the A table",
+		"#\n# \nfix the timeout\n":                             "fix the timeout",
+		"   plain first line\n":                                "plain first line",
+		strings.Repeat("é", 80) + "\n":                         strings.Repeat("é", 80),
+		strings.Repeat("é", 81) + "\n":                         strings.Repeat("é", 79) + "…",
+		"#\n##\n":                                              "",
 	} {
 		if got := WorkOrderTitle(task); got != want {
 			t.Errorf("%q: got %q, want %q", task, got, want)
+		}
+	}
+}
+
+func TestWorkOrderTitleOfACardIsItsQuestion(t *testing.T) {
+	card := "{\n  \"question\": \"Merge the import now?\",\n  \"options\": []\n}"
+	for _, task := range []string{card, card + "\n\nCard: https://slack.example.test/c/1"} {
+		if got := WorkOrderTitle(task); got != "Merge the import now?" {
+			t.Errorf("%q: got %q", task, got)
 		}
 	}
 }

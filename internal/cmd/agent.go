@@ -9,6 +9,7 @@ import (
 	"context"
 	"database/sql"
 	_ "embed" // the built-in prompts
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -693,16 +694,29 @@ func taskFile(path, sender string) (body, canonical string, err error) {
 	return string(data), canonical, nil
 }
 
-// WorkOrderTitle is the title of a work order for `task`: its first
-// non-empty line without leading `#` and spaces, cut to 80 characters.
+// WorkOrderTitle is the title of a work order for `task`: the first line
+// that is neither empty nor a heading below the top level (`##` and
+// deeper), without a leading `# `, cut to 80 characters with `…` at the
+// end. A task that opens with a card's JSON, alone or followed by its
+// link, is titled after the card's question.
 func WorkOrderTitle(task string) string {
+	var card struct {
+		Question string `json:"question"`
+	}
+	if strings.HasPrefix(strings.TrimSpace(task), "{") &&
+		json.NewDecoder(strings.NewReader(task)).Decode(&card) == nil && card.Question != "" {
+		task = card.Question
+	}
 	for _, line := range lines(task) {
-		line = strings.TrimSpace(strings.TrimLeft(strings.TrimSpace(line), "#"))
-		if line == "" {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "##") {
+			continue
+		}
+		if line = strings.TrimSpace(strings.TrimPrefix(line, "#")); line == "" {
 			continue
 		}
 		if runes := []rune(line); len(runes) > 80 {
-			line = strings.TrimSpace(string(runes[:80]))
+			line = strings.TrimSpace(string(runes[:79])) + "…"
 		}
 		return line
 	}

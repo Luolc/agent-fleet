@@ -173,7 +173,7 @@ func (c *spawnChecked) ledgerAndHerdr(h *herdr.Herdr, conn *sql.DB) error {
 				"it was started before %s set linear", c.me.Job, config.Path(c.job.LeadCwd))
 		}
 		if c.title = WorkOrderTitle(c.body); c.title == "" {
-			return exit.Refusedf("the task file's first non-empty line gives no title for the work order")
+			return exit.Refusedf("the task file gives no title for the work order: start it with `# <title>`")
 		}
 	}
 	if err := c.dedup(conn); err != nil {

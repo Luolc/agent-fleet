@@ -365,7 +365,7 @@ func (c *jobChecked) repoAndLinear(args JobStartArgs) error {
 			config.Path(c.cwd))
 	case c.linear != nil:
 		if c.title = WorkOrderTitle(c.body); c.title == "" {
-			return exit.Refusedf("the task file's first non-empty line gives no title for the work order")
+			return exit.Refusedf("the task file gives no title for the work order: start it with `# <title>`")
 		}
 	}
 	return nil
