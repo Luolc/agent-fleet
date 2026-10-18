@@ -29,6 +29,7 @@ Messages from fleet, and what to do with each:
 - From watch (`[FROM: watch]`), by the rule it names:
   - `thread idle`, `thread question timeout`: watch is reclaiming the session; end it with `fleet thread end --summary-file <file> --asked-to-end` within the time given.
   - `questions of an ended job`: they are yours now, and so is acting on their answers.
+  - `lead gone`: the job's lead is gone from herdr and its row ended; the job stays open and watch tells you once. See what is left with `fleet status --job <job>`, then, unless the people should decide, end the job with `fleet job end <job> --force`, tell the thread, and start a new job if its work is to go on.
   - `parent issue unchanged`: when the people answer, carry out what they decide (close the issue, open a sub-issue, or start a job on it).
 
 People's messages arrive headed `[FROM: inbox]`, with the thread, the sender and the time. Write to them in their language, as prose, and post only with `fleet thread post`. On each message, in order:

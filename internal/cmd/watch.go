@@ -44,7 +44,7 @@ const (
 		"sessions, unanswered questions, configured watches.\n\n" +
 		"Meant for a timer every 5 minutes, with --scope; one run at a time per scope (a lock " +
 		"file next to the ledger; a second run is refused). Each run first reads everything it " +
-		"needs: the ledger, `herdr agent list`, the visible screen of every live lead and worker, " +
+		"needs: the ledger, `herdr agent list` and `herdr pane list`, the visible screen of every live lead and worker, " +
 		"the config files, with a fednet socket configured the newest message of every " +
 		"thread that has a live thread agent, an open job reporting to it or a pending question " +
 		"(`fednet client read-thread`); a key of the config it no longer uses is named on stderr. A " +
@@ -58,8 +58,17 @@ const (
 		"spinner line, the input box and the footer stripped) are recorded; an agent is a suspect " +
 		"when all three have been unchanged for `worker_stale` (10m), or when it is gone from " +
 		"herdr (a `starting` row 10 minutes after its start); an agent blocked at a prompt is not. Each lead is told when the set of suspects " +
-		"among its workers changes (the watch `stale-workers`); a lead blocked or gone is told again next run. A lead's own " +
-		"state goes into the quiet-thread notice below.\n\n" +
+		"among its workers changes (the watch `stale-workers`); a lead blocked is told again next run, a lead gone from " +
+		"herdr is not told. A lead's own state goes into the quiet-thread notice below.\n\n" +
+		"Gone: an active lead or job worker gone from herdr for 10 minutes, counted from the first run that found it " +
+		"gone, has its row ended; gone is missing from `herdr agent list` with no agent in the pane the ledger " +
+		"records for it, or no such pane (one with an agent is named on stderr, and nothing is recorded for it), and a " +
+		"pane list with an entry it cannot read is a failed read. A worker's work order, if any, first gets a line saying so and is released as " +
+		"abandoned (`atb linear`, each step recorded), and its lead, when in herdr, is told (rule `worker gone`). A " +
+		"lead's job stays open: the agent of its home thread (started for it when none is live; without a home thread " +
+		"or a fednet socket, stderr) is told once (rule `lead gone`), and decides whether to end it with `job end " +
+		"--force`. Then the tab of every ended lead's or worker's pane that herdr still has under the agent's name is " +
+		"closed, unless a live row records that pane.\n\n" +
 		"Workers: the workers watch started (`watch-<watch>-<key>`, in the `threads` workspace, with " +
 		"no job and the parent `watch`) that finished their turn, or worked for 30 minutes, are " +
 		"closed; the question one wrote in its question file is asked in the thread of its " +
@@ -164,6 +173,8 @@ type watched struct {
 	reading      *reading
 	lastChangeAt *int64
 	suspect      bool
+	// goneSince is when an active row was first found gone from herdr.
+	goneSince *int64
 }
 
 // watchRun is one run: what it acts with, the clock, and the exit code so
@@ -256,7 +267,7 @@ func Watch(h *herdr.Herdr) (exit.Code, error) {
 		fmt.Fprintf(os.Stderr, "note: %s in the scope's config is no longer used and is ignored\n", key)
 	}
 	r := &watchRun{h: h, conn: conn, cfg: cfg, scope: scope, now: now, start: start}
-	if err := r.jobs(all); err != nil {
+	if all, err = r.leadsAndWorkers(all); err != nil {
 		return 0, err
 	}
 	if r.workers, err = r.newWorkers(inHerdr); err != nil {
@@ -285,12 +296,29 @@ func Watch(h *herdr.Herdr) (exit.Code, error) {
 	return r.code, nil
 }
 
-// jobs runs the job rules: the readings and verdicts saved, every suspect
-// printed, and each lead told when its suspect workers change.
-func (r *watchRun) jobs(all []watched) error {
-	if err := saveReadings(r.conn, all); err != nil {
-		return err
+// leadsAndWorkers saves this run's readings, ends the rows of those gone
+// from herdr long enough, runs the job rules on the others, which it
+// returns, and closes the tabs ended rows left. The first to act, it
+// lists herdr's panes before it does.
+func (r *watchRun) leadsAndWorkers(all []watched) ([]watched, error) {
+	panes, err := herdrPanes(r.h)
+	if err != nil {
+		return nil, err
 	}
+	confirmGone(all, panes)
+	if err := saveReadings(r.conn, all); err != nil {
+		return nil, err
+	}
+	all = r.endGone(all)
+	if err := r.jobs(all); err != nil {
+		return nil, err
+	}
+	return all, r.closeEnded(panes)
+}
+
+// jobs runs the job rules: the verdicts saved, every suspect printed, and
+// each lead told when its suspect workers change.
+func (r *watchRun) jobs(all []watched) error {
 	suspects := 0
 	for _, w := range all {
 		if w.suspect {
@@ -397,17 +425,21 @@ func workersByLead(all []watched) (leads []string, byLead map[string][]watched) 
 	return leads, byLead
 }
 
-// tellLeads tells each lead whose set of suspect workers changed, as the
-// watch `e` says, and saves the verdicts of the workers whose lead was
-// told (or may have been: exit 2); told is whether any lead's set changed.
-// A broken prompt tells no lead this run, and is `cut`: the watch did not
-// get through.
+// tellLeads tells each lead in herdr whose set of suspect workers changed,
+// as the watch `e` says, and saves the verdicts of the workers whose lead
+// was told (or may have been: exit 2); told is whether any lead's set
+// changed. A lead gone from herdr is not told, and so is told once it is
+// back, or never once its row is ended. A broken prompt tells no lead this
+// run, and is `cut`: the watch did not get through.
 func (r *watchRun) tellLeads(all []watched, e config.Entry) (told, cut bool, err error) {
 	leads, byLead := workersByLead(all)
 	prompt, promptErr := watchPrompt(r.cfg, e)
 	for _, lead := range leads {
 		if r.outOfTime() {
 			break
+		}
+		if !inHerdr(all, lead) {
+			continue
 		}
 		workers := byLead[lead]
 		before, after := suspectSets(workers)
@@ -518,7 +550,9 @@ func nameSet(names []string) []string {
 // blocked at a prompt is never a suspect: getting it past the prompt is
 // another matter than finding it stuck. A `starting` row is written
 // before herdr has the agent, so it is gone from herdr only once past
-// every bounded step of a start.
+// every bounded step of a start. An active row gone from herdr is timed
+// from the first run that found it gone (goneSince), not from its last
+// change.
 func observe(live Live, r *reading, now, stale int64) watched {
 	if r == nil {
 		var lastChangeAt *int64
@@ -527,7 +561,15 @@ func observe(live Live, r *reading, now, stale int64) watched {
 			lastChangeAt = &at
 		}
 		gone := live.State != "starting" || now-live.StartedAt >= startGraceSecs
-		return watched{live: live, lastChangeAt: lastChangeAt, suspect: gone}
+		w := watched{live: live, lastChangeAt: lastChangeAt, suspect: gone}
+		if live.State == "active" {
+			since := now
+			if live.LastStatus.Valid && live.LastStatus.String == goneStatus && live.LastChangeAt.Valid {
+				since = live.LastChangeAt.Int64
+			}
+			w.goneSince, w.lastChangeAt = &since, &since
+		}
+		return w
 	}
 	unchanged := live.LastStatus.Valid && live.LastStatus.String == r.status &&
 		live.LastSeq.Valid && live.LastSeq.Int64 == r.seq &&
@@ -551,6 +593,11 @@ func saveReadings(conn *sql.DB, all []watched) error {
 				"UPDATE agents SET last_status = ?1, last_seq = ?2, last_screen_hash = ?3, "+
 					"last_change_at = ?4 WHERE id = ?5",
 				r.status, r.seq, r.hash, w.lastChangeAt, w.live.ID); err != nil {
+				return exit.Database(err)
+			}
+		} else if w.goneSince != nil {
+			if _, err := conn.Exec("UPDATE agents SET last_status = ?1, last_change_at = ?2 WHERE id = ?3",
+				goneStatus, *w.goneSince, w.live.ID); err != nil {
 				return exit.Database(err)
 			}
 		}
@@ -606,6 +653,8 @@ func notice(workers []watched, before []string, now int64) string {
 func evidence(w watched, now int64) string {
 	who := fmt.Sprintf("%s (%s, job %s, parent %s)", w.live.Name, w.live.Role, w.live.Job, w.live.Parent)
 	switch {
+	case w.reading == nil && w.goneSince != nil:
+		return fmt.Sprintf("%s: gone from herdr for %s", who, Duration(now-*w.goneSince))
 	case w.reading == nil:
 		return who + ": gone from herdr"
 	case w.lastChangeAt != nil:

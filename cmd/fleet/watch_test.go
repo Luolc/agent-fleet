@@ -25,7 +25,8 @@ const rule = "──────────────────────
 // `agent prompt` appends the target and the text to <dir>/prompts and
 // answers with `reply`; `agent get` finds the agents of list.json; a pane
 // has the tab `tab-<pane>`, and `tab close` writes the pane to
-// <dir>/closed, after which neither is found.
+// <dir>/closed, after which neither is found; `pane list` prints
+// <dir>/panes.json, or no pane without it.
 func watchHerdr(dir, reply string) string {
 	return `#!/bin/sh
 if [ "$1" = --session ]; then shift 2; fi
@@ -78,6 +79,9 @@ REPLY
     ;;
   "workspace list")
     echo '{"result":{"workspaces":[]}}'
+    ;;
+  "pane list")
+    cat "$dir/panes.json" 2>/dev/null || echo '{"result":{"panes":[]}}'
     ;;
   *)
     echo "fake herdr: unexpected command: $*" >&2
@@ -830,16 +834,18 @@ func TestWatchAsksAboutAQuietThreadOncePerSpell(t *testing.T) {
 			t.Errorf("%q missing:\n%s", want, prompts[1][1])
 		}
 	}
-	// The same quiet spell: not asked again.
+	// The same quiet spell: not asked again. The worker, gone for over
+	// 10 minutes, is ended, and its lead told.
 	w.watchAt(2*time.Hour, 0)
-	if got := len(w.prompts()); got != 2 {
-		t.Fatalf("%q", w.prompts())
+	if prompts := w.prompts(); len(prompts) != 3 || prompts[2][0] != "j-lead" ||
+		!strings.Contains(prompts[2][1], "rule `worker gone`: your worker j-w") {
+		t.Fatalf("%q", prompts)
 	}
 	// A new message starts the count again.
 	w.lastMessage("C2/2.0", t0+3*3600)
 	w.watchAt(3*time.Hour+29*time.Minute, 0)
 	w.watchAt(3*time.Hour+30*time.Minute, 0)
-	if prompts := w.prompts(); len(prompts) != 3 || !strings.Contains(prompts[2][1], "rule `thread quiet, jobs open`") {
+	if prompts := w.prompts(); len(prompts) != 4 || !strings.Contains(prompts[3][1], "rule `thread quiet, jobs open`") {
 		t.Fatalf("%q", prompts)
 	}
 	// The job ended: the live agent is asked once why it has not ended.
@@ -848,18 +854,18 @@ func TestWatchAsksAboutAQuietThreadOncePerSpell(t *testing.T) {
 	w.watchAt(4*time.Hour+30*time.Minute, 0)
 	w.watchAt(5*time.Hour, 0)
 	prompts = w.prompts()
-	if len(prompts) != 4 || prompts[3][0] != "thread-c2" {
+	if len(prompts) != 5 || prompts[4][0] != "thread-c2" {
 		t.Fatalf("%q", prompts)
 	}
 	for _, want := range []string{"rule `thread quiet, nothing open`", "when nothing is left to do, end the session", "no message for 3d00h"} {
-		if !strings.Contains(prompts[3][1], want) {
+		if !strings.Contains(prompts[4][1], want) {
 			t.Errorf("%q missing:\n%s", want, prompts[3][1])
 		}
 	}
 	// Three days without a message: the session is reclaimed.
 	w.watchAt(76*time.Hour, 0)
 	prompts = w.prompts()
-	if len(prompts) != 5 || !strings.Contains(prompts[4][1], "rule `thread idle`: thread C2/2.0 has had no message for 3d00h") {
+	if len(prompts) != 6 || !strings.Contains(prompts[5][1], "rule `thread idle`: thread C2/2.0 has had no message for 3d00h") {
 		t.Fatalf("%q", prompts)
 	}
 	if got := w.query("SELECT reclaim_at FROM agents WHERE name = 'thread-c2'"); got != fmt.Sprint(t0+76*3600+600) {
@@ -1315,5 +1321,49 @@ func TestWatchClosesARevisitAgentOfBeforeAndAsksItsQuestion(t *testing.T) {
 	}
 	if got := w.query("SELECT coalesce(reclaim_at, 'none') FROM agents WHERE name = 'thread-c3'"); got != "none" {
 		t.Errorf("reclaim_at %s", got)
+	}
+}
+
+// An agent missing from `herdr agent list` is gone only when herdr has no
+// agent in the pane the ledger records for it, as when the listing has an
+// entry watch cannot read; a pane listing watch cannot read does nothing.
+func TestWatchEndsAGoneAgentOnlyWhenItsPaneHasNoAgent(t *testing.T) {
+	w := newWatchWorld(t)
+	w.insert(watchRow{name: "a-lead", role: "lead", job: "a", parent: "thread-1", startedAt: t0 - 3600})
+	w.insert(watchRow{name: "a-w1", role: "worker", job: "a", parent: "a-lead", startedAt: t0 - 3600,
+		lastStatus: "working", lastSeq: 3, lastScreenHash: "h", lastChangeAt: t0 - 60})
+	w.exec("UPDATE agents SET pane_id = 'p1' WHERE name = 'a-lead'", "UPDATE agents SET pane_id = 'p2' WHERE name = 'a-w1'")
+	// a-w1's entry has no state_change_seq, so watch cannot read it.
+	if err := os.WriteFile(filepath.Join(w.dir, "list.json"),
+		[]byte(`{"result":{"agents":[{"agent":"claude","name":"a-w1","agent_status":"working"}]}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	w.file("panes.json", `{"result":{"panes":[{"pane_id":"p1","tab_id":"t1","label":"a-lead"},`+
+		`{"pane_id":"p2","tab_id":"t2","label":"a-w1","agent":"claude"}]}}`)
+	states := func() string {
+		t.Helper()
+		return w.query("SELECT group_concat(name || '=' || state || '|' || last_status, ' ') FROM " +
+			"(SELECT name, state, coalesce(last_status, '-') AS last_status FROM agents ORDER BY id)")
+	}
+	// A pane listing without a pane id: nothing is done.
+	good, err := os.ReadFile(filepath.Join(w.dir, "panes.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.file("panes.json", `{"result":{"panes":[{"tab_id":"t1","label":"a-lead"}]}}`)
+	if out := w.watchAt(0, 5); !strings.Contains(out.stderr, "herdr pane list: an entry without pane_id or tab_id") {
+		t.Errorf("%+v", out)
+	}
+	if got := states(); got != "a-lead=active|- a-w1=active|working" {
+		t.Errorf("after a pane listing it cannot read: %s", got)
+	}
+	w.file("panes.json", string(good))
+	out := w.watchAt(0, 0)
+	if !strings.Contains(out.stderr, "a-w1 is not in `herdr agent list`, but an agent runs in its pane p2") {
+		t.Errorf("%+v", out)
+	}
+	w.watchAt(10*time.Minute, 0)
+	if got := states(); got != "a-lead=ended|gone a-w1=active|working" {
+		t.Errorf("%s", got)
 	}
 }
