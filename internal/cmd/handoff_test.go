@@ -21,7 +21,9 @@ const (
 
 // handoffSetup is a thread agent of repo-example-a with its live row and
 // thread ticket EX-1, fake fednet and atb that log their calls, and a
-// checkout of example-b; fednet's routes name #repo-example-b. It returns
+// checkout of example-b; fednet's routes name #repo-example-b, with no
+// machine, unless the file routes.json in the log directory gives them,
+// and fail while the file routes-down is there. It returns
 // the ledger, the task file and the directory the calls are logged in.
 func handoffSetup(t *testing.T) (*sql.DB, string, string) {
 	t.Helper()
@@ -31,6 +33,8 @@ func handoffSetup(t *testing.T) (*sql.DB, string, string) {
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
 	scripts := map[string]string{
 		"fednet": "#!/bin/sh\necho \"$*\" >> " + filepath.Join(bin, "fednet.log") + "\n" +
+			"[ \"$2\" = routes ] && [ -f " + filepath.Join(bin, "routes-down") + " ] && exit 4\n" +
+			"[ \"$2\" = routes ] && [ -f " + filepath.Join(bin, "routes.json") + " ] && { cat " + filepath.Join(bin, "routes.json") + "; exit 0; }\n" +
 			"[ \"$2\" = routes ] && { echo '{\"routes\":[{\"channel\":\"C0DST\",\"name\":\"repo-example-b\"}]}'; exit 0; }\n" +
 			"[ \"$2\" = open-thread ] && { echo \"$6/1700000500.000\"; exit 0; }\n" +
 			"[ -f " + filepath.Join(bin, "post-down") + " ] && [ \"$2\" = post ] && exit 4\n" +
@@ -196,6 +200,7 @@ func TestAHandoffToItsOwnChannelOpensANewThreadThere(t *testing.T) {
 	}
 	to := "C0SRC/1700000500.000"
 	want := []string{
+		"client routes -socket /run/fednet.sock -json",
 		"client open-thread -socket /run/fednet.sock -channel C0SRC -- 从 <#C0SRC> 的一个线程转来：Import the B table (" + handoffAgent + ")",
 		"client post -socket /run/fednet.sock -thread " + handoffFrom + " -- 已转到 <#C0SRC> 的一个新线程",
 	}
@@ -396,5 +401,74 @@ func TestAHandoffWithARefusedMentionFinishesOnARunWithoutIt(t *testing.T) {
 	if err := c.QueryRow("SELECT count(*) FROM handoffs WHERE done_at IS NOT NULL").Scan(&done); err != nil ||
 		posted != 1 || len(*got) != 1 || done != 1 {
 		t.Errorf("%d posted to the source thread, %d deliveries, %d done, %v", posted, len(*got), done, err)
+	}
+}
+
+// A target whose route gives its new threads to another machine is
+// refused before anything is recorded or opened, named by repo or by
+// channel; one routed to this machine, its hostname, is handed off.
+func TestAHandoffToAChannelRoutedToAnotherMachineIsRefused(t *testing.T) {
+	conn, task, bin := handoffSetup(t)
+	fail := false
+	got := fakeHandoffRoute(t, &fail)
+	host, err := os.Hostname()
+	if err != nil {
+		t.Fatal(err)
+	}
+	routes := func(machine string) {
+		t.Helper()
+		reply := `{"routes":[{"channel":"C0DST","machine":"` + machine + `","name":"repo-example-b"},` +
+			`{"channel":"C0DATA","machine":"` + machine + `","name":"data-example"}]}`
+		if err := os.WriteFile(filepath.Join(bin, "routes.json"), []byte(reply), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	routes("machine-elsewhere")
+	for _, args := range []ThreadHandoffArgs{{Repo: "example-b", File: task}, {Channel: "data-example", File: task}} {
+		_, err := ThreadHandoff(nil, args)
+		if code(err) != exit.Refused || !strings.Contains(err.Error(), "is routed to machine machine-elsewhere, not to this one ("+host+")") {
+			t.Errorf("%+v: %v", args, err)
+		}
+	}
+	if _, err := ThreadHandoff(nil, ThreadHandoffArgs{Channel: "#repo-example-b", File: task}); code(err) != exit.Refused ||
+		!strings.Contains(err.Error(), "is not a Slack channel's name") {
+		t.Errorf("a channel with its #: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(os.Getenv("HOME"), "dev", "example-unserved"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, "routes.json"),
+		[]byte(`{"routes":[{"channel":"C0UNS","name":"example-unserved"}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ThreadHandoff(nil, ThreadHandoffArgs{Channel: "example-unserved", File: task}); code(err) != exit.Refused ||
+		!strings.Contains(err.Error(), "fleet does not serve #example-unserved on this machine") {
+		t.Errorf("a channel without the scope's prefixes: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, "routes-down"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ThreadHandoff(nil, ThreadHandoffArgs{Repo: "example-b", File: task}); code(err) != exit.Environment ||
+		!strings.Contains(err.Error(), "fleet cannot tell which machine takes #repo-example-b") {
+		t.Errorf("routes down: %v", err)
+	}
+	var rows int
+	if err := conn.QueryRow("SELECT (SELECT count(*) FROM handoffs) + (SELECT count(*) FROM steps)").Scan(&rows); err != nil || rows != 0 {
+		t.Errorf("%d rows, %v", rows, err)
+	}
+	for _, call := range fednetCalls(t, bin) {
+		if !strings.HasPrefix(call, "client routes ") {
+			t.Errorf("fednet called: %s", call)
+		}
+	}
+	if err := os.Remove(filepath.Join(bin, "routes-down")); err != nil {
+		t.Fatal(err)
+	}
+	routes(host)
+	if code, err := ThreadHandoff(nil, ThreadHandoffArgs{Channel: "repo-example-b", File: task}); err != nil || code != exit.Ok {
+		t.Fatalf("routed here: exit %d, %v", code, err)
+	}
+	if len(*got) != 1 || (*got)[0].Thread != handoffTo {
+		t.Errorf("deliveries %+v", *got)
 	}
 }

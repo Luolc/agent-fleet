@@ -20,7 +20,7 @@ import (
 )
 
 // version is the fleet release version.
-const version = "0.2.6"
+const version = "0.2.7"
 
 const longAbout = "Runs and coordinates coding agents through herdr.\n\n" +
 	"A thread agent starts a job (`fleet job start`): its lead, which starts workers " +
@@ -165,13 +165,14 @@ Options:
   -h, --help  Print help
 `
 
-const threadHandoffUsage = "Usage: fleet thread handoff [OPTIONS] (--repo <REPO> | --initiative <INITIATIVE>) --file <PATH> [--mention <USER>]..."
+const threadHandoffUsage = "Usage: fleet thread handoff [OPTIONS] (--repo <REPO> | --initiative <INITIATIVE> | --channel <CHANNEL>) --file <PATH> [--mention <USER>]..."
 
 var threadHandoffHelp = cmd.ThreadHandoffLongAbout + "\n\n" + threadHandoffUsage + `
 
 Options:
       --repo <REPO>              The repo whose channel takes the work: <repo prefix><REPO>
       --initiative <INITIATIVE>  The initiative whose channel takes the work: <initiative prefix><INITIATIVE>
+      --channel <CHANNEL>        The channel that takes the work, by its name without the #
       --file <PATH>              The task: what to do and why, the people's words with their thread key and ts
       --mention <USER>           A Slack user id to mention in the new thread, when that person asked for the handoff; repeatable
       --scope <NAME>             ` + scopeHelp + `
@@ -695,9 +696,11 @@ func runThreadHandoff(args []string, scope *cliargs.OptString) (exit.Code, error
 	fs := flagSet("thread handoff", scope)
 	repo := cliargs.OptString{Name: "repo", Placeholder: "REPO"}
 	initiative := cliargs.OptString{Name: "initiative", Placeholder: "INITIATIVE"}
+	channel := cliargs.OptString{Name: "channel", Placeholder: "CHANNEL"}
 	file := cliargs.OptString{Name: "file", Placeholder: "PATH"}
 	fs.Var(&repo, "repo", "The repo whose channel takes the work")
 	fs.Var(&initiative, "initiative", "The initiative whose channel takes the work")
+	fs.Var(&channel, "channel", "The channel that takes the work")
 	fs.Var(&file, "file", "The task")
 	var mention cliargs.Strings
 	fs.Var(&mention, "mention", "A Slack user id to mention in the new thread")
@@ -705,15 +708,16 @@ func runThreadHandoff(args []string, scope *cliargs.OptString) (exit.Code, error
 	if err != nil || helped {
 		return exit.Ok, err
 	}
-	if repo.Given == initiative.Given {
-		return 0, &usageError{"exactly one of --repo <REPO> and --initiative <INITIATIVE> is required", threadHandoffUsage}
+	if given := btoi(repo.Given) + btoi(initiative.Given) + btoi(channel.Given); given != 1 {
+		return 0, &usageError{"exactly one of --repo <REPO>, --initiative <INITIATIVE> and --channel <CHANNEL> is required",
+			threadHandoffUsage}
 	}
 	h, err := scoped(scope)
 	if err != nil {
 		return 0, err
 	}
-	return cmd.ThreadHandoff(h, cmd.ThreadHandoffArgs{Repo: repo.Value, Initiative: initiative.Value, File: file.Value,
-		Mentions: mention.Values})
+	return cmd.ThreadHandoff(h, cmd.ThreadHandoffArgs{Repo: repo.Value, Initiative: initiative.Value, Channel: channel.Value,
+		File: file.Value, Mentions: mention.Values})
 }
 
 func runThreadPost(args []string, scope *cliargs.OptString) (exit.Code, error) {

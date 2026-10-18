@@ -44,8 +44,9 @@ ATB
 # The fake fednet logs a `react` apart, in /home/agent/react.log, and
 # fails (exit 4, one line on stderr) while
 # /home/agent/fednet-down exists; `ask` posts card-<n>, n the ref's id;
-# `routes` names #repo-example-target (C0HD) and #repo-example-plain
-# (C0HP), and `open-thread` opens
+# `routes` names #repo-example-target (C0HD), #repo-example-plain
+# (C0HP) and #data-example-remote (C0HR, routed to another machine), and
+# `open-thread` opens
 # <channel>/1700000500.000.
 cat > /home/agent/fake-thread/fednet <<'FEDNET'
 #!/bin/sh
@@ -53,7 +54,7 @@ cat > /home/agent/fake-thread/fednet <<'FEDNET'
 echo "$*" >> /home/agent/fednet.log
 [ -e /home/agent/fednet-down ] && { echo "post: hub unreachable" >&2; exit 4; }
 [ "$2" = ask ] && { echo '{"id":"card-'"${8#*:}"'","channel":"C0","ts":"1.0","permalink":"https://slack.example.test/card-'"${8#*:}"'"}'; exit 0; }
-[ "$2" = routes ] && { echo '{"routes":[{"channel":"C0HD","name":"repo-example-target"},{"channel":"C0HP","name":"repo-example-plain"}]}'; exit 0; }
+[ "$2" = routes ] && { echo '{"routes":[{"channel":"C0HD","name":"repo-example-target"},{"channel":"C0HP","name":"repo-example-plain"},{"channel":"C0HR","machine":"judge-elsewhere","name":"data-example-remote"}]}'; exit 0; }
 [ "$2" = open-thread ] && { echo "$6/1700000500.000"; exit 0; }
 echo m-posted
 FEDNET
@@ -838,6 +839,9 @@ has "handoff: a lead is pointed at its home thread's agent" "$out" "a lead does 
 out=$(thra "$KH" TH-6 -- thread handoff --repo example-unrouted --file "$htask" 2>&1); rc=$?
 check "handoff: exit 1 to a channel fleet knows no id of" 1 "$rc"
 has "handoff: says fleet opens no channel" "$out" "fleet knows no id of #repo-example-unrouted" "fleet opens no channel"
+out=$(thra "$KH" TH-6 -- thread handoff --channel data-example-remote --file "$htask" 2>&1); rc=$?
+check "handoff: exit 1 to a channel routed to another machine" 1 "$rc"
+has "handoff: names the machine the channel is routed to" "$out" "#data-example-remote is routed to machine judge-elsewhere"
 check "handoff: the refusals opened no thread and recorded nothing" "0 0 " \
   "$(grep -c open-thread /home/agent/fednet.log) $(tledger "SELECT count(*) FROM handoffs")"
 cp "/home/agent/.config/$T/main.json" /home/agent/main.json.keep

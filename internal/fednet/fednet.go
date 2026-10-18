@@ -128,13 +128,18 @@ func OpenThread(socket, channel, text string) (string, error) {
 	return key, nil
 }
 
-// Channels is the channel id of each channel the hub's routes name
-// (`fednet client routes -json`), by name without the `#`; the direct
-// messages' route and ids starting with D are left out, since no thread
-// opens there. A fednet whose routes carry no names gives none. A fednet
-// that fails, or answers with what is not its JSON, is an environment
-// failure.
-func Channels(socket string) (map[string]string, error) {
+// Route is a channel the hub's routes name: its id, and the fednet
+// client that takes its new threads, empty when none does.
+type Route struct {
+	Channel, Machine string
+}
+
+// Channels is the route of each channel the hub's routes name (`fednet
+// client routes -json`), by name without the `#`; the direct messages'
+// route and ids starting with D are left out, since no thread opens
+// there. A fednet whose routes carry no names gives none. A fednet that
+// fails, or answers with what is not its JSON, is an environment failure.
+func Channels(socket string) (map[string]Route, error) {
 	const op = "fednet client routes"
 	stdout, _, code, err := relay(op, []string{"client", "routes", "-socket", socket, "-json"})
 	if err == nil && code != 0 {
@@ -146,22 +151,23 @@ func Channels(socket string) (map[string]string, error) {
 	var reply struct {
 		Routes []struct {
 			Channel string `json:"channel"`
+			Machine string `json:"machine"`
 			Name    string `json:"name"`
 		} `json:"routes"`
 	}
 	if err := json.Unmarshal(stdout, &reply); err != nil {
 		return nil, exit.Environmentf("%s: not a JSON reply: %v", op, err)
 	}
-	ids := map[string]string{}
+	routes := map[string]Route{}
 	for _, r := range reply.Routes {
 		if r.Name == "" || r.Channel == "" || r.Channel == "dm" || strings.HasPrefix(r.Channel, "D") {
 			continue
 		}
-		if _, seen := ids[r.Name]; !seen {
-			ids[r.Name] = r.Channel
+		if _, seen := routes[r.Name]; !seen {
+			routes[r.Name] = Route{Channel: r.Channel, Machine: r.Machine}
 		}
 	}
-	return ids, nil
+	return routes, nil
 }
 
 // ErrThread marks a failure of one thread's read: fednet answered, but
