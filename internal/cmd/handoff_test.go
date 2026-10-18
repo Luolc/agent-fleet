@@ -217,8 +217,9 @@ func TestAHandoffToItsOwnChannelOpensANewThreadThere(t *testing.T) {
 	}
 }
 
-// A delivery that fails leaves the thread open and recorded: the next
-// run delivers to that thread and opens no other.
+// A delivery that fails leaves the thread open and recorded, and the
+// source thread already told where the work went: the next run delivers
+// to that thread, opens no other and posts no second line.
 func TestAHandoffRunAgainAfterAFailedDeliveryOpensNoSecondThread(t *testing.T) {
 	conn, task, bin := handoffSetup(t)
 	fail := true
@@ -227,18 +228,25 @@ func TestAHandoffRunAgainAfterAFailedDeliveryOpensNoSecondThread(t *testing.T) {
 	if code(err) != exit.NotFound || !strings.Contains(err.Error(), "run thread handoff again") {
 		t.Fatalf("first run: %v", err)
 	}
+	told := "client post -socket /run/fednet.sock -thread " + handoffFrom + " -- 已转到 <#C0DST> 的一个新线程"
+	if calls := fednetCalls(t, bin); calls[len(calls)-1] != told {
+		t.Errorf("first run: fednet calls %q, want the last %q", calls, told)
+	}
 	fail = false
 	if code, err := ThreadHandoff(nil, ThreadHandoffArgs{Repo: "example-b", File: task}); err != nil || code != exit.Ok {
 		t.Fatalf("second run: exit %d, %v", code, err)
 	}
-	opened := 0
+	opened, posted := 0, 0
 	for _, call := range fednetCalls(t, bin) {
 		if strings.HasPrefix(call, "client open-thread ") {
 			opened++
 		}
+		if call == told {
+			posted++
+		}
 	}
-	if opened != 1 || len(*got) != 2 || (*got)[1].Thread != handoffTo {
-		t.Errorf("%d threads opened, deliveries %+v", opened, *got)
+	if opened != 1 || posted != 1 || len(*got) != 2 || (*got)[1].Thread != handoffTo {
+		t.Errorf("%d threads opened, %d lines posted, deliveries %+v", opened, posted, *got)
 	}
 	var rows int
 	if err := conn.QueryRow("SELECT count(*) FROM handoffs WHERE to_thread = ?1 AND done_at IS NOT NULL", handoffTo).Scan(&rows); err != nil || rows != 1 {
