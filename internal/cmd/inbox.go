@@ -27,8 +27,16 @@ const (
 		"The fednet client runs `fleet inbox <event-file>` for every message a person posts in " +
 		"a thread this machine owns. The file is one JSON object: `msg_id` and `payload`; a " +
 		"payload of type `message` carries `thread` (CHANNEL/TS), `text`, `user`, `ts`, for a " +
-		"new thread the channel's `context`, and three optional fields: `trigger` (`dm` for a " +
-		"direct message to the bot), `channel_name` and `scope`. A payload of type `answer` is a " +
+		"new thread the channel's `context`, and optional fields: `trigger` (`dm` for a " +
+		"direct message to the bot; `handoff` and `relay` below), `channel_name` and `scope`. " +
+		"A message of trigger `handoff` (a thread another machine opened for this one with work) " +
+		"or `relay` (a post an agent on another machine delivered here with `fleet thread post " +
+		"--deliver`) is an agent's words: it reaches the thread's agent headed `[FROM: " +
+		"<from_client>/<agent>]` and `[HANDOFF from …]` or `[RELAY from …]` with ` in thread " +
+		"<key>`, the agent and thread read from the text's last line `— <agent> · <thread key>` " +
+		"(labels the sender gives; without that line the machine alone), is never recorded as " +
+		"the latest message a person posted and answers no question; `from_client` is the " +
+		"machine as the hub authenticated it. A payload of type `answer` is a " +
 		"press on a question card (below). A payload of type `reaction` is an emoji a person put on " +
 		"a thread's root message (`thread`, `user`, `reaction`, and `scope` as a message's): " +
 		"`package` (the people archived the thread) takes fleet's `eyes` off a thread the scope " +
@@ -131,8 +139,12 @@ type event struct {
 		User    string `json:"user"`
 		TS      string `json:"ts"`
 		Context string `json:"context"`
-		// Trigger is `dm` for a direct message to the bot.
+		// Trigger is `dm` for a direct message to the bot, `handoff` or
+		// `relay` for what an agent on another machine passed here.
 		Trigger string `json:"trigger"`
+		// FromClient is the machine a handoff or relay came from, as the
+		// hub authenticated it.
+		FromClient string `json:"from_client"`
 		// ChannelName is the channel's name, absent in a direct message.
 		ChannelName string `json:"channel_name"`
 		// Scope is the fleet the hub routes the channel to; absent means
@@ -260,9 +272,8 @@ func Inbox(args InboxArgs) (exit.Code, error) {
 		fmt.Fprintf(os.Stdout, "message %s was already %s\n", e.MsgID, state)
 		return exit.Ok, nil
 	}
-	msg := inboundMessage{Thread: e.Payload.Thread, Text: e.Payload.Text, User: e.Payload.User, TS: e.Payload.TS,
-		Context: e.Payload.Context, Mapping: mapping}
-	if err := answerByMessage(conn, msg.Thread); err != nil {
+	msg := inboxMessage(e, mapping)
+	if err := answerByMessage(conn, msg); err != nil {
 		return 0, err
 	}
 	code, dropped, err := route(h, conn, scope, cfg, msg)
@@ -283,6 +294,19 @@ func Inbox(args InboxArgs) (exit.Code, error) {
 		return 0, err
 	}
 	return exit.Ok, setMessage(conn, e.MsgID, state)
+}
+
+// inboxMessage is the event's message; one of trigger handoff or relay
+// carries the machine it came from and the agent and thread its signed
+// last line names.
+func inboxMessage(e *event, mapping string) inboundMessage {
+	msg := inboundMessage{Thread: e.Payload.Thread, Text: e.Payload.Text, User: e.Payload.User, TS: e.Payload.TS,
+		Context: e.Payload.Context, Mapping: mapping}
+	if t := e.Payload.Trigger; t == relayHandoff || t == relayPost {
+		msg.Relay, msg.FromClient = t, e.Payload.FromClient
+		msg.RelayAgent, msg.RelayThread = relaySigned(msg.Text)
+	}
+	return msg
 }
 
 // inboxReaction takes a reaction a person put on the root message of a
@@ -319,8 +343,12 @@ func inboxReaction(e *event) (exit.Code, error) {
 }
 
 // recordLatest writes the delivered message onto the thread's row as the
-// latest a person posted there, for `job start` to hand to the lead.
+// latest a person posted there, for `job start` to hand to the lead; a
+// relayed message, an agent's, is not written.
 func recordLatest(conn *sql.DB, msg inboundMessage) error {
+	if msg.Relay != "" {
+		return nil
+	}
 	if _, err := conn.Exec("UPDATE threads SET last_text = ?1, last_user = ?2, last_ts = ?3 WHERE thread = ?4",
 		msg.Text, msg.User, msg.TS, msg.Thread); err != nil {
 		return exit.Database(err)
@@ -430,8 +458,13 @@ func startThread(h *herdr.Herdr, conn *sql.DB, scope string, cfg *config.Scope, 
 // worker's, a screen's, watch's own at a watch's `max`, a thread
 // agent's), and a lead's whose job has ended (moved to the thread, its
 // lead gone), unless a card asks the people for it. Only a press answers
-// a card, and only the thread agent an open job's lead's question.
-func answerByMessage(conn *sql.DB, thread string) error {
+// a card, and only the thread agent an open job's lead's question. A
+// relayed message, an agent's, answers none.
+func answerByMessage(conn *sql.DB, msg inboundMessage) error {
+	if msg.Relay != "" {
+		return nil
+	}
+	thread := msg.Thread
 	var ids []any
 	err := eachRow(conn, "SELECT id, job, asked_by, card, job != '' AND NOT EXISTS (SELECT 1 FROM jobs j WHERE "+
 		"j.job = q.job AND j.state = 'open' AND j.started_at <= q.asked_at), EXISTS (SELECT 1 FROM questions c "+

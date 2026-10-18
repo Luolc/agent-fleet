@@ -4,7 +4,9 @@
 // agent's progress card, `read-thread` for when a thread last had a
 // message, `open-thread` and `routes` for the home thread of a job that
 // has none, `ask` and `ask-close` for a thread agent's question cards,
-// and `react` for the status emoji on a thread's root message.
+// `react` for the status emoji on a thread's root message, and `whoami`,
+// `open-thread -owner route` and `post -deliver` for the work and reports
+// thread agents pass to another machine.
 package fednet
 
 import (
@@ -23,7 +25,15 @@ import (
 // postArgv is `client post -socket <socket> -thread <thread> [-file
 // <f>]... [-mention <user>]... -- <text>`.
 func postArgv(socket, thread, text string, files, mentions []string) []string {
+	return postArgvWith(socket, thread, text, files, mentions, false)
+}
+
+// postArgvWith is postArgv, with `-deliver` when deliver is set.
+func postArgvWith(socket, thread, text string, files, mentions []string, deliver bool) []string {
 	args := []string{"client", "post", "-socket", socket, "-thread", thread}
+	if deliver {
+		args = append(args, "-deliver")
+	}
 	for _, f := range files {
 		args = append(args, "-file", f)
 	}
@@ -113,8 +123,23 @@ func firstLine(out []byte) string {
 // fednet's status and its first line of stderr, which says why (a channel
 // the hub does not let this machine open threads in, say).
 func OpenThread(socket, channel, text string) (string, error) {
+	return openThread(socket, channel, text)
+}
+
+// OpenThreadForRoute is OpenThread with `-owner route -from-thread
+// <from>`: the thread is owned by the machine of the channel's route,
+// which gets `text` as a message of trigger `handoff`, its hop going on
+// from the thread `from`, which this machine owns. fednet refuses (exit 3)
+// when its relay list does not let this machine deliver there or `from`
+// is at the hop limit.
+func OpenThreadForRoute(socket, channel, from, text string) (string, error) {
+	return openThread(socket, channel, text, "-owner", "route", "-from-thread", from)
+}
+
+func openThread(socket, channel, text string, flags ...string) (string, error) {
 	const op = "fednet client open-thread"
-	stdout, stderr, code, err := relay(op, []string{"client", "open-thread", "-socket", socket, "-channel", channel, "--", text})
+	args := append([]string{"client", "open-thread", "-socket", socket, "-channel", channel}, flags...)
+	stdout, stderr, code, err := relay(op, append(args, "--", text))
 	if err == nil && code != 0 {
 		err = exit.Environmentf("%s failed (exit status: %d): %s", op, code, firstLine(stderr))
 	}
@@ -168,6 +193,28 @@ func Channels(socket string) (map[string]Route, error) {
 		}
 	}
 	return routes, nil
+}
+
+// Whoami is this machine's fednet client id (`fednet client whoami
+// -json`), which fednet reads from its daemon, not from the credential.
+// A fednet that fails (one older than v0.9.0 has no whoami), or answers
+// with what is not its JSON, is an environment failure.
+func Whoami(socket string) (string, error) {
+	const op = "fednet client whoami"
+	stdout, _, code, err := relay(op, []string{"client", "whoami", "-socket", socket, "-json"})
+	if err == nil && code != 0 {
+		err = exit.Environmentf("%s failed (exit status: %d); fleet needs fednet v0.9.0 or later to tell which machine this is", op, code)
+	}
+	if err != nil {
+		return "", err
+	}
+	var reply struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(stdout, &reply); err != nil || strings.TrimSpace(reply.Text) == "" {
+		return "", exit.Environmentf("%s: no client id in the reply; fleet needs fednet v0.9.0 or later", op)
+	}
+	return strings.TrimSpace(reply.Text), nil
 }
 
 // ErrThread marks a failure of one thread's read: fednet answered, but
@@ -293,6 +340,13 @@ func hidden(op string, argv []string) error {
 // be run, hit the deadline or was killed by a signal is a *exit.Failure.
 func Relay(socket, thread, text string, files []string) (stdout, stderr []byte, code int, err error) {
 	return relay("fednet client post", postArgv(socket, thread, text, files, nil))
+}
+
+// RelayDeliver is Relay with `-deliver` and no files: fednet also
+// delivers the text to the machine that owns the thread, as a message of
+// trigger `relay`, and nothing when this machine owns it.
+func RelayDeliver(socket, thread, text string) (stdout, stderr []byte, code int, err error) {
+	return relay("fednet client post", postArgvWith(socket, thread, text, nil, nil, true))
 }
 
 // Progress is Relay for an agent's progress card: `fednet client progress`

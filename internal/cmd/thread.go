@@ -35,6 +35,13 @@ const (
 	ThreadAbout         = "What a thread agent does to its own thread: post to it, show its progress, end the session, set the ticket's project, relate an issue, hand work off"
 	ThreadPostAbout     = "Post to your thread in Slack (thread agents only)"
 	ThreadPostLongAbout = "Post to your thread in Slack (thread agents only).\n\n" +
+		"With --deliver --thread <KEY>, the text goes to that thread instead, typically the one work was handed off " +
+		"from on another machine, with `fednet client post -deliver`: fednet posts it there and delivers it to the " +
+		"machine that owns the thread, as a message of trigger `relay` (nothing when this machine owns it). fleet adds " +
+		"one last line, `— <your name> · <your thread>`, which the receiving fleet shows as who it is from and where to " +
+		"answer; it is a label you give, only the machine is checked. fednet refuses (exit 3) when its relay list does not " +
+		"let this machine deliver there, and exits 1 for a thread without an owner. --deliver takes no --attach, and is " +
+		"refused (exit 1) for a thread this scope's ledger records, one of this machine's: tell its agent with `fleet send`.\n\n" +
 		"The text is read from --body-file and posted with `fednet client post` to the " +
 		"thread your row in the ledger records, through the socket in the scope's settings " +
 		"(`fednet.socket`); you never name either. Each --attach is passed to fednet as " +
@@ -310,6 +317,41 @@ type inboundMessage struct {
 	// Handoff is the thread work was handed off from, By the thread agent
 	// that handed it off, Text its task.
 	Handoff, By string
+	// Relay is the trigger of what an agent on another machine passed
+	// here through fednet (relayHandoff or relayPost), FromClient that
+	// machine as the hub authenticated it, and RelayAgent and RelayThread
+	// the agent and its thread as the text's last line names them
+	// (relaySigned): labels, empty when the line is not there.
+	Relay, FromClient, RelayAgent, RelayThread string
+}
+
+// The triggers of fednet's messages that an agent on another machine
+// sent: a thread opened for this machine with work, and a post delivered.
+const (
+	relayHandoff = "handoff"
+	relayPost    = "relay"
+)
+
+// relayFrom is who a relayed message is from: `<client>/<agent>`, or the
+// machine alone when the text names no agent.
+func (m inboundMessage) relayFrom() string {
+	if m.RelayAgent == "" {
+		return m.FromClient
+	}
+	return m.FromClient + "/" + m.RelayAgent
+}
+
+// relayHeader is a relayed message's first line: `[HANDOFF from …]` or
+// `[RELAY from …]`, with ` in thread <key>` when the text names one.
+func (m inboundMessage) relayHeader() string {
+	kind := "RELAY"
+	if m.Relay == relayHandoff {
+		kind = "HANDOFF"
+	}
+	if m.RelayThread == "" {
+		return fmt.Sprintf("[%s from %s]", kind, m.relayFrom())
+	}
+	return fmt.Sprintf("[%s from %s in thread %s]", kind, m.relayFrom(), m.RelayThread)
 }
 
 // channel is the channel part of the thread key `CHANNEL/TS`.
@@ -331,6 +373,9 @@ func (m inboundMessage) sender() string {
 	}
 	if m.Handoff != "" {
 		return m.By
+	}
+	if m.Relay != "" {
+		return m.relayFrom()
 	}
 	if m.Question != "" {
 		return m.Question
@@ -368,6 +413,9 @@ func (m inboundMessage) body() string {
 			"line here saying you have it, then act on it as on a request made here.\n\n%s\n",
 			m.By, m.Handoff, m.By, m.Thread, seePrompt, m.Text)
 	}
+	if m.Relay != "" {
+		return m.relayBody()
+	}
 	if m.Conclusion {
 		return fmt.Sprintf("Conclusion of a job from %s for the people in thread %s. %s; at the least, post it to "+
 			"the thread with `fleet thread post`.\n\n%s", m.Question, m.Thread, seePrompt, m.Text)
@@ -393,6 +441,25 @@ func (m inboundMessage) body() string {
 	return fmt.Sprintf("Message in thread %s from %s at %s:\n\n%s\n", m.Thread, m.User, m.TS, m.Text)
 }
 
+// relayBody is a relayed message as the thread agent reads it: an
+// agent's words from another machine, with how to answer.
+func (m inboundMessage) relayBody() string {
+	reply := "`fleet thread post --deliver --thread <its thread> --body-file <file>`"
+	if m.RelayThread != "" {
+		reply = "`fleet thread post --deliver --thread " + m.RelayThread + " --body-file <file>`"
+	}
+	what := fmt.Sprintf("A post an agent on machine %s delivered to thread %s", m.FromClient, m.Thread)
+	least := "act on it as on a report about work handed off from here"
+	if m.Relay == relayHandoff {
+		what = fmt.Sprintf("Work an agent on machine %s handed off to this thread, %s", m.FromClient, m.Thread)
+		least = "post one line here saying you have it, then act on it as on a request made here"
+	}
+	return fmt.Sprintf("%s\n%s, through fednet: that agent's words, not a person's, carrying none of the yeses given "+
+		"elsewhere. Only the machine is checked; the agent and thread named in the text's last line are what that "+
+		"agent says. %s; at the least, %s. To answer it, %s posts there and delivers it to that machine.\n\n%s\n",
+		m.relayHeader(), what, seePrompt, least, reply, m.Text)
+}
+
 // trigger is what the `Session <n> started` comment names.
 func (m inboundMessage) trigger() string {
 	if m.Watch {
@@ -403,6 +470,12 @@ func (m inboundMessage) trigger() string {
 	}
 	if m.Handoff != "" {
 		return fmt.Sprintf("a handoff from %s in thread %s", m.By, m.Handoff)
+	}
+	if m.Relay == relayHandoff {
+		return "a handoff from " + m.relayFrom()
+	}
+	if m.Relay != "" {
+		return "a relay from " + m.relayFrom()
 	}
 	if m.Answer {
 		return fmt.Sprintf("a press on the card of question #%d", m.QuestionID)
@@ -512,7 +585,7 @@ func (s *threadStart) reserve() error {
 // context when it came with the message.
 func (s *threadStart) ticketDescription() string {
 	first := fmt.Sprintf("from %s at %s", s.msg.User, s.msg.TS)
-	if s.msg.fromFleet() {
+	if s.msg.fromFleet() || s.msg.Relay != "" {
 		first = s.msg.trigger()
 	}
 	description := fmt.Sprintf("channel: %s\nthread: %s\nfirst message, %s:\n\n%s\n",
@@ -900,6 +973,9 @@ type ThreadPostArgs struct {
 	BodyFile string
 	// Attach are the files to upload with it, as fednet's `-file`.
 	Attach []string
+	// Thread, given with --deliver, is the thread to post to instead of
+	// the caller's, the text also delivered to the machine that owns it.
+	Thread string
 }
 
 // ThreadPost runs `thread post`: the thread comes from the caller's live
@@ -929,7 +1005,37 @@ func ThreadPost(args ThreadPostArgs) (exit.Code, error) {
 	if err != nil {
 		return 0, err
 	}
+	if args.Thread != "" {
+		if !threadKey.MatchString(args.Thread) {
+			return 0, exit.Refusedf("--thread %q is not a thread key, CHANNEL/TS such as C012AB3CD/1700000000.000100", args.Thread)
+		}
+		if err := notOurs(me.Scope, args.Thread); err != nil {
+			return 0, err
+		}
+		text = strings.TrimRight(text, " \t\r\n") + "\n\n" + relaySignature(me.Agent, thread)
+		return handBack(fednet.RelayDeliver(socket, args.Thread, text))
+	}
 	return handBack(fednet.Relay(socket, thread, text, args.Attach))
+}
+
+// notOurs refuses a --deliver to a thread this scope's ledger records:
+// fednet delivers nothing to the machine that owns the thread itself, so
+// its agent would never hear of the post.
+func notOurs(scope, thread string) error {
+	conn, err := db.Open(scope)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	row, err := threadByKey(conn, thread)
+	if err != nil {
+		return err
+	}
+	if row != nil {
+		return exit.Refusedf("thread %s is this machine's, so --deliver would deliver it to no one: tell its agent "+
+			"with `fleet send`", thread)
+	}
+	return nil
 }
 
 // liveThreadOf is the thread the caller's live row records, which must

@@ -11,6 +11,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/Luolc/agent-fleet/internal/atb"
 	"github.com/Luolc/agent-fleet/internal/config"
@@ -34,9 +35,17 @@ const (
 		"how a long thread is continued afresh. fleet takes the channel's id " +
 		"as `ask-thread` does for a home thread: from the newest thread of it this scope has seen, " +
 		"or else from fednet's routes (`fednet client routes -json`); it opens no channel and " +
-		"changes no route. The channel's new threads must come to this machine: when fednet's " +
-		"routes give it a machine (a fednet client's id), that is this machine's hostname, or " +
-		"the handoff is refused.\n\n" +
+		"changes no route.\n\n" +
+		"When fednet's routes give the channel a machine other than this one (`fednet client " +
+		"whoami`, fednet v0.9.0 or later), the work goes to that machine: fleet opens the thread " +
+		"with `fednet client open-thread -owner route -from-thread <your thread>`, so it is that " +
+		"machine's and fednet counts the hops from your thread, its first message fleet's line, " +
+		"the task and a last line `— <you> · <your thread>`; fednet delivers that message to the " +
+		"other machine (trigger `handoff`), whose fleet starts the thread agent there. At most " +
+		"4000 characters go in that message. fleet then posts the line in your thread and the " +
+		"mention, if any; it starts no agent here, records the thread only with the handoff, and " +
+		"relates no tickets (the new one is in the other machine's ledger). The prefixes and " +
+		"checkouts are the other machine's to check, not this one's.\n\n" +
 		"The steps: fleet records the handoff (table `handoffs`), opens a thread in the target " +
 		"channel with `fednet client open-thread`, its first message fleet's one line naming your " +
 		"channel (`<#<id>>`, which Slack shows as a link), your thread, the task's title (as `fleet job start --help` says) and " +
@@ -66,13 +75,13 @@ const (
 		"Exit: 0 when the new thread's agent has the task (or had it already); 1 when the caller " +
 		"is not a live thread agent, a --mention is not a Slack user id (U or W, then capitals " +
 		"and digits), the file is unreadable or empty, the target is not one directory name " +
-		"(for --channel, not a Slack channel name), is routed to another machine, has a name " +
-		"with neither of the scope's prefixes, " +
+		"(for --channel, not a Slack channel name), is for this machine and has a name " +
+		"with neither of the scope's prefixes, the task is too long for another machine, " +
 		"is not checked out on this machine, or fleet knows no id of " +
 		"its channel, or the scope has no fednet socket (each before " +
 		"anything is recorded); 2/3/4 as `send` for the delivery; 3 when the new thread agent " +
-		"stops at an unknown screen; 5 when fednet's routes cannot be read (before anything is " +
-		"recorded), when fednet refuses or fails to open the thread or to " +
+		"stops at an unknown screen; 5 when fednet's routes or `whoami` cannot be read (before anything is " +
+		"recorded), when fednet refuses (its relay list, the hop limit) or fails to open the thread or to " +
 		"post, or refuses a mention (a user not on the hub's user list, or a fednet too old for -mention: the " +
 		"line in your thread is posted by then), or herdr, atb or the database fails. After a failure, run it " +
 		"again to finish, without the refused --mention."
@@ -150,7 +159,9 @@ func ThreadHandoff(h *herdr.Herdr, args ThreadHandoffArgs) (exit.Code, error) {
 	if err := ho.begin(); err != nil {
 		return 0, err
 	}
-	defer markThread(conn, cfg.FednetSocket, ho.to)
+	if !ho.remote {
+		defer markThread(conn, cfg.FednetSocket, ho.to)
+	}
 	return ho.finish(h)
 }
 
@@ -190,30 +201,55 @@ func handoffMapping(ch config.Channels, args ThreadHandoffArgs) (string, error) 
 	return ch.InitiativePrefix + args.Initiative, CheckRepo(args.Initiative)
 }
 
-// routedHere refuses a target whose route, in fednet's routes, gives its
-// new threads to another machine: this machine's fednet client is taken
-// to be the one whose id is its hostname. A route without a machine, or a
-// channel the routes do not name, is not refused here. Routes fednet
-// cannot give are an environment failure, since then fleet cannot tell
-// where the channel's threads go. It returns the routes it read.
-func routedHere(socket, mapping string) (map[string]fednet.Route, error) {
-	routes, err := fednet.Channels(socket)
+// routeOf reads fednet's routes and tells whether the target's new
+// threads go to another machine: its route gives a machine that is not
+// this one, as `fednet client whoami` names it. A route without a machine,
+// or a channel the routes do not name, is this machine's. Routes fednet
+// cannot give, or a whoami that fails, are an environment failure, since
+// then fleet cannot tell where the channel's threads go.
+func routeOf(socket, mapping string) (routes map[string]fednet.Route, remote bool, err error) {
+	routes, err = fednet.Channels(socket)
 	if err != nil {
-		return nil, exit.Environmentf("%v; fleet cannot tell which machine takes #%s, so nothing is recorded", err, mapping)
+		return nil, false, exit.Environmentf("%v; fleet cannot tell which machine takes #%s, so nothing is recorded", err, mapping)
 	}
 	machine := routes[mapping].Machine
 	if machine == "" {
-		return routes, nil
+		return routes, false, nil
 	}
-	host, err := os.Hostname()
+	me, err := fednet.Whoami(socket)
 	if err != nil {
-		return nil, exit.Environmentf("cannot read this machine's hostname: %v; nothing is recorded", err)
+		return nil, false, exit.Environmentf("%v; nothing is recorded", err)
 	}
-	if machine != host {
-		return nil, exit.Refusedf("#%s is routed to machine %s, not to this one (%s): fleet hands work off only to a "+
-			"channel whose new threads come to this machine; nothing is recorded", mapping, machine, host)
+	return routes, machine != me, nil
+}
+
+// maxRemoteText is the most fednet's `open-thread` takes as the first
+// message, in characters: all a handoff to another machine carries.
+const maxRemoteText = 4000
+
+// relaySignature is the last line fleet adds to what it sends another
+// machine, naming the agent and its thread: labels the caller gives
+// itself, which the receiving fleet only shows (relaySigned).
+func relaySignature(agent, thread string) string {
+	return "— " + agent + " · " + thread
+}
+
+// threadKey is the shape of a Slack thread key, CHANNEL/TS.
+var threadKey = regexp.MustCompile(`^[A-Z0-9]+/[0-9]+\.[0-9]+$`)
+
+// signatureLine is relaySignature's shape.
+var signatureLine = regexp.MustCompile(`^— ([a-z0-9][a-z0-9-]*) · ([A-Z0-9]+/[0-9]+\.[0-9]+)$`)
+
+// relaySigned is the agent and thread that the last line of `text` names
+// as relaySignature writes it, or "" for both when it is not that line.
+func relaySigned(text string) (agent, thread string) {
+	text = strings.TrimRight(text, " \t\r\n")
+	last := text[strings.LastIndex(text, "\n")+1:]
+	m := signatureLine.FindStringSubmatch(strings.TrimSpace(last))
+	if m == nil {
+		return "", ""
 	}
-	return routes, nil
+	return m[1], m[2]
 }
 
 // readTask is the task file's text, its end trimmed.
@@ -236,9 +272,10 @@ func isDir(path string) bool {
 }
 
 // handoff is one `thread handoff`: the caller and its thread, the
-// target's mapping and fednet's routes, the task, the users to mention, and the ledger's row
-// of it once recorded (`id`), with the thread opened for it (`to`) and
-// whether every step is done.
+// target's mapping, fednet's routes and whether the target's threads go
+// to another machine (`remote`), the task, the users to mention, and the
+// ledger's row of it once recorded (`id`), with the thread opened for it
+// (`to`) and whether every step is done.
 type handoff struct {
 	conn     *sql.DB
 	cfg      *config.Scope
@@ -246,6 +283,7 @@ type handoff struct {
 	from     *threadRow
 	mapping  string
 	routes   map[string]fednet.Route
+	remote   bool
 	task     string
 	mentions []string
 	id       int64
@@ -253,26 +291,29 @@ type handoff struct {
 	done     bool
 }
 
-// begin refuses a target whose agents would not run on this machine (one
-// routed to another machine, one whose name the scope's prefixes do not
-// serve, one not checked out here),
-// its route read only while no thread is open for the handoff, and opens
-// that thread unless an earlier run did.
+// begin tells whether the target's threads go to another machine: by its
+// route while no thread is open for the handoff, else by whether this
+// ledger recorded the thread (a thread for another machine is not
+// recorded). A target of this machine is refused when its name the
+// scope's prefixes do not serve or it is not checked out here. Then it
+// opens the thread unless an earlier run did.
 func (ho *handoff) begin() error {
 	opening := ho.to == ""
 	if opening {
-		routes, err := routedHere(ho.cfg.FednetSocket, ho.mapping)
+		routes, remote, err := routeOf(ho.cfg.FednetSocket, ho.mapping)
 		if err != nil {
 			return err
 		}
-		ho.routes = routes
+		ho.routes, ho.remote = routes, remote
+	} else {
+		to, err := threadByKey(ho.conn, ho.to)
+		if err != nil {
+			return err
+		}
+		ho.remote = to == nil
 	}
-	if ChannelMapping(ho.cfg.Channels, ho.mapping, false) == "" {
-		return exit.Refusedf("fleet does not serve #%s on this machine: its name has neither of the scope's prefixes; "+
-			"nothing is recorded", ho.mapping)
-	}
-	if dir := MappingDir(ho.cfg, ho.mapping); !isDir(dir) {
-		return exit.Refusedf("#%s runs its agents in %s, which is not on this machine; nothing is recorded", ho.mapping, dir)
+	if err := ho.here(); err != nil {
+		return err
 	}
 	if !opening {
 		return nil
@@ -281,6 +322,23 @@ func (ho *handoff) begin() error {
 		return err
 	}
 	fmt.Fprintf(os.Stdout, "opened thread %s in #%s\n", ho.to, ho.mapping)
+	return nil
+}
+
+// here refuses a target of this machine that the scope does not serve or
+// that is not checked out here; a target of another machine is that
+// machine's to check.
+func (ho *handoff) here() error {
+	if ho.remote {
+		return nil
+	}
+	if ChannelMapping(ho.cfg.Channels, ho.mapping, false) == "" {
+		return exit.Refusedf("fleet does not serve #%s on this machine: its name has neither of the scope's prefixes; "+
+			"nothing is recorded", ho.mapping)
+	}
+	if dir := MappingDir(ho.cfg, ho.mapping); !isDir(dir) {
+		return exit.Refusedf("#%s runs its agents in %s, which is not on this machine; nothing is recorded", ho.mapping, dir)
+	}
 	return nil
 }
 
@@ -299,7 +357,12 @@ func (ho *handoff) find() error {
 // open finds the target channel's id, records the handoff unless an
 // earlier run did, opens the thread, and records it with the handoff and
 // as a thread of the target, in one transaction. A channel fleet knows no
-// id of is refused before anything is recorded.
+// id of is refused before anything is recorded. For another machine the
+// thread is opened as its route's (`open-thread -owner route`, from the
+// caller's thread, so fednet counts the hops), its first message fleet's
+// line, the task and relaySignature, which is all the other machine
+// gets; it is refused when longer than fednet takes, and recorded only
+// with the handoff, never as a thread of this scope.
 func (ho *handoff) open() error {
 	_, channel, err := channelOf(ho.conn, ho.cfg, ho.routes, ho.mapping)
 	if err != nil {
@@ -309,6 +372,10 @@ func (ho *handoff) open() error {
 		return exit.Refusedf("fleet knows no id of #%s: no thread of it has reached this scope and fednet's routes "+
 			"do not name it; fleet opens no channel and changes no route, so ask the people to have it routed to this "+
 			"machine; nothing is recorded", ho.mapping)
+	}
+	text, err := ho.firstMessage()
+	if err != nil {
+		return err
 	}
 	if ho.id == 0 {
 		res, err := ho.conn.Exec("INSERT INTO handoffs (from_thread, by, mapping, task, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -320,13 +387,12 @@ func (ho *handoff) open() error {
 			return exit.Database(err)
 		}
 	}
-	where := " <#" + ho.from.Channel + "> 的"
-	if strings.HasPrefix(ho.from.Channel, "D") {
-		where = "私信里的"
+	var thread string
+	if ho.remote {
+		thread, err = fednet.OpenThreadForRoute(ho.cfg.FednetSocket, channel, ho.me.Thread, text)
+	} else {
+		thread, err = fednet.OpenThread(ho.cfg.FednetSocket, channel, text)
 	}
-	line := fmt.Sprintf("从%s转来：%s (%s)", where+threadLink(ho.cfg.SlackURL, ho.me.Thread, "原线程", "一个线程"),
-		WorkOrderTitle(ho.task), ho.me.Agent)
-	thread, err := fednet.OpenThread(ho.cfg.FednetSocket, channel, line)
 	var failure *exit.Failure
 	if errors.As(err, &failure) {
 		return exit.New(failure.Code, failure.Message+"; no thread is recorded, run thread handoff again")
@@ -336,8 +402,10 @@ func (ho *handoff) open() error {
 	}
 	ho.to = thread
 	return reserve(ho.conn, func(querier) error { return nil }, func(q querier) error {
-		if err := insertThread(q, ho.cfg, thread, channel, ho.mapping); err != nil {
-			return err
+		if !ho.remote {
+			if err := insertThread(q, ho.cfg, thread, channel, ho.mapping); err != nil {
+				return err
+			}
 		}
 		if _, err := q.Exec("UPDATE handoffs SET to_thread = ?1 WHERE id = ?2", thread, ho.id); err != nil {
 			return exit.Database(err)
@@ -346,10 +414,40 @@ func (ho *handoff) open() error {
 	})
 }
 
+// firstMessage is the new thread's first message: fleet's line, and for
+// another machine also the task and relaySignature, refused when longer
+// than fednet takes.
+func (ho *handoff) firstMessage() (string, error) {
+	line := ho.openingLine()
+	if !ho.remote {
+		return line, nil
+	}
+	text := line + "\n\n" + ho.task + "\n\n" + relaySignature(ho.me.Agent, ho.me.Thread)
+	if n := utf8.RuneCountInString(text); n > maxRemoteText {
+		return "", exit.Refusedf("#%s is routed to another machine, which gets the task in the new thread's first "+
+			"message: with fleet's lines it is %d characters, over fednet's %d; shorten the task or point to a "+
+			"file in a repo; nothing is recorded", ho.mapping, n, maxRemoteText)
+	}
+	return text, nil
+}
+
+// openingLine is fleet's line that opens the new thread: where the work
+// comes from, the task's title and the caller.
+func (ho *handoff) openingLine() string {
+	where := " <#" + ho.from.Channel + "> 的"
+	if strings.HasPrefix(ho.from.Channel, "D") {
+		where = "私信里的"
+	}
+	return fmt.Sprintf("从%s转来：%s (%s)", where+threadLink(ho.cfg.SlackURL, ho.me.Thread, "原线程", "一个线程"),
+		WorkOrderTitle(ho.task), ho.me.Agent)
+}
+
 // finish runs the steps after the thread is open, each recorded under
 // `handoff:<id>`: the line in the caller's thread, the task to the new
 // thread's agent, the mention in the new thread, and the relation of the
-// two tickets. The line goes first, so the people in the caller's thread
+// two tickets; for another machine's thread only the line and the
+// mention, since fednet delivered the task with the thread and its ticket
+// is in that machine's ledger. The line goes first, so the people in the caller's thread
 // see where the work went while the new agent starts, and even when its
 // start fails, fednet refuses a mention or Linear fails.
 func (ho *handoff) finish(h *herdr.Herdr) (exit.Code, error) {
@@ -359,16 +457,18 @@ func (ho *handoff) finish(h *herdr.Herdr) (exit.Code, error) {
 	if err := runStep(ho.conn, key, "post", func() error { return fednet.Post(ho.cfg.FednetSocket, ho.me.Thread, line) }); err != nil {
 		return 0, again(err)
 	}
-	msg := inboundMessage{Thread: ho.to, Text: ho.task, Handoff: ho.me.Thread, By: ho.me.Agent}
-	err := runStep(ho.conn, key, "deliver", func() error {
-		code, err := handoffRoute(h, ho.conn, ho.me.Scope, ho.cfg, msg)
-		if err == nil && code != exit.Ok {
-			err = exit.New(code, fmt.Sprintf("the task did not reach the agent of thread %s (exit %d)", ho.to, code))
+	if !ho.remote {
+		msg := inboundMessage{Thread: ho.to, Text: ho.task, Handoff: ho.me.Thread, By: ho.me.Agent}
+		err := runStep(ho.conn, key, "deliver", func() error {
+			code, err := handoffRoute(h, ho.conn, ho.me.Scope, ho.cfg, msg)
+			if err == nil && code != exit.Ok {
+				err = exit.New(code, fmt.Sprintf("the task did not reach the agent of thread %s (exit %d)", ho.to, code))
+			}
+			return err
+		})
+		if err != nil {
+			return 0, again(err)
 		}
-		return err
-	})
-	if err != nil {
-		return 0, again(err)
 	}
 	if len(ho.mentions) > 0 {
 		err := runStep(ho.conn, key, "mention", func() error {
@@ -382,9 +482,15 @@ func (ho *handoff) finish(h *herdr.Herdr) (exit.Code, error) {
 			return 0, again(err)
 		}
 	}
-	related, err := ho.relate(key)
-	if err != nil {
-		return 0, again(err)
+	has := "its agent has the task"
+	related := "; its ticket is in the other machine's ledger, so the tickets are not related"
+	if ho.remote {
+		has = "fednet hands the task to the machine its channel is routed to"
+	} else {
+		var err error
+		if related, err = ho.relate(key); err != nil {
+			return 0, again(err)
+		}
 	}
 	if related == "" {
 		fmt.Fprintf(os.Stdout, "handed off to thread %s in #%s: its agent has the task, and your thread was told; "+
@@ -394,8 +500,8 @@ func (ho *handoff) finish(h *herdr.Herdr) (exit.Code, error) {
 	if _, err := ho.conn.Exec("UPDATE handoffs SET done_at = ?1 WHERE id = ?2", db.Now(), ho.id); err != nil {
 		return 0, exit.Database(err)
 	}
-	fmt.Fprintf(os.Stdout, "handed off to thread %s in #%s: its agent has the task, and your thread was told%s\n",
-		ho.to, ho.mapping, related)
+	fmt.Fprintf(os.Stdout, "handed off to thread %s in #%s: %s, and your thread was told%s\n",
+		ho.to, ho.mapping, has, related)
 	return exit.Ok, nil
 }
 
