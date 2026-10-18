@@ -66,7 +66,8 @@ const (
 		"Exit: 0 when the new thread's agent has the task (or had it already); 1 when the caller " +
 		"is not a live thread agent, a --mention is not a Slack user id (U or W, then capitals " +
 		"and digits), the file is unreadable or empty, the target is not one directory name " +
-		"(for --channel, not a Slack channel name), is routed to another machine, " +
+		"(for --channel, not a Slack channel name), is routed to another machine, has a name " +
+		"with neither of the scope's prefixes, " +
 		"is not checked out on this machine, or fleet knows no id of " +
 		"its channel, or the scope has no fednet socket (each before " +
 		"anything is recorded); 2/3/4 as `send` for the delivery; 3 when the new thread agent " +
@@ -252,7 +253,9 @@ type handoff struct {
 	done     bool
 }
 
-// begin refuses a target whose agents would not run on this machine,
+// begin refuses a target whose agents would not run on this machine (one
+// routed to another machine, one whose name the scope's prefixes do not
+// serve, one not checked out here),
 // its route read only while no thread is open for the handoff, and opens
 // that thread unless an earlier run did.
 func (ho *handoff) begin() error {
@@ -263,6 +266,10 @@ func (ho *handoff) begin() error {
 			return err
 		}
 		ho.routes = routes
+	}
+	if ChannelMapping(ho.cfg.Channels, ho.mapping, false) == "" {
+		return exit.Refusedf("fleet does not serve #%s on this machine: its name has neither of the scope's prefixes; "+
+			"nothing is recorded", ho.mapping)
 	}
 	if dir := MappingDir(ho.cfg, ho.mapping); !isDir(dir) {
 		return exit.Refusedf("#%s runs its agents in %s, which is not on this machine; nothing is recorded", ho.mapping, dir)

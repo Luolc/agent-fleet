@@ -434,6 +434,17 @@ func TestAHandoffToAChannelRoutedToAnotherMachineIsRefused(t *testing.T) {
 		!strings.Contains(err.Error(), "is not a Slack channel's name") {
 		t.Errorf("a channel with its #: %v", err)
 	}
+	if err := os.MkdirAll(filepath.Join(os.Getenv("HOME"), "dev", "example-unserved"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, "routes.json"),
+		[]byte(`{"routes":[{"channel":"C0UNS","name":"example-unserved"}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ThreadHandoff(nil, ThreadHandoffArgs{Channel: "example-unserved", File: task}); code(err) != exit.Refused ||
+		!strings.Contains(err.Error(), "fleet does not serve #example-unserved on this machine") {
+		t.Errorf("a channel without the scope's prefixes: %v", err)
+	}
 	if err := os.WriteFile(filepath.Join(bin, "routes-down"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
