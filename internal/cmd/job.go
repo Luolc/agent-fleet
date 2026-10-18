@@ -57,7 +57,7 @@ const (
 		"ledger row with no work orders.\n\n" +
 		"Checks, all before anything is created: the task file is readable and not empty; " +
 		"the names are valid (`<job>-lead` has at most 32 characters); the config is valid; " +
-		"with Linear on, the task's first non-empty line gives a title; no open job in this " +
+		"with Linear on, the task gives a title; no open job in this " +
 		"scope has the same name or, with --key, the same key (the job is named); no live " +
 		"lead has the same parent issue (the lead is named: talk to it instead); the lead's " +
 		"name is free in the ledger and in herdr; no workspace is labelled after the job and, " +
@@ -73,7 +73,9 @@ const (
 		"parent is created (--new-parent) and written onto both rows at once; the parent is " +
 		"claimed in the lead's name (`atb linear claim`, so Linear holds the same lock as the " +
 		"ledger); the lead's work order is created under the parent, titled with the task's " +
-		"first non-empty line without leading `#` (at most 80 characters) and described by " +
+		"title (its first line that is neither blank nor a heading of level 2 or deeper, " +
+		"without a leading `# `; for a task that opens with a card's JSON, the card's " +
+		"question; over 80 characters, cut to 79 and ended with `…`) and described by " +
 		"the task file, written onto the lead's row, and claimed in the lead's name; when the " +
 		"caller has a thread ticket (FLEET_ISSUE), it is related to the parent (`atb linear " +
 		"relate`). If an atb " +
@@ -365,7 +367,7 @@ func (c *jobChecked) repoAndLinear(args JobStartArgs) error {
 			config.Path(c.cwd))
 	case c.linear != nil:
 		if c.title = WorkOrderTitle(c.body); c.title == "" {
-			return exit.Refusedf("the task file's first non-empty line gives no title for the work order")
+			return exit.Refusedf("the task file gives no title for the work order: start it with `# <title>`")
 		}
 	}
 	return nil
