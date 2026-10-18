@@ -356,6 +356,52 @@ check "job end cross-repo: job ended as abandoned with its rows" "ended|abandone
   "$(ledger "SELECT state, outcome FROM jobs WHERE job = 'wire'")$(ledger "SELECT state FROM agents WHERE job = 'wire' ORDER BY id")"
 check "job end cross-repo: workspace and agents gone" "0 0" \
   "$("${S[@]}" workspace list | jq '[.result.workspaces[] | select(.label == "wire")] | length') $("${S[@]}" agent list | jq '[.result.agents[] | select(.name | startswith("wire-"))] | length')"
+# `job end --force` does the Linear steps of the reclaim itself: the
+# lead's and the live worker's work orders get a line and are released as
+# abandoned, the parent gets a line and is released with --restore. A
+# failed step does not stop the local reclaim; it is named, exit 5, and
+# the next reclaim does only that step.
+cat > /home/agent/fake-atb/atb <<'ATB'
+#!/bin/sh
+echo "$*" >> /home/agent/atb.log
+[ "$2" = comment ] && cat "$5" >> /home/agent/atb-bodies.log
+[ "$2 $3" = "$(cat /home/agent/atb-fail 2>/dev/null)" ] && { echo "error: refused: no holder" >&2; exit 4; }
+case "$2" in
+  query) echo '{"issue":{"team":{"key":"QT"},"project":{"name":"Queried project"}}}' ;;
+  create) case " $* " in *" --label lead "*) n=20 ;; *) n=21 ;; esac
+    echo "{\"identifier\":\"QT-$n\",\"url\":\"https://linear.example.test/QT-$n\"}" ;;
+esac
+exit 0
+ATB
+out=$(PATH=/home/agent/fake-atb:$PATH thr job start rec --parent-issue QT-19 --task-file "$(task rec 'Reclaimed job')" 2>&1); rc=$?
+check "job start rec: exit 0" 0 "$rc"
+[ "$rc" = 0 ] || printf '%s\n' "$out"
+settled rec-lead
+out=$(PATH=/home/agent/fake-atb:$PATH as rec-lead lead thread-1 rec -- spawn a --cwd /home/agent/x-repo/general/rec --task-file "$(task reca 'rec worker')" 2>&1); rc=$?
+check "spawn rec-a: exit 0" 0 "$rc"
+[ "$rc" = 0 ] || printf '%s\n' "$out"
+: > /home/agent/atb.log
+: > /home/agent/atb-bodies.log
+echo "release QT-19" > /home/agent/atb-fail
+out=$(PATH=/home/agent/fake-atb:$PATH thr job end rec --force 2>&1); rc=$?
+check "job end --force with Linear: exit 5 when the parent's release fails" 5 "$rc"
+has "job end --force with Linear: reclaimed, the failed step named" "$out" "reclaimed job rec: 0 left, 2 rows ended" \
+  "Linear steps not done for job rec:" "  - release parent QT-19 (agent rec-lead) with --restore: atb linear release QT-19 failed"
+check "job end --force with Linear: job abandoned, rows ended, workspace gone" "ended|abandoned ended ended 0" \
+  "$(ledger "SELECT state, outcome FROM jobs WHERE job = 'rec'")$(ledger "SELECT state FROM agents WHERE job = 'rec' ORDER BY id")$("${S[@]}" workspace list | jq '[.result.workspaces[] | select(.label == "rec")] | length')"
+check "job end --force with Linear: both work orders commented and released, then the parent" \
+  "linear comment QT-20 --body-file |linear release QT-20 --agent rec-lead --reason abandoned --abandon|linear comment QT-21 --body-file |linear release QT-21 --agent rec-a --reason abandoned --abandon|linear comment QT-19 --body-file |linear release QT-19 --agent rec-lead --reason job rec reclaimed --restore|" \
+  "$(sed 's|--body-file /tmp/.*|--body-file |' /home/agent/atb.log | tr '\n' '|')"
+has "job end --force with Linear: the line says who reclaimed it, without a report" "$(cat /home/agent/atb-bodies.log)" \
+  "Job rec was reclaimed by thread-1 with \`$T job end --force\`, without a report: rec-a ended with it." \
+  "without a report: abandoned."
+rm /home/agent/atb-fail
+: > /home/agent/atb.log
+out=$(PATH=/home/agent/fake-atb:$PATH thr job end rec --force 2>&1); rc=$?
+check "job end --force with Linear: exit 0 on the retry" 0 "$rc"
+[ "$rc" = 0 ] || printf '%s\n' "$out"
+check "job end --force with Linear: the retry only releases the parent" \
+  "linear release QT-19 --agent rec-lead --reason job rec reclaimed --restore|" "$(tr '\n' '|' < /home/agent/atb.log)"
 cat > /home/agent/fake-atb/atb <<'ATB'
 #!/bin/sh
 echo "$*" >> /home/agent/atb.log

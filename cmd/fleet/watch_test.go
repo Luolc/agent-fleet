@@ -925,9 +925,12 @@ func TestWatchEndsAJobWhoseLeadsQuestionGoesUnanswered(t *testing.T) {
 		t.Errorf("%s", got)
 	}
 	if got := w.log("fednet.log"); !strings.Contains(got, "-- Job k was ended by force: its lead's question had no answer for 3d00h, "+
-		"and the job was not ended within 30m of the lead being told. Linear steps not done: | - comment the report on work order EX-20 "+
-		"| - release work order EX-20 (agent k-lead) |") {
+		"and the job was not ended within 30m of the lead being told. |") {
 		t.Errorf("%s", got)
+	}
+	if got := w.log("atb.log"); !strings.Contains(got, "linear comment EX-20 --body-file F | "+
+		"linear release EX-20 --agent k-lead --reason abandoned --abandon |") {
+		t.Errorf("atb: %s", got)
 	}
 	if !strings.Contains(out.stdout, "reclaimed job k") {
 		t.Errorf("%s", out.stdout)

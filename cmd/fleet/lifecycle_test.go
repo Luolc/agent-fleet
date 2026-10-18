@@ -726,31 +726,90 @@ func TestJobEndRetriesAfterTheWorkspaceCloseFailed(t *testing.T) {
 	}
 }
 
-func TestJobEndForceFinishesLocallyAndReportsTheLinearStepsNotDone(t *testing.T) {
+func TestJobEndForceReleasesTheWorkOrdersAndTheParentItsRowsHeld(t *testing.T) {
 	w := newWorld(t)
 	openJobWithLead(w, "EX-10")
 	conn := w.ledger()
-	if _, err := conn.Exec("UPDATE agents SET issue = 'EX-12' WHERE name = 'item-1-lead'"); err != nil {
-		t.Fatal(err)
+	for _, stmt := range []string{
+		"UPDATE agents SET issue = 'EX-12' WHERE name = 'item-1-lead'",
+		// A live worker; one that `done` ended; one watch found gone and
+		// released, its row not yet ended.
+		"INSERT INTO agents (name, role, job, parent, state, started_at, issue) VALUES " +
+			"('item-1-a', 'worker', 'item-1', 'item-1-lead', 'active', 0, 'EX-13'), " +
+			"('item-1-b', 'worker', 'item-1', 'item-1-lead', 'ended', 0, 'EX-14'), " +
+			"('item-1-c', 'worker', 'item-1', 'item-1-lead', 'active', 0, 'EX-15')",
+		"INSERT INTO steps (key, step, done_at) SELECT 'watch-gone:' || id, 'release-work-order', 0 FROM agents WHERE name = 'item-1-c'",
+	} {
+		if _, err := conn.Exec(stmt); err != nil {
+			t.Fatal(err)
+		}
 	}
 	conn.Close()
-	report := task(w, "report.md", "what the job did\n")
-	// Nothing recorded yet: every Linear step is pending.
 	w.closeHerdr("")
+	// The parent's release fails: everything local is done all the same,
+	// and the failed step is named.
+	w.fakeAtb("release EX-10")
 	out := w.asThread("job", "end", "item-1", "--force")
-	if out.code != 0 {
+	if out.code != 5 || !strings.Contains(out.stdout, "reclaimed job item-1: 0 left, 3 rows ended\n") ||
+		!strings.Contains(out.stdout, "Linear steps not done for job item-1:\n  - release parent EX-10 (agent item-1-lead) with --restore: ") ||
+		!strings.Contains(out.stderr, "run `fleet job end item-1 --force` again") {
 		t.Fatalf("%+v", out)
 	}
-	want := "reclaimed job item-1: 0 left, 1 rows ended\nLinear steps not done for job item-1; finish them by hand:\n" +
-		"  - comment the report on work order EX-12\n  - release work order EX-12 (agent item-1-lead)\n" +
-		"  - comment the conclusion on parent EX-10\n  - release parent EX-10 (agent item-1-lead) with --restore\n"
-	if !strings.HasSuffix(out.stdout, want) {
-		t.Errorf("stdout = %q, want it to end with %q", out.stdout, want)
+	if got := jobState(w, "item-1"); got != "ended abandoned" {
+		t.Errorf("job state = %s", got)
 	}
-	// A second job: the lead's end stops at the parent's release, which
-	// keeps failing; the reclaim ends everything local and names only
-	// that step.
+	for _, name := range []string{"item-1-lead", "item-1-a", "item-1-c"} {
+		if got := state(w, name); got != "ended" {
+			t.Errorf("%s: state = %s", name, got)
+		}
+	}
+	var got []string
+	for _, line := range strings.Split(strings.TrimSpace(w.calls()), "\n") {
+		if strings.HasPrefix(line, "atb ") {
+			got = append(got, strings.SplitN(line, " --body-file", 2)[0])
+		}
+	}
+	want := []string{
+		"atb linear comment EX-12",
+		"atb linear release EX-12 --agent item-1-lead --reason abandoned --abandon key=unset",
+		"atb linear comment EX-13",
+		"atb linear release EX-13 --agent item-1-a --reason abandoned --abandon key=unset",
+		"atb linear comment EX-10",
+		"atb linear release EX-10 --agent item-1-lead --reason job item-1 reclaimed --restore key=unset",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("atb calls = %q, want %q", got, want)
+	}
+	if body := w.bodies(); !strings.Contains(body, "Job item-1 was reclaimed by thread-1 with `fleet job end --force`, "+
+		"without a report: item-1-a ended with it. Its work order is released as abandoned.\n") ||
+		!strings.Contains(body, "without a report: abandoned.\nLead: item-1-lead. Work order: EX-12.\n") {
+		t.Errorf("bodies = %q", body)
+	}
+	// Again: only the failed step is done.
+	w.fakeAtb("")
+	before := w.calls()
+	out = w.asThread("job", "end", "item-1", "--force")
+	if out.code != 0 || strings.Contains(out.stdout, "not done") {
+		t.Fatalf("again: %+v", out)
+	}
+	if retry := strings.TrimPrefix(w.calls(), before); !strings.HasSuffix(retry,
+		"atb linear release EX-10 --agent item-1-lead --reason job item-1 reclaimed --restore key=unset\n") ||
+		strings.Count(retry, "atb ") != 1 {
+		t.Errorf("retry's calls = %q", retry)
+	}
+	// Nothing left: no atb call.
+	before = w.calls()
+	if out := w.asThread("job", "end", "item-1", "--force"); out.code != 0 || strings.Contains(strings.TrimPrefix(w.calls(), before), "atb ") {
+		t.Errorf("third: %+v, calls %q", out, strings.TrimPrefix(w.calls(), before))
+	}
+}
+
+func TestJobEndForceContinuesTheLeadsOwnEnding(t *testing.T) {
+	w := newWorld(t)
 	openJobWithLead(w, "EX-10")
+	report := task(w, "report.md", "what the job did\n")
+	// The lead's end stops at the parent's release, which keeps failing;
+	// the reclaim does only that step.
 	w.jobEndHerdr()
 	w.fakeAtb("release EX-10")
 	for range 2 {
@@ -758,28 +817,21 @@ func TestJobEndForceFinishesLocallyAndReportsTheLinearStepsNotDone(t *testing.T)
 			t.Fatalf("lead: %+v", out)
 		}
 	}
-	out = w.asThread("job", "end", "item-1", "--force")
-	if out.code != 0 {
+	w.fakeAtb("")
+	before := w.calls()
+	out := w.asThread("job", "end", "item-1", "--force")
+	if out.code != 0 || !strings.Contains(out.stdout, "reclaimed job item-1: 0 left, 1 rows ended\n") {
 		t.Fatalf("force: %+v", out)
 	}
-	want = "reclaimed job item-1: 0 left, 1 rows ended\nLinear steps not done for job item-1; finish them by hand:\n" +
-		"  - release parent EX-10 (agent item-1-lead) with --restore\n"
-	if !strings.HasSuffix(out.stdout, want) || strings.Contains(out.stdout, "EX-12") {
-		t.Errorf("stdout = %q, want it to end with %q", out.stdout, want)
+	if got := strings.TrimPrefix(w.calls(), before); strings.Count(got, "atb ") != 1 ||
+		!strings.Contains(got, "atb linear release EX-10 --agent item-1-lead --reason job item-1 reclaimed --restore") {
+		t.Errorf("calls = %q", got)
 	}
 	if !strings.Contains(w.calls(), "herdr workspace close w1") {
 		t.Errorf("workspace not closed: %s", w.calls())
 	}
 	if got := jobState(w, "item-1"); got != "ended abandoned" {
 		t.Errorf("job state = %s", got)
-	}
-	if got := state(w, "item-1-lead"); got != "ended" {
-		t.Errorf("state = %s", got)
-	}
-	// Nothing left: a reclaim again has nothing to report.
-	out = w.asThread("job", "end", "item-1", "--force")
-	if out.code != 0 || strings.Contains(out.stdout, "Linear") {
-		t.Errorf("again: %+v", out)
 	}
 }
 

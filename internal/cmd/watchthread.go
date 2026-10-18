@@ -416,7 +416,7 @@ func (r *watchRun) leadQuestion(t *watchedThread, j *watchedJob, all []watched) 
 		return nil
 	}
 	askedAt := t.questions[i].askedAt
-	ended, pending, err := reclaimJob(r.h, r.conn, r.cfg, j.job)
+	ended, pending, err := reclaimJob(r.h, r.conn, r.cfg, j.job, "fleet watch")
 	if err != nil {
 		return err
 	}
