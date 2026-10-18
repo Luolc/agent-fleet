@@ -639,7 +639,7 @@ func reclaimLinear(conn *sql.DB, name, by string) ([]string, error) {
 	reclaimed := fmt.Sprintf("Job %s was reclaimed by %s with `fleet job end --force`, without a report", name, by)
 	for _, o := range orders {
 		line := fmt.Sprintf("%s: %s ended with it. Its work order is released as abandoned.\n", reclaimed, o.agent)
-		if try(o.key, "comment-work-order", "comment on work order "+o.issue, func() error { return commentText(o.issue, line) }) {
+		if o.commented || try(o.key, "comment-work-order", "comment on work order "+o.issue, func() error { return commentText(o.issue, line) }) {
 			try(o.key, "release-work-order", fmt.Sprintf("release work order %s (agent %s) as abandoned", o.issue, o.agent),
 				func() error { return atb.Release(o.issue, o.agent, true) })
 		}
@@ -659,7 +659,11 @@ func reclaimLinear(conn *sql.DB, name, by string) ([]string, error) {
 
 // heldOrder is a work order a reclaim releases: its issue, the agent
 // holding it, and the steps key its comment and release are recorded under.
-type heldOrder struct{ key, issue, agent string }
+type heldOrder struct {
+	key, issue, agent string
+	// commented is whether watch's gone rule already wrote its line.
+	commented bool
+}
 
 // reclaimedOrders are the lead of the job named `name` and its work order,
 // and the work orders the reclaim marked under `key` releases: the lead's,
@@ -673,13 +677,14 @@ func reclaimedOrders(conn *sql.DB, key, name string) (string, string, []heldOrde
 	}
 	var orders []heldOrder
 	if issue != "" {
-		orders = append(orders, heldOrder{key, issue, lead})
+		orders = append(orders, heldOrder{key: key, issue: issue, agent: lead})
 	}
-	err = eachRow(conn, "SELECT a.id, a.name, a.issue FROM agents a JOIN steps s ON s.key = ?1 AND "+
+	err = eachRow(conn, "SELECT a.id, a.name, a.issue, EXISTS (SELECT 1 FROM steps g WHERE g.key = 'watch-gone:' || a.id "+
+		"AND g.step = 'comment-work-order') FROM agents a JOIN steps s ON s.key = ?1 AND "+
 		"s.step = 'reclaim-worker:' || a.id ORDER BY a.id", func(rows *sql.Rows) error {
 		var id int64
 		var o heldOrder
-		if err := rows.Scan(&id, &o.agent, &o.issue); err != nil {
+		if err := rows.Scan(&id, &o.agent, &o.issue, &o.commented); err != nil {
 			return err
 		}
 		o.key = fmt.Sprintf("worker-end:%d", id)

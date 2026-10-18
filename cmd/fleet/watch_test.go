@@ -912,7 +912,15 @@ func TestWatchEndsAJobWhoseLeadsQuestionGoesUnanswered(t *testing.T) {
 	if got := w.query("SELECT state FROM jobs WHERE job = 'k'"); got != "open" {
 		t.Errorf("job k %s", got)
 	}
+	// Linear is down at the reclaim: the job is reclaimed all the same, and
+	// the thread is told how to retry the steps.
+	if err := os.WriteFile(filepath.Join(w.dir, "atb-down"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	out := w.watchAt(72*time.Hour+30*time.Minute, 0)
+	if err := os.Remove(filepath.Join(w.dir, "atb-down")); err != nil {
+		t.Fatal(err)
+	}
 	if got := w.query("SELECT state || ' ' || outcome FROM jobs WHERE job = 'k'"); got != "ended abandoned" {
 		t.Errorf("job k %s", got)
 	}
@@ -925,11 +933,11 @@ func TestWatchEndsAJobWhoseLeadsQuestionGoesUnanswered(t *testing.T) {
 		t.Errorf("%s", got)
 	}
 	if got := w.log("fednet.log"); !strings.Contains(got, "-- Job k was ended by force: its lead's question had no answer for 3d00h, "+
-		"and the job was not ended within 30m of the lead being told. |") {
+		"and the job was not ended within 30m of the lead being told. Linear steps not done; run `fleet job end k --force` "+
+		"again to retry them: | - comment on work order EX-20: ") {
 		t.Errorf("%s", got)
 	}
-	if got := w.log("atb.log"); !strings.Contains(got, "linear comment EX-20 --body-file F | "+
-		"linear release EX-20 --agent k-lead --reason abandoned --abandon |") {
+	if got := w.log("atb.log"); got != "linear comment EX-20 --body-file F |" {
 		t.Errorf("atb: %s", got)
 	}
 	if !strings.Contains(out.stdout, "reclaimed job k") {

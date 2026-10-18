@@ -804,6 +804,71 @@ func TestJobEndForceReleasesTheWorkOrdersAndTheParentItsRowsHeld(t *testing.T) {
 	}
 }
 
+// A worker's `done` releases its work order before delivering; with its
+// lead gone the delivery fails and the row stays live. Neither `done` again
+// nor the reclaim touches that work order again.
+func TestJobEndForceSkipsTheWorkOrderAWorkersDoneReleased(t *testing.T) {
+	w := newWorld(t)
+	openJobWithLead(w, "")
+	conn := w.ledger()
+	if _, err := conn.Exec("INSERT INTO agents (name, role, job, parent, state, started_at, issue) VALUES " +
+		"('item-1-a', 'worker', 'item-1', 'item-1-lead', 'active', 0, 'EX-7')"); err != nil {
+		t.Fatal(err)
+	}
+	conn.Close()
+	report := task(w, "report.md", "what I did\n")
+	w.herdr(`{"error":{"code":"agent_not_found","message":"no such agent"}}`, "", false)
+	w.fakeAtb("")
+	for range 2 {
+		if out := w.doneWithIssue("EX-7", "--report-file", report); out.code != 4 {
+			t.Fatalf("done: %+v", out)
+		}
+	}
+	if got := state(w, "item-1-a"); got != "active" {
+		t.Fatalf("state = %s", got)
+	}
+	if got := w.calls(); strings.Count(got, "atb linear comment EX-7") != 1 || strings.Count(got, "atb linear release EX-7") != 1 {
+		t.Errorf("done's calls = %q, want one comment and one release", got)
+	}
+	w.closeHerdr("")
+	before := w.calls()
+	out := w.asThread("job", "end", "item-1", "--force")
+	if out.code != 0 || !strings.Contains(out.stdout, "reclaimed job item-1: 0 left, 2 rows ended\n") {
+		t.Fatalf("force: %+v", out)
+	}
+	if got := strings.TrimPrefix(w.calls(), before); strings.Contains(got, "atb ") {
+		t.Errorf("the reclaim called atb: %q", got)
+	}
+}
+
+// A worker watch found gone whose line was written but whose release
+// failed gets no second line from the reclaim, only the release.
+func TestJobEndForceDoesNotRepeatWatchsGoneLine(t *testing.T) {
+	w := newWorld(t)
+	openJobWithLead(w, "")
+	conn := w.ledger()
+	for _, stmt := range []string{
+		"INSERT INTO agents (name, role, job, parent, state, started_at, issue) VALUES " +
+			"('item-1-a', 'worker', 'item-1', 'item-1-lead', 'active', 0, 'EX-7')",
+		"INSERT INTO steps (key, step, done_at) SELECT 'watch-gone:' || id, 'comment-work-order', 0 FROM agents WHERE name = 'item-1-a'",
+	} {
+		if _, err := conn.Exec(stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	conn.Close()
+	w.closeHerdr("")
+	w.fakeAtb("")
+	out := w.asThread("job", "end", "item-1", "--force")
+	if out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	if got := w.calls(); strings.Contains(got, "atb linear comment") ||
+		!strings.Contains(got, "atb linear release EX-7 --agent item-1-a --reason abandoned --abandon") {
+		t.Errorf("calls = %q", got)
+	}
+}
+
 func TestJobEndForceContinuesTheLeadsOwnEnding(t *testing.T) {
 	w := newWorld(t)
 	openJobWithLead(w, "EX-10")

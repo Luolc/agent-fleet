@@ -435,7 +435,8 @@ func (r *watchRun) leadQuestion(t *watchedThread, j *watchedJob, all []watched) 
 	text := fmt.Sprintf("Job %s was ended by force: its lead's question had no answer for %s, and the job was not "+
 		"ended within %s of the lead being told.", j.job, Duration(r.now-askedAt), Duration(leadGrace))
 	if len(pending) > 0 {
-		text += " Linear steps not done:\n- " + strings.Join(pending, "\n- ")
+		text += fmt.Sprintf(" Linear steps not done; run `fleet job end %s --force` again to retry them:\n- %s",
+			j.job, strings.Join(pending, "\n- "))
 	}
 	return fednet.Post(r.cfg.FednetSocket, t.key, text)
 }
