@@ -600,7 +600,7 @@ func askedIn(conn *sql.DB, me *identity.Identity) (thread, job string, row *jobR
 // question is.
 func openHomeThread(conn *sql.DB, cfg *config.Scope, row *jobRow) (string, error) {
 	tried := []string{jobMapping(cfg, row.Repo, row.LeadCwd), generalMapping(cfg.Channels)}
-	mapping, channel, err := channelOf(conn, cfg, tried...)
+	mapping, channel, err := channelOf(conn, cfg, nil, tried...)
 	if err != nil {
 		return "", err
 	}
@@ -633,13 +633,13 @@ func openHomeThread(conn *sql.DB, cfg *config.Scope, row *jobRow) (string, error
 // channelOf is the first of `mappings` whose channel id fleet knows, with
 // that id, or "" for both when it knows none. A channel's id is the one of
 // the newest thread this scope has seen there, or else the one fednet's
-// routes give the channel's name, read at most once; direct messages,
+// routes give the channel's name: `routes` when the caller read them, else
+// read here at most once; direct messages,
 // which have the general mapping too, are left out: their Slack ids start
 // with D, and no thread opens there. Routes fednet cannot give count as
 // naming no channel, with a line on stderr.
-func channelOf(conn *sql.DB, cfg *config.Scope, mappings ...string) (mapping, channel string, err error) {
-	var routes map[string]string
-	read := false
+func channelOf(conn *sql.DB, cfg *config.Scope, routes map[string]fednet.Route, mappings ...string) (mapping, channel string, err error) {
+	read := routes != nil
 	for _, mapping := range mappings {
 		err := conn.QueryRow("SELECT channel FROM threads WHERE mapping = ?1 AND channel != '' AND channel NOT LIKE 'D%' "+
 			"ORDER BY id DESC LIMIT 1", mapping).Scan(&channel)
@@ -655,7 +655,7 @@ func channelOf(conn *sql.DB, cfg *config.Scope, mappings ...string) (mapping, ch
 				fmt.Fprintf(os.Stderr, "fleet: %v; channel ids are taken from the ledger only\n", err)
 			}
 		}
-		if channel = routes[mapping]; channel != "" {
+		if channel = routes[mapping].Channel; channel != "" {
 			return mapping, channel, nil
 		}
 	}
