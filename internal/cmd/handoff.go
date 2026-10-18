@@ -373,15 +373,9 @@ func (ho *handoff) open() error {
 			"do not name it; fleet opens no channel and changes no route, so ask the people to have it routed to this "+
 			"machine; nothing is recorded", ho.mapping)
 	}
-	line := ho.openingLine()
-	text := line
-	if ho.remote {
-		text = line + "\n\n" + ho.task + "\n\n" + relaySignature(ho.me.Agent, ho.me.Thread)
-		if n := utf8.RuneCountInString(text); n > maxRemoteText {
-			return exit.Refusedf("#%s is routed to another machine, which gets the task in the new thread's first "+
-				"message: with fleet's lines it is %d characters, over fednet's %d; shorten the task or point to a "+
-				"file in a repo; nothing is recorded", ho.mapping, n, maxRemoteText)
-		}
+	text, err := ho.firstMessage()
+	if err != nil {
+		return err
 	}
 	if ho.id == 0 {
 		res, err := ho.conn.Exec("INSERT INTO handoffs (from_thread, by, mapping, task, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -418,6 +412,23 @@ func (ho *handoff) open() error {
 		}
 		return nil
 	})
+}
+
+// firstMessage is the new thread's first message: fleet's line, and for
+// another machine also the task and relaySignature, refused when longer
+// than fednet takes.
+func (ho *handoff) firstMessage() (string, error) {
+	line := ho.openingLine()
+	if !ho.remote {
+		return line, nil
+	}
+	text := line + "\n\n" + ho.task + "\n\n" + relaySignature(ho.me.Agent, ho.me.Thread)
+	if n := utf8.RuneCountInString(text); n > maxRemoteText {
+		return "", exit.Refusedf("#%s is routed to another machine, which gets the task in the new thread's first "+
+			"message: with fleet's lines it is %d characters, over fednet's %d; shorten the task or point to a "+
+			"file in a repo; nothing is recorded", ho.mapping, n, maxRemoteText)
+	}
+	return text, nil
 }
 
 // openingLine is fleet's line that opens the new thread: where the work

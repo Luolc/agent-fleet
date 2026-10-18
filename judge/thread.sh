@@ -922,7 +922,7 @@ has "handoff to another machine: says fednet hands the task over" "$out" \
   "handed off to thread C0HR/1700000500.000 in #data-example-remote" "fednet hands the task to the machine its channel is routed to"
 check "handoff to another machine: the thread is opened as the route's, from the caller's thread" 1 \
   "$(grep -c -- "-channel C0HR -owner route -from-thread $KH -- " /home/agent/fednet.log)"
-check "handoff to another machine: the task and the signed line are in its first message" "1 1" \
+check "handoff to another machine: its first message has the title in fleet's line, the task and the signed line" "2 1" \
   "$(grep -c 0xHAND4 /home/agent/fednet.log) $(grep -Fxc -- "— $AH · $KH" /home/agent/fednet.log)"
 check "handoff to another machine: no thread of this scope is recorded for it" "0 " \
   "$(tledger "SELECT count(*) FROM threads WHERE thread = 'C0HR/1700000500.000'")"

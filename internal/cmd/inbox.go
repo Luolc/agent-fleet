@@ -272,12 +272,8 @@ func Inbox(args InboxArgs) (exit.Code, error) {
 		fmt.Fprintf(os.Stdout, "message %s was already %s\n", e.MsgID, state)
 		return exit.Ok, nil
 	}
-	msg := inboundMessage{Thread: e.Payload.Thread, Text: e.Payload.Text, User: e.Payload.User, TS: e.Payload.TS,
-		Context: e.Payload.Context, Mapping: mapping}
-	if t := e.Payload.Trigger; t == relayHandoff || t == relayPost {
-		msg.Relay, msg.FromClient = t, e.Payload.FromClient
-		msg.RelayAgent, msg.RelayThread = relaySigned(msg.Text)
-	} else if err := answerByMessage(conn, msg.Thread); err != nil {
+	msg := inboxMessage(e, mapping)
+	if err := answerByMessage(conn, msg); err != nil {
 		return 0, err
 	}
 	code, dropped, err := route(h, conn, scope, cfg, msg)
@@ -294,12 +290,23 @@ func Inbox(args InboxArgs) (exit.Code, error) {
 	state = "delivered"
 	if dropped {
 		state = "dropped"
-	} else if msg.Relay == "" {
-		if err := recordLatest(conn, msg); err != nil {
-			return 0, err
-		}
+	} else if err := recordLatest(conn, msg); err != nil {
+		return 0, err
 	}
 	return exit.Ok, setMessage(conn, e.MsgID, state)
+}
+
+// inboxMessage is the event's message; one of trigger handoff or relay
+// carries the machine it came from and the agent and thread its signed
+// last line names.
+func inboxMessage(e *event, mapping string) inboundMessage {
+	msg := inboundMessage{Thread: e.Payload.Thread, Text: e.Payload.Text, User: e.Payload.User, TS: e.Payload.TS,
+		Context: e.Payload.Context, Mapping: mapping}
+	if t := e.Payload.Trigger; t == relayHandoff || t == relayPost {
+		msg.Relay, msg.FromClient = t, e.Payload.FromClient
+		msg.RelayAgent, msg.RelayThread = relaySigned(msg.Text)
+	}
+	return msg
 }
 
 // inboxReaction takes a reaction a person put on the root message of a
@@ -336,8 +343,12 @@ func inboxReaction(e *event) (exit.Code, error) {
 }
 
 // recordLatest writes the delivered message onto the thread's row as the
-// latest a person posted there, for `job start` to hand to the lead.
+// latest a person posted there, for `job start` to hand to the lead; a
+// relayed message, an agent's, is not written.
 func recordLatest(conn *sql.DB, msg inboundMessage) error {
+	if msg.Relay != "" {
+		return nil
+	}
 	if _, err := conn.Exec("UPDATE threads SET last_text = ?1, last_user = ?2, last_ts = ?3 WHERE thread = ?4",
 		msg.Text, msg.User, msg.TS, msg.Thread); err != nil {
 		return exit.Database(err)
@@ -447,8 +458,13 @@ func startThread(h *herdr.Herdr, conn *sql.DB, scope string, cfg *config.Scope, 
 // worker's, a screen's, watch's own at a watch's `max`, a thread
 // agent's), and a lead's whose job has ended (moved to the thread, its
 // lead gone), unless a card asks the people for it. Only a press answers
-// a card, and only the thread agent an open job's lead's question.
-func answerByMessage(conn *sql.DB, thread string) error {
+// a card, and only the thread agent an open job's lead's question. A
+// relayed message, an agent's, answers none.
+func answerByMessage(conn *sql.DB, msg inboundMessage) error {
+	if msg.Relay != "" {
+		return nil
+	}
+	thread := msg.Thread
 	var ids []any
 	err := eachRow(conn, "SELECT id, job, asked_by, card, job != '' AND NOT EXISTS (SELECT 1 FROM jobs j WHERE "+
 		"j.job = q.job AND j.state = 'open' AND j.started_at <= q.asked_at), EXISTS (SELECT 1 FROM questions c "+
