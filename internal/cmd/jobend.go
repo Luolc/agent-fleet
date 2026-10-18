@@ -617,28 +617,7 @@ func reclaimLinear(conn *sql.DB, name, by string) ([]string, error) {
 		return nil, err
 	}
 	key := endKey(job)
-	var lead, issue string
-	err = conn.QueryRow("SELECT name, issue FROM agents WHERE job = ?1 AND role = 'lead' ORDER BY id DESC LIMIT 1",
-		name).Scan(&lead, &issue)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return nil, exit.Database(err)
-	}
-	type held struct{ key, issue, agent string }
-	var orders []held
-	if issue != "" {
-		orders = append(orders, held{key, issue, lead})
-	}
-	err = eachRow(conn, "SELECT a.id, a.name, a.issue FROM agents a JOIN steps s ON s.key = ?1 AND "+
-		"s.step = 'reclaim-worker:' || a.id ORDER BY a.id", func(rows *sql.Rows) error {
-		var id int64
-		var h held
-		if err := rows.Scan(&id, &h.agent, &h.issue); err != nil {
-			return err
-		}
-		h.key = fmt.Sprintf("worker-end:%d", id)
-		orders = append(orders, h)
-		return nil
-	}, key)
+	lead, issue, orders, err := reclaimedOrders(conn, key, name)
 	if err != nil {
 		return nil, err
 	}
@@ -676,6 +655,38 @@ func reclaimLinear(conn *sql.DB, name, by string) ([]string, error) {
 		}
 	}
 	return failed, nil
+}
+
+// heldOrder is a work order a reclaim releases: its issue, the agent
+// holding it, and the steps key its comment and release are recorded under.
+type heldOrder struct{ key, issue, agent string }
+
+// reclaimedOrders are the lead of the job named `name` and its work order,
+// and the work orders the reclaim marked under `key` releases: the lead's,
+// then the marked workers'.
+func reclaimedOrders(conn *sql.DB, key, name string) (string, string, []heldOrder, error) {
+	var lead, issue string
+	err := conn.QueryRow("SELECT name, issue FROM agents WHERE job = ?1 AND role = 'lead' ORDER BY id DESC LIMIT 1",
+		name).Scan(&lead, &issue)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return "", "", nil, exit.Database(err)
+	}
+	var orders []heldOrder
+	if issue != "" {
+		orders = append(orders, heldOrder{key, issue, lead})
+	}
+	err = eachRow(conn, "SELECT a.id, a.name, a.issue FROM agents a JOIN steps s ON s.key = ?1 AND "+
+		"s.step = 'reclaim-worker:' || a.id ORDER BY a.id", func(rows *sql.Rows) error {
+		var id int64
+		var o heldOrder
+		if err := rows.Scan(&id, &o.agent, &o.issue); err != nil {
+			return err
+		}
+		o.key = fmt.Sprintf("worker-end:%d", id)
+		orders = append(orders, o)
+		return nil
+	}, key)
+	return lead, issue, orders, err
 }
 
 // forcedArgs refuses a reclaim without a job, with a report or --abandon,
