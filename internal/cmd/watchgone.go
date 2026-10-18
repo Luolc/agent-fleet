@@ -86,7 +86,8 @@ func confirmGone(all []watched, panes map[string]herdrPane) {
 // for goneSecs, and returns the others; one it could not end stays, its
 // failure the run's. A worker's work order gets a line saying it is gone
 // and is released as abandoned first, each step recorded, as `worker end`
-// does, and its lead, when in herdr, is told. A lead's job stays open: the
+// does, but for a step its `done` already recorded, and its lead, when in
+// herdr, is told. A lead's job stays open: the
 // agent of its home thread is told, once, since the row it is told about
 // is ended, and decides whether to end the job.
 func (r *watchRun) endGone(all []watched) []watched {
@@ -132,18 +133,26 @@ func (r *watchRun) endGoneWorker(w watched, all []watched) error {
 	if err := r.conn.QueryRow("SELECT issue FROM agents WHERE id = ?1", w.live.ID).Scan(&issue); err != nil {
 		return exit.Database(err)
 	}
+	// A `done` whose delivery failed leaves the row live with its steps
+	// recorded under `worker-end:<id>`; watch does not do those again.
+	ended := fmt.Sprintf("worker-end:%d", w.live.ID)
+	released := issue != "" && stepDone(r.conn, ended, "release-work-order")
 	if issue != "" {
 		key := fmt.Sprintf("watch-gone:%d", w.live.ID)
-		if err := runStep(r.conn, key, "comment-work-order", func() error {
-			return commentText(issue, fmt.Sprintf("%s was ended by fleet watch, without a report: %s. Its work order "+
-				"is released as abandoned.\n", name, r.goneFor(w)))
-		}); err != nil {
-			return err
+		if !stepDone(r.conn, ended, "comment-work-order") {
+			if err := runStep(r.conn, key, "comment-work-order", func() error {
+				return commentText(issue, fmt.Sprintf("%s was ended by fleet watch, without a report: %s. Its work "+
+					"order is released as abandoned.\n", name, r.goneFor(w)))
+			}); err != nil {
+				return err
+			}
 		}
-		if err := runStep(r.conn, key, "release-work-order", func() error {
-			return atb.Release(issue, name, true)
-		}); err != nil {
-			return err
+		if !released {
+			if err := runStep(r.conn, key, "release-work-order", func() error {
+				return atb.Release(issue, name, true)
+			}); err != nil {
+				return err
+			}
 		}
 	}
 	if err := r.endGoneRow(w); err != nil {
@@ -154,7 +163,9 @@ func (r *watchRun) endGoneWorker(w watched, all []watched) error {
 	}
 	text := fmt.Sprintf("fleet watch, rule `worker gone`: your worker %s is %s, so watch ended its row; do not "+
 		"wait for its `fleet done`.", name, r.goneFor(w))
-	if issue != "" {
+	if released {
+		text += fmt.Sprintf(" Its work order %s was already released by its `fleet done`.", issue)
+	} else if issue != "" {
 		text += fmt.Sprintf(" Its work order %s is released as abandoned.", issue)
 	}
 	text += " Its worktree and branch are left as they are.\n"
