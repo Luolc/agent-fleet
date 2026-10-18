@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -69,6 +70,57 @@ func TestAnAgentGoneFromHerdrIsEndedAfterTheGrace(t *testing.T) {
 	goneRun(t, r, t0+goneSecs)
 	if got := states(); got != "j-lead=ended j-w=ended j-new=starting" {
 		t.Errorf("past the grace: %s", got)
+	}
+	if r.code != 0 {
+		t.Errorf("exit %d", r.code)
+	}
+}
+
+// A gone worker whose `done` already commented on and released its work
+// order (recorded under `worker-end:<id>`, its delivery then failed) gets
+// neither again, which atb would refuse; one without those records gets
+// both.
+func TestAGoneWorkerSkipsTheStepsItsDoneRecorded(t *testing.T) {
+	bin := t.TempDir()
+	t.Setenv("TMPDIR", t.TempDir())
+	log := filepath.Join(bin, "atb.log")
+	script := "#!/bin/sh\necho \"$1 $2 $3\" >> " + log + "\n[ \"$2 $3\" = 'release EX-1' ] && exit 1\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(bin, "atb"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+":/usr/bin:/bin")
+	conn, err := db.OpenAt(filepath.Join(t.TempDir(), "main.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	const t0 int64 = 1700000000
+	if _, err := conn.Exec("INSERT INTO agents (id, name, role, job, parent, state, issue, started_at, last_status, last_change_at) VALUES "+
+		"(1, 'j-done', 'worker', 'j', 'j-lead', 'active', 'EX-1', ?1, 'idle', ?1), "+
+		"(2, 'j-w', 'worker', 'j', 'j-lead', 'active', 'EX-2', ?1, 'idle', ?1)", t0-3600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec("INSERT INTO steps (key, step, done_at) VALUES ('worker-end:1', 'comment-work-order', ?1), "+
+		"('worker-end:1', 'release-work-order', ?1)", t0-60); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.ParseScope([]byte(`{}`), "/home/u")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &watchRun{conn: conn, cfg: cfg}
+	goneRun(t, r, t0)
+	goneRun(t, r, t0+goneSecs)
+	var states string
+	if err := conn.QueryRow("SELECT group_concat(name || '=' || state, ' ') FROM (SELECT name, state FROM agents ORDER BY id)").
+		Scan(&states); err != nil {
+		t.Fatal(err)
+	}
+	if states != "j-done=ended j-w=ended" {
+		t.Errorf("rows: %s", states)
+	}
+	if got, _ := os.ReadFile(log); string(got) != "linear comment EX-2\nlinear release EX-2\n" {
+		t.Errorf("atb calls %q", got)
 	}
 	if r.code != 0 {
 		t.Errorf("exit %d", r.code)
