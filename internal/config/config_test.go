@@ -127,8 +127,32 @@ func TestTheLoadMultiplierDefaultsTo1AndMustBeAbove0(t *testing.T) {
 		`{"resources": {"load_multiplier": -1}}`:    "resources.load_multiplier: must be above 0",
 		`{"resources": {"load_multiplier": null}}`:  "resources.load_multiplier: must not be null",
 		`{"resources": {"load_multiplier": "1.5"}}`: "resources.load_multiplier: expected float64",
-		`{"resources": {}}`:                         "resources.load_multiplier: must be set when resources is",
+		`{"resources": {}}`:                         "resources: must set load_multiplier, min_available_mib or agent_mib",
 		`{"resources": null}`:                       "resources: must not be null",
+	} {
+		if _, err := ParseScope([]byte(body), "/home/u"); err == nil || !strings.Contains(err.Error(), says) {
+			t.Errorf("%s: %v, want it to say %s", body, err, says)
+		}
+	}
+}
+
+func TestTheMemoryFloorAndTheAgentsShareDefaultTo2048And512MiB(t *testing.T) {
+	for body, want := range map[string][3]float64{
+		`{}`:                                 {1, 2048, 512},
+		`{"resources": {"agent_mib": 1024}}`: {1, 2048, 1024},
+		`{"resources": {"min_available_mib": 0, "agent_mib": 0}}`:          {1, 0, 0},
+		`{"resources": {"load_multiplier": 2, "min_available_mib": 4096}}`: {2, 4096, 512},
+	} {
+		got, err := ParseScope([]byte(body), "/home/u")
+		if err != nil || got.LoadMultiplier != want[0] || float64(got.MinAvailableMiB) != want[1] || float64(got.AgentMiB) != want[2] {
+			t.Errorf("%s: %+v, %v", body, got, err)
+		}
+	}
+	for body, says := range map[string]string{
+		`{"resources": {"min_available_mib": -1}}`: "resources.min_available_mib: must be at least 0",
+		`{"resources": {"agent_mib": -512}}`:       "resources.agent_mib: must be at least 0",
+		`{"resources": {"agent_mib": 1.5}}`:        "resources.agent_mib",
+		`{"resources": {"agent_mib": null}}`:       "resources.agent_mib: must not be null",
 	} {
 		if _, err := ParseScope([]byte(body), "/home/u"); err == nil || !strings.Contains(err.Error(), says) {
 			t.Errorf("%s: %v, want it to say %s", body, err, says)

@@ -31,8 +31,6 @@ import (
 	"github.com/Luolc/agent-fleet/internal/identity"
 )
 
-const minAvailableKiB uint64 = 2 * 1024 * 1024
-
 // startTimeoutMS is how long `herdr agent start` may take, in ms.
 const startTimeoutMS = "30000"
 
@@ -468,9 +466,10 @@ func lines(text string) []string {
 }
 
 // CheckResources refuses unless the 1-minute load average is below `cpus`
-// times `multiplier` and MemAvailable is above 2 GiB; a `light` agent
-// skips the load. Inputs are the texts of /proc/loadavg and /proc/meminfo.
-func CheckResources(loadavg string, cpus int, multiplier float64, meminfo string, light bool) error {
+// times the scope's load multiplier and MemAvailable is at least its
+// floor plus one agent's share; a `light` agent skips the load. Inputs
+// are the texts of /proc/loadavg and /proc/meminfo.
+func CheckResources(loadavg string, cpus int, meminfo string, sc *config.Scope, light bool) error {
 	fields := strings.Fields(loadavg)
 	if len(fields) == 0 {
 		return exit.Environmentf("cannot parse /proc/loadavg")
@@ -498,13 +497,13 @@ func CheckResources(loadavg string, cpus int, multiplier float64, meminfo string
 	if !found {
 		return exit.Environmentf("cannot find MemAvailable in /proc/meminfo")
 	}
-	if limit := float64(cpus) * multiplier; !light && load >= limit {
+	if limit := float64(cpus) * sc.LoadMultiplier; !light && load >= limit {
 		return exit.Refusedf("the 1-minute load average is %s, not below %.4g (%d CPUs × load_multiplier %g); "+
-			"try again later", strconv.FormatFloat(load, 'f', -1, 64), limit, cpus, multiplier)
+			"try again later", strconv.FormatFloat(load, 'f', -1, 64), limit, cpus, sc.LoadMultiplier)
 	}
-	if availableKiB <= minAvailableKiB {
-		return exit.Refusedf("available memory is %d MiB, not above 2048 MiB; try again later",
-			availableKiB/1024)
+	if need := uint64(sc.MinAvailableMiB+sc.AgentMiB) * 1024; availableKiB < need {
+		return exit.Refusedf("available memory is %d MiB, below %d MiB (min_available_mib %d + agent_mib %d "+
+			"for the new agent); try again later", availableKiB/1024, need/1024, sc.MinAvailableMiB, sc.AgentMiB)
 	}
 	return nil
 }
@@ -513,7 +512,7 @@ func CheckResources(loadavg string, cpus int, multiplier float64, meminfo string
 // test can stand in for the machine. `runtime.NumCPU` honors the affinity
 // mask, not a cgroup CPU quota: in a container with a quota the load may
 // be compared with more CPUs than the quota allows.
-var machineResources = func(multiplier float64, light bool) error {
+var machineResources = func(sc *config.Scope, light bool) error {
 	loadavg, err := os.ReadFile("/proc/loadavg")
 	if err != nil {
 		return exit.IO(err)
@@ -522,16 +521,16 @@ var machineResources = func(multiplier float64, light bool) error {
 	if err != nil {
 		return exit.IO(err)
 	}
-	return CheckResources(string(loadavg), runtime.NumCPU(), multiplier, string(meminfo), light)
+	return CheckResources(string(loadavg), runtime.NumCPU(), string(meminfo), sc, light)
 }
 
-// resources is machineResources with the scope's load multiplier, unless
-// the repo's config turns the check off.
+// resources is machineResources with the scope's settings, unless the
+// repo's config turns the check off.
 func resources(cfg *config.Config, sc *config.Scope, light bool) error {
 	if !cfg.ResourceCheck {
 		return nil
 	}
-	return machineResources(sc.LoadMultiplier, light)
+	return machineResources(sc, light)
 }
 
 // CheckName refuses a name that is empty, has characters outside
@@ -637,6 +636,19 @@ func WorkspacesLabelled(h *herdr.Herdr, label string) ([]string, error) {
 		}
 	}
 	return ids, nil
+}
+
+// workspacePanes is how many panes herdr has in workspace `id`.
+func workspacePanes(h *herdr.Herdr, id string) (int, error) {
+	list, err := h.CallOK("pane", "list", "--workspace", id)
+	if err != nil {
+		return 0, err
+	}
+	panes, ok := herdr.Lookup(list, "panes").([]any)
+	if !ok {
+		return 0, exit.Environmentf("herdr pane list: no panes array in the reply")
+	}
+	return len(panes), nil
 }
 
 // HerdrAgentList is `herdr agent list`: every agent herdr knows in this
