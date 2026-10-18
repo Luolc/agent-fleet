@@ -27,8 +27,9 @@ const (
 		"report is written to the issue first (`atb linear comment`), the issue is released " +
 		"as done, or as abandoned with --abandon (`atb linear release`), and only then is " +
 		"the report delivered, naming the issue. If an atb step fails, nothing is delivered, " +
-		"the row stays live and `done` exits 5 naming the step; the comment may already be " +
-		"written.\n\n" +
+		"the row stays live and `done` exits 5 naming the step. Each step done is recorded " +
+		"under your live row, so running `done` again, or a `job end --force` of the job, does " +
+		"not repeat the comment or the release.\n\n" +
 		"When herdr reports the report as delivered, " +
 		"your row in the ledger is marked ended, so `fleet status` stops listing you as " +
 		"owing work, and then, as the last step, the tab of the pane your row records is " +
@@ -119,10 +120,7 @@ func Done(h *herdr.Herdr, args DoneArgs) (exit.Code, error) {
 		return 0, err
 	}
 	if me.Issue != "" {
-		if err := atb.Comment(me.Issue, *reportFile); err != nil {
-			return 0, err
-		}
-		if err := atb.Release(me.Issue, me.Agent, args.Abandon); err != nil {
+		if err := releaseOwnWorkOrder(conn, me, *reportFile, args.Abandon); err != nil {
 			return 0, err
 		}
 	}
@@ -151,4 +149,31 @@ func Done(h *herdr.Herdr, args DoneArgs) (exit.Code, error) {
 			"do not run `done` again: end your turn, and `fleet job end` closes the tab\n", err)
 	}
 	return code, nil
+}
+
+// releaseOwnWorkOrder writes the report to the caller's work order and
+// releases it, each step recorded under its live row's `worker-end:<id>`,
+// as `worker end` and a reclaim record theirs: a `done` run again after a
+// failed delivery, or a reclaim of its job, does not repeat them. Without
+// a live row there is nothing to record them under.
+func releaseOwnWorkOrder(conn *sql.DB, me *identity.Identity, report string, abandon bool) error {
+	comment := func() error { return atb.Comment(me.Issue, report) }
+	release := func() error { return atb.Release(me.Issue, me.Agent, abandon) }
+	var id int64
+	err := conn.QueryRow("SELECT id FROM agents WHERE name = ?1 AND state != 'ended' ORDER BY id DESC LIMIT 1",
+		me.Agent).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		if err := comment(); err != nil {
+			return err
+		}
+		return release()
+	}
+	if err != nil {
+		return exit.Database(err)
+	}
+	key := fmt.Sprintf("worker-end:%d", id)
+	if err := runStep(conn, key, "comment-work-order", comment); err != nil {
+		return err
+	}
+	return runStep(conn, key, "release-work-order", release)
 }

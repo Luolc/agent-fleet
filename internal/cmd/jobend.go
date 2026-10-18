@@ -54,12 +54,16 @@ const (
 		"(the line the job's home thread will receive once threads exist), and last the " +
 		"workspace is closed, which ends your own pane.\n\n" +
 		"`job end <JOB> --force` reclaims a job from outside: a thread agent, or a shell with " +
-		"no FLEET_ROLE. No report, no Linear step. It closes the job's workspace, removes the " +
+		"no FLEET_ROLE. No report. It closes the job's workspace, removes the " +
 		"job's directories with the same checks (no agent inside, no uncommitted changes), and " +
 		"ends every live row of the job; an open job is marked ended with the outcome " +
-		"`abandoned`, and the Linear steps of its ending that are not recorded as done are " +
-		"printed for a person to finish. Parts already gone are skipped, so it can be run " +
-		"again.\n\n" +
+		"`abandoned`. Then the Linear steps, each recorded: the lead's work order and each " +
+		"work order a live worker held get a line naming who reclaimed the job, without a " +
+		"report, and are released as abandoned; the parent gets the same line and fleet's " +
+		"claim on it is released with --restore. A step the lead's `job end`, `worker end` or " +
+		"watch already did is not done again. A failed Linear step does not stop the reclaim: " +
+		"the steps not done are listed and the exit is 5. Parts already gone are skipped, so " +
+		"it can be run again, and a second run does only the Linear steps not yet done.\n\n" +
 		"Exit: 0 when the job ended; 1 when a check refuses (live workers, the caller, the " +
 		"report file, the flags, --close-parent on a job without a parent issue); 5 when atb, git, herdr or the database fails, the scope has " +
 		"no ledger, or something is left (listed)."
@@ -520,25 +524,28 @@ func jobEndForced(h *herdr.Herdr, args JobEndArgs) (exit.Code, error) {
 		return 0, err
 	}
 	defer conn.Close()
-	ended, pending, err := reclaimJob(h, conn, sc, job)
+	ended, failed, err := reclaimJob(h, conn, sc, job, callerName())
 	if err != nil {
 		return 0, err
 	}
 	fmt.Fprintf(os.Stdout, "reclaimed job %s: 0 left, %d rows ended\n", job, ended)
-	if len(pending) > 0 {
-		fmt.Fprintf(os.Stdout, "Linear steps not done for job %s; finish them by hand:\n", job)
-		for _, step := range pending {
+	if len(failed) > 0 {
+		fmt.Fprintf(os.Stdout, "Linear steps not done for job %s:\n", job)
+		for _, step := range failed {
 			fmt.Fprintf(os.Stdout, "  - %s\n", step)
 		}
+		return 0, exit.Environmentf("%d Linear steps of job %s failed; run `fleet job end %s --force` again to retry them",
+			len(failed), job, job)
 	}
 	return exit.Ok, nil
 }
 
-// reclaimJob closes the job's workspaces, removes its directories, and
-// ends it as abandoned with its live rows: the reclaim of `job end
-// --force`, which `watch` also runs. It returns the rows ended and the
-// Linear steps of the ending not recorded.
-func reclaimJob(h *herdr.Herdr, conn *sql.DB, sc *config.Scope, job string) (int64, []string, error) {
+// reclaimJob closes the job's workspaces, removes its directories, ends it
+// as abandoned with its live rows, then does the Linear steps of the
+// reclaim (reclaimLinear): the reclaim of `job end --force`, which `watch`
+// also runs, `by` naming who reclaims. It returns the rows ended and the
+// Linear steps that failed, which a later reclaim retries.
+func reclaimJob(h *herdr.Herdr, conn *sql.DB, sc *config.Scope, job, by string) (int64, []string, error) {
 	open, err := openJob(conn, job)
 	if err != nil {
 		return 0, nil, err
@@ -561,9 +568,10 @@ func reclaimJob(h *herdr.Herdr, conn *sql.DB, sc *config.Scope, job string) (int
 	if len(left) > 0 {
 		return 0, nil, exit.Environmentf("%d left after reclaiming %s: %s", len(left), job, strings.Join(left, ", "))
 	}
-	pending, err := linearPending(conn, open, job)
-	if err != nil {
-		return 0, nil, err
+	if open != nil {
+		if err := markReclaimed(conn, open); err != nil {
+			return 0, nil, err
+		}
 	}
 	ended, err := endJob(conn, job, "abandoned")
 	if err != nil {
@@ -572,38 +580,118 @@ func reclaimJob(h *herdr.Herdr, conn *sql.DB, sc *config.Scope, job string) (int
 	if open != nil {
 		markThread(conn, sc.FednetSocket, open.HomeThread)
 	}
-	return ended, pending, nil
+	failed, err := reclaimLinear(conn, job, by)
+	return ended, failed, err
 }
 
-// linearPending are the Linear steps of the ending of `open` (the open
-// job named `name`, nil when none) that are not recorded: the lead's work
-// order commented and released, the parent commented and released.
-func linearPending(conn *sql.DB, open *jobRow, name string) ([]string, error) {
-	if open == nil {
-		return nil, nil
+// markReclaimed records, before its rows are ended, that the reclaim
+// ends `open`, and which of its live workers hold a work order the
+// reclaim releases: not one whose release watch recorded when it found
+// the worker gone. A retry after the rows are ended finds them by these
+// records.
+func markReclaimed(conn *sql.DB, open *jobRow) error {
+	key, now := endKey(open), db.Now()
+	if _, err := conn.Exec("INSERT OR IGNORE INTO steps (key, step, done_at) VALUES (?1, 'reclaim', ?2)", key, now); err != nil {
+		return exit.Database(err)
 	}
+	_, err := conn.Exec("INSERT OR IGNORE INTO steps (key, step, done_at) SELECT ?1, 'reclaim-worker:' || a.id, ?2 "+
+		"FROM agents a WHERE a.job = ?3 AND a.role = 'worker' AND a.state != 'ended' AND a.issue != '' AND NOT EXISTS "+
+		"(SELECT 1 FROM steps s WHERE s.key = 'watch-gone:' || a.id AND s.step = 'release-work-order')",
+		key, now, open.Job)
+	return dbErr(err)
+}
+
+// reclaimLinear does the Linear steps of the reclaim of the newest job
+// named `name`, when a reclaim marked it (markReclaimed): the lead's work
+// order and each marked worker's get a line saying who reclaimed the job,
+// without a report, and are released as abandoned; the parent gets the
+// same line and fleet's claim on it is released with --restore, as an
+// abandoned `job end` does. Each step is recorded under the key the
+// lead's `job end` or `worker end` uses for it, so one either of them, or
+// an earlier reclaim, did is not done again. A failed step does not stop
+// the others, but an issue's release waits for its comment; the failures
+// are returned.
+func reclaimLinear(conn *sql.DB, name, by string) ([]string, error) {
+	job, err := latestJob(conn, name)
+	if err != nil || job == nil || !stepDone(conn, endKey(job), "reclaim") {
+		return nil, err
+	}
+	key := endKey(job)
+	lead, issue, orders, err := reclaimedOrders(conn, key, name)
+	if err != nil {
+		return nil, err
+	}
+	var failed []string
+	try := func(key, step, what string, do func() error) bool {
+		err := runStep(conn, key, step, func() error {
+			if err := do(); err != nil {
+				return err
+			}
+			fmt.Fprintf(os.Stdout, "Linear: %s\n", what)
+			return nil
+		})
+		if err != nil {
+			failed = append(failed, fmt.Sprintf("%s: %v", what, err))
+			atb.WriteStderr(os.Stderr, err)
+		}
+		return err == nil
+	}
+	reclaimed := fmt.Sprintf("Job %s was reclaimed by %s with `fleet job end --force`, without a report", name, by)
+	for _, o := range orders {
+		line := fmt.Sprintf("%s: %s ended with it. Its work order is released as abandoned.\n", reclaimed, o.agent)
+		if o.commented || try(o.key, "comment-work-order", "comment on work order "+o.issue, func() error { return commentText(o.issue, line) }) {
+			try(o.key, "release-work-order", fmt.Sprintf("release work order %s (agent %s) as abandoned", o.issue, o.agent),
+				func() error { return atb.Release(o.issue, o.agent, true) })
+		}
+	}
+	if job.ParentIssue != "" {
+		line := fmt.Sprintf("%s: abandoned.\nLead: %s.", reclaimed, lead)
+		if issue != "" {
+			line += " Work order: " + issue + "."
+		}
+		if try(key, "comment-parent", "comment on parent "+job.ParentIssue, func() error { return commentText(job.ParentIssue, line+"\n") }) {
+			try(key, "release-parent", fmt.Sprintf("release parent %s (agent %s) with --restore", job.ParentIssue, lead),
+				func() error { return atb.ReleaseRestore(job.ParentIssue, lead, "job "+name+" reclaimed") })
+		}
+	}
+	return failed, nil
+}
+
+// heldOrder is a work order a reclaim releases: its issue, the agent
+// holding it, and the steps key its comment and release are recorded under.
+type heldOrder struct {
+	key, issue, agent string
+	// commented is whether watch's gone rule already wrote its line.
+	commented bool
+}
+
+// reclaimedOrders are the lead of the job named `name` and its work order,
+// and the work orders the reclaim marked under `key` releases: the lead's,
+// then the marked workers'.
+func reclaimedOrders(conn *sql.DB, key, name string) (string, string, []heldOrder, error) {
 	var lead, issue string
 	err := conn.QueryRow("SELECT name, issue FROM agents WHERE job = ?1 AND role = 'lead' ORDER BY id DESC LIMIT 1",
 		name).Scan(&lead, &issue)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return nil, exit.Database(err)
+		return "", "", nil, exit.Database(err)
 	}
-	key := endKey(open)
-	var pending []string
-	add := func(step, text string) {
-		if !stepDone(conn, key, step) {
-			pending = append(pending, text)
-		}
-	}
+	var orders []heldOrder
 	if issue != "" {
-		add("comment-work-order", fmt.Sprintf("comment the report on work order %s", issue))
-		add("release-work-order", fmt.Sprintf("release work order %s (agent %s)", issue, lead))
+		orders = append(orders, heldOrder{key: key, issue: issue, agent: lead})
 	}
-	if open.ParentIssue != "" {
-		add("comment-parent", fmt.Sprintf("comment the conclusion on parent %s", open.ParentIssue))
-		add("release-parent", fmt.Sprintf("release parent %s (agent %s) with --restore", open.ParentIssue, lead))
-	}
-	return pending, nil
+	err = eachRow(conn, "SELECT a.id, a.name, a.issue, EXISTS (SELECT 1 FROM steps g WHERE g.key = 'watch-gone:' || a.id "+
+		"AND g.step = 'comment-work-order') FROM agents a JOIN steps s ON s.key = ?1 AND "+
+		"s.step = 'reclaim-worker:' || a.id ORDER BY a.id", func(rows *sql.Rows) error {
+		var id int64
+		var o heldOrder
+		if err := rows.Scan(&id, &o.agent, &o.issue, &o.commented); err != nil {
+			return err
+		}
+		o.key = fmt.Sprintf("worker-end:%d", id)
+		orders = append(orders, o)
+		return nil
+	}, key)
+	return lead, issue, orders, err
 }
 
 // forcedArgs refuses a reclaim without a job, with a report or --abandon,
