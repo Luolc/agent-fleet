@@ -38,12 +38,13 @@ const (
 		"The steps: fleet records the handoff (table `handoffs`), opens a thread in the target " +
 		"channel with `fednet client open-thread`, its first message fleet's one line naming your " +
 		"channel (`<#<id>>`, which Slack shows as a link), your thread, the task's first line and " +
-		"you, and records it as a thread of that channel. Then " +
-		"it starts a thread agent there, as `fleet inbox` starts one (a thread ticket created and " +
-		"claimed for it, when the scope has a Linear team), whose first message, headed `[FROM: " +
-		"<you>]`, is `[HANDOFF from <you> in thread <your thread>]` and the task: an agent's " +
-		"words, never recorded as the latest message a person posted there. Then it posts one " +
-		"line to your thread, `已转到 <#<id>> 的[新线程](<link>)`; with --mention, it posts " +
+		"you, and records it as a thread of that channel. Then it posts one line to your thread, " +
+		"`已转到 <#<id>> 的[新线程](<link>)`, so your thread shows where the work went before " +
+		"the new agent is up. Then it starts a thread agent there, as `fleet inbox` starts one " +
+		"(a thread ticket created and claimed for it, when the scope has a Linear team), whose " +
+		"first message, headed `[FROM: <you>]`, is `[HANDOFF from <you> in thread <your " +
+		"thread>]` and the task: an agent's words, never recorded as the latest message a " +
+		"person posted there. Then, with --mention, it posts " +
 		"`你要求的转交在这里` in the new thread, mentioning each user given (fednet puts the " +
 		"mentions first, so Slack notifies them and the notice leads into the new thread); and " +
 		"it relates the two threads' " +
@@ -279,13 +280,18 @@ func (ho *handoff) open() error {
 }
 
 // finish runs the steps after the thread is open, each recorded under
-// `handoff:<id>`: the task to the new thread's agent, the line in the
-// caller's thread, the mention in the new thread, and the relation of the
-// two tickets. The line goes before the mention and the relation, so the
-// people see the handoff even while fednet refuses a mention or Linear
-// fails.
+// `handoff:<id>`: the line in the caller's thread, the task to the new
+// thread's agent, the mention in the new thread, and the relation of the
+// two tickets. The line goes first, so the people in the caller's thread
+// see where the work went while the new agent starts, and even when its
+// start fails, fednet refuses a mention or Linear fails.
 func (ho *handoff) finish(h *herdr.Herdr) (exit.Code, error) {
 	key := fmt.Sprintf("handoff:%d", ho.id)
+	channel, _, _ := strings.Cut(ho.to, "/")
+	line := fmt.Sprintf("已转到 <#%s> 的%s", channel, threadLink(ho.cfg.SlackURL, ho.to, "新线程", "一个新线程"))
+	if err := runStep(ho.conn, key, "post", func() error { return fednet.Post(ho.cfg.FednetSocket, ho.me.Thread, line) }); err != nil {
+		return 0, again(err)
+	}
 	msg := inboundMessage{Thread: ho.to, Text: ho.task, Handoff: ho.me.Thread, By: ho.me.Agent}
 	err := runStep(ho.conn, key, "deliver", func() error {
 		code, err := handoffRoute(h, ho.conn, ho.me.Scope, ho.cfg, msg)
@@ -295,11 +301,6 @@ func (ho *handoff) finish(h *herdr.Herdr) (exit.Code, error) {
 		return err
 	})
 	if err != nil {
-		return 0, again(err)
-	}
-	channel, _, _ := strings.Cut(ho.to, "/")
-	line := fmt.Sprintf("已转到 <#%s> 的%s", channel, threadLink(ho.cfg.SlackURL, ho.to, "新线程", "一个新线程"))
-	if err := runStep(ho.conn, key, "post", func() error { return fednet.Post(ho.cfg.FednetSocket, ho.me.Thread, line) }); err != nil {
 		return 0, again(err)
 	}
 	if len(ho.mentions) > 0 {
