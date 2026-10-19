@@ -328,7 +328,7 @@ func TestInboxStartsAThreadAgentForANewThreadWithItsTicket(t *testing.T) {
 	for _, want := range []string{"[FROM: inbox]\nYou are a thread agent",
 		"which belongs to repo-example-dataset (scope main). You run in " + cwd + ".",
 		"a single-repo job in example-dataset (`fleet job start <job> --repo example-dataset ...`)",
-		"read the `## Fleet` section of ~/dev/<R>/AGENTS.md",
+		"read the rules in ~/dev/<R>/AGENTS.md (and AGENTS.override.md",
 		"post only with `fleet thread post`", "FLEET_ISSUE=TH-5 (your thread ticket, https://linear.example.test/TH-5)",
 		"`fleet thread post --body-file <file> [--attach <path>]...` posts the file's text to your thread", "## Channel context\n\nThe data channel\n",
 		"## The message\n\nMessage in thread " + threadKey + " from U0ABC at 1700000001.000:\n\nPlease import the A table\n"} {

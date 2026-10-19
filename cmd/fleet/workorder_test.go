@@ -1254,7 +1254,7 @@ func TestJobStartFindsAnInitiativesRepoInItsCheckout(t *testing.T) {
 	}
 	argv, _ := os.ReadFile(filepath.Join(w.dir, "argv"))
 	for _, want := range []string{"its repo is x-repo-example-init, main checkout ~/x-repo/example-init;",
-		"read the `## Fleet` section of ~/x-repo/example-init/AGENTS.md", "opens a thread in the channel #x-repo-example-init,"} {
+		"read the rules in ~/x-repo/example-init/AGENTS.md (and ~/x-repo/example-init/AGENTS.override.md", "opens a thread in the channel #x-repo-example-init,"} {
 		if !strings.Contains(string(argv), want) {
 			t.Errorf("delivered argv = %q, want %q in it", argv, want)
 		}

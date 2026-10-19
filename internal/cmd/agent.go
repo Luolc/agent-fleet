@@ -903,14 +903,14 @@ func roleSlots(sc *config.Scope, id *identity.Identity, cwd, repo, leadCwd strin
 		checkout := sc.Tilde(leadCwd)
 		repoLine = fmt.Sprintf("The job is single-repo: its repo is %s, main checkout %s; `<repo>` below is %s.",
 			repo, checkout, repo)
-		agentsMD = fmt.Sprintf("Before anything else, read the `## Fleet` section of %s/AGENTS.md and follow it.", checkout)
+		agentsMD = fmt.Sprintf("Before anything else, read the rules in %s, and follow them.", repoRules(checkout))
 	} else {
 		root := filepath.Dir(leadCwd)
 		initiative := sc.Channels.InitiativePrefix + filepath.Base(root)
 		repoLine = fmt.Sprintf("The job is cross-repo: it runs inside the checkout of the initiative %s (%s); "+
 			"`<repo>` below is the repo a task names, main checkout %s/<repo>.", initiative, root, checkouts)
-		agentsMD = fmt.Sprintf("Before anything else, read %s (the initiative's charter), then the `## Fleet` section "+
-			"of %s/<R>/AGENTS.md of every repo R the job touches, and follow them.", filepath.Join(root, "AGENTS.md"), checkouts)
+		agentsMD = fmt.Sprintf("Before anything else, read %s (the initiative's charter), then the rules in %s "+
+			"of every repo R the job touches, and follow them.", filepath.Join(root, "AGENTS.md"), repoRules(checkouts+"/<R>"))
 	}
 	slots := map[string]string{"job": id.Job, "scope": id.Scope, "agent": id.Agent, "parent": id.Parent,
 		"lead": id.Parent, "one_task": fmt.Sprintf("one task in the job %s (scope %s), for your lead %s", id.Job, id.Scope,
@@ -919,6 +919,12 @@ func roleSlots(sc *config.Scope, id *identity.Identity, cwd, repo, leadCwd strin
 		"scratch": sc.Tilde(jobScratch(sc, repo, leadCwd))}
 	maps.Copy(slots, modelValues(sc))
 	return slots
+}
+
+// repoRules names the files that hold the rules of the repo checked out
+// at `checkout`, whether its AGENTS.md is compiled or written by hand.
+func repoRules(checkout string) string {
+	return fmt.Sprintf("%[1]s/AGENTS.md (and %[1]s/AGENTS.override.md and %[1]s/CLAUDE.local.md where present)", checkout)
 }
 
 // jobScratch is the directory for the files of a job's agents, their
