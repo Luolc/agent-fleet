@@ -6,7 +6,8 @@
 // has none, `ask` and `ask-close` for a thread agent's question cards,
 // `react` for the status emoji on a thread's root message, and `whoami`,
 // `open-thread -owner route` and `post -deliver` for the work and reports
-// thread agents pass to another machine.
+// thread agents pass to another machine; `threads` for the threads of a
+// channel, whichever machine owns them.
 package fednet
 
 import (
@@ -193,6 +194,43 @@ func Channels(socket string) (map[string]Route, error) {
 		}
 	}
 	return routes, nil
+}
+
+// ChannelThread is a thread the hub records in a channel: its key
+// `CHANNEL/TS`, the fednet client that owns it, and when it started (RFC
+// 3339, UTC).
+type ChannelThread struct {
+	Thread    string `json:"thread"`
+	Owner     string `json:"owner"`
+	StartedAt string `json:"started_at"`
+}
+
+// Threads is the threads the hub records in a channel (its id), newest
+// first (`fednet client threads -json`), at most `limit` of them, or
+// fednet's default when it is 0. A channel without threads gives none. A
+// fednet that fails (a client or hub older than v0.10.0, whose stderr
+// says which to upgrade), or answers with what is not its JSON, is an
+// environment failure.
+func Threads(socket, channel string, limit int) ([]ChannelThread, error) {
+	const op = "fednet client threads"
+	args := []string{"client", "threads", "-socket", socket, "-channel", channel, "-json"}
+	if limit > 0 {
+		args = append(args, "-limit", strconv.Itoa(limit))
+	}
+	stdout, stderr, code, err := relay(op, args)
+	if err == nil && code != 0 {
+		err = exit.Environmentf("%s failed (exit status: %d): %s", op, code, firstLine(stderr))
+	}
+	if err != nil {
+		return nil, err
+	}
+	var reply struct {
+		Threads []ChannelThread `json:"channel_threads"`
+	}
+	if err := json.Unmarshal(stdout, &reply); err != nil {
+		return nil, exit.Environmentf("%s: not a JSON reply: %v", op, err)
+	}
+	return reply.Threads, nil
 }
 
 // Whoami is this machine's fednet client id (`fednet client whoami

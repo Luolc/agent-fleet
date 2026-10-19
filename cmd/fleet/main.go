@@ -103,6 +103,7 @@ Commands:
   set-project  ` + cmd.ThreadSetProjectAbout + `
   relate       ` + cmd.ThreadRelateAbout + `
   handoff      ` + cmd.ThreadHandoffAbout + `
+  list         ` + cmd.ThreadListAbout + `
 
 Options:
   -h, --help  Print help
@@ -179,6 +180,17 @@ Options:
       --mention <USER>           A Slack user id to mention in the new thread, when that person asked for the handoff; repeatable
       --scope <NAME>             ` + scopeHelp + `
   -h, --help                     Print help
+`
+
+const threadListUsage = "Usage: fleet thread list [OPTIONS] --channel <CHANNEL>"
+
+var threadListHelp = cmd.ThreadListLongAbout + "\n\n" + threadListUsage + `
+
+Options:
+      --channel <CHANNEL>  The channel, by its name without the #
+      --limit <N>          At most N threads, the newest; fednet's default without it
+      --scope <NAME>       ` + scopeHelp + `
+  -h, --help               Print help
 `
 
 const askHumanUsage = "Usage: fleet ask-human [OPTIONS] (--card <PATH> [--for <ID>] | --close <ID> [--note <TEXT>])"
@@ -635,7 +647,7 @@ func runInbox(args []string, scope *cliargs.OptString) (exit.Code, error) {
 }
 
 var threadHelps = map[string]string{"post": threadPostHelp, "progress": threadProgressHelp, "end": threadEndHelp,
-	"set-project": threadSetProjectHelp, "relate": threadRelateHelp, "handoff": threadHandoffHelp}
+	"set-project": threadSetProjectHelp, "relate": threadRelateHelp, "handoff": threadHandoffHelp, "list": threadListHelp}
 
 // runThread dispatches `fleet thread <COMMAND>`.
 func runThread(args []string, scope *cliargs.OptString) (exit.Code, error) {
@@ -689,6 +701,8 @@ func runThread(args []string, scope *cliargs.OptString) (exit.Code, error) {
 		return cmd.ThreadRelate(got[0])
 	case "handoff":
 		return runThreadHandoff(args[1:], scope)
+	case "list":
+		return runThreadList(args[1:], scope)
 	default:
 		return 0, &usageError{fmt.Sprintf("unrecognized subcommand '%s'", args[0]), threadUsage}
 	}
@@ -720,6 +734,28 @@ func runThreadHandoff(args []string, scope *cliargs.OptString) (exit.Code, error
 	}
 	return cmd.ThreadHandoff(h, cmd.ThreadHandoffArgs{Repo: repo.Value, Initiative: initiative.Value, Channel: channel.Value,
 		File: file.Value, Mentions: mention.Values})
+}
+
+func runThreadList(args []string, scope *cliargs.OptString) (exit.Code, error) {
+	fs := flagSet("thread list", scope)
+	channel := cliargs.OptString{Name: "channel", Placeholder: "CHANNEL"}
+	limit := cliargs.OptString{Name: "limit", Placeholder: "N"}
+	fs.Var(&channel, "channel", "The channel, by its name")
+	fs.Var(&limit, "limit", "At most N threads")
+	_, helped, err := parse(fs, args, threadListHelp, threadListUsage, nil, &channel)
+	if err != nil || helped {
+		return exit.Ok, err
+	}
+	n := 0
+	if limit.Given {
+		if n, err = strconv.Atoi(limit.Value); err != nil || n < 1 {
+			return 0, &usageError{fmt.Sprintf("--limit %q is not a positive number", limit.Value), threadListUsage}
+		}
+	}
+	if _, err := scoped(scope); err != nil {
+		return 0, err
+	}
+	return cmd.ThreadList(cmd.ThreadListArgs{Channel: channel.Value, Limit: n})
 }
 
 func runThreadPost(args []string, scope *cliargs.OptString) (exit.Code, error) {
