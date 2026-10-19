@@ -4,7 +4,7 @@ statute = "0.1.25"
 
 [constitution]
 git = "https://github.com/Luolc/agent-constitution"
-commit = "186e8deac508c129b37bcfc2869bc79993939d53"
+commit = "8f299d9927635d1d3e9885cea86d5c3f37a7a008"
 edition = "2026-10"
 revision = "4"
 
@@ -12,7 +12,7 @@ revision = "4"
 name = "R"
 git = "https://github.com/Luolc/agent-constitution"
 branch = "main"
-commit = "186e8deac508c129b37bcfc2869bc79993939d53"
+commit = "8f299d9927635d1d3e9885cea86d5c3f37a7a008"
 
 [[rules]]
 rule = "R1"
