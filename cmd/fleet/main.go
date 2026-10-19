@@ -20,7 +20,7 @@ import (
 )
 
 // version is the fleet release version.
-const version = "0.2.9"
+const version = "0.2.10"
 
 const longAbout = "Runs and coordinates coding agents through herdr.\n\n" +
 	"A thread agent starts a job (`fleet job start`): its lead, which starts workers " +
