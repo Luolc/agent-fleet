@@ -1,5 +1,5 @@
 # Sourced by inside.sh: `inbox`, `thread post`, `thread end`, `thread
-# set-project`, `thread relate`, `thread handoff`, `ask-human` and `ask-thread` against the real herdr, with
+# set-project`, `thread relate`, `thread handoff`, `thread list`, `ask-human` and `ask-thread` against the real herdr, with
 # a fake atb and a fake fednet that log their arguments. Threads use the
 # scope `main` (a message without a scope): its ledger and the herdr session
 # fleet-main.
@@ -46,8 +46,8 @@ ATB
 # /home/agent/fednet-down exists; `ask` posts card-<n>, n the ref's id;
 # `routes` names #repo-example-target (C0HD), #repo-example-plain
 # (C0HP) and #data-example-remote (C0HR, routed to another machine),
-# `whoami` names this machine judge-here, and `open-thread` opens
-# <channel>/1700000500.000.
+# `whoami` names this machine judge-here, `open-thread` opens
+# <channel>/1700000500.000, and `threads` lists two threads of C0HR.
 cat > /home/agent/fake-thread/fednet <<'FEDNET'
 #!/bin/sh
 [ "$2" = react ] && { echo "$*" >> /home/agent/react.log; exit 0; }
@@ -57,6 +57,7 @@ echo "$*" >> /home/agent/fednet.log
 [ "$2" = routes ] && { echo '{"routes":[{"channel":"C0HD","name":"repo-example-target"},{"channel":"C0HP","name":"repo-example-plain"},{"channel":"C0HR","machine":"judge-elsewhere","name":"data-example-remote"}]}'; exit 0; }
 [ "$2" = whoami ] && { echo '{"text":"judge-here"}'; exit 0; }
 [ "$2" = open-thread ] && { echo "$6/1700000500.000"; exit 0; }
+[ "$2" = threads ] && [ "$6" = C0HR ] && { echo '{"channel_threads":[{"thread":"C0HR/1700000700.000","owner":"judge-elsewhere","started_at":"2023-11-14T22:38:20Z"},{"thread":"C0HR/1700000500.000","owner":"judge-elsewhere","started_at":"2023-11-14T22:35:00Z"}]}'; exit 0; }
 echo m-posted
 FEDNET
 # A herdr shim that kills the hook (its parent) at `pane rename` while
@@ -935,3 +936,13 @@ has "relay: the thread's agent gets it headed by the other machine's agent" "$(r
 check "relay: not recorded as the latest message from a person" 0 \
   "$(tledger "SELECT count(*) FROM threads WHERE thread = '$KH' AND last_text LIKE '%0xRELAY1%'" | tr -d ' ')"
 rm -f /home/agent/next-ticket
+
+# Any caller lists a channel's threads by its name, whichever machine owns
+# them.
+: > /home/agent/fednet.log
+out=$(PATH=/home/agent/fake-thread:$PATH env "${P}SCOPE=main" "$T" thread list --channel data-example-remote 2>&1); rc=$?
+check "thread list: exit 0 and one line per thread, newest first" \
+  "0 C0HR/1700000700.000	judge-elsewhere	2023-11-14T22:38:20Z|C0HR/1700000500.000	judge-elsewhere	2023-11-14T22:35:00Z" \
+  "$rc $(echo "$out" | tr '\n' '|' | sed 's/|$//')"
+check "thread list: asks fednet for the threads of the channel's id" 1 \
+  "$(grep -c -- "^client threads -socket /home/agent/fednet.sock -channel C0HR -json$" /home/agent/fednet.log)"

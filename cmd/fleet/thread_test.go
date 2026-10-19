@@ -1,7 +1,7 @@
-// Integration tests for `inbox`, `thread end`, `thread set-project` and
-// `thread relate` against a fake herdr, a fake atb and a fake fednet,
-// all logging their calls to <dir>/calls in order. Hermetic, see
-// main_test.go; the real herdr runs them in the judge.
+// Integration tests for `inbox`, `thread end`, `thread set-project`,
+// `thread relate` and `thread list` against a fake herdr, a fake atb and
+// a fake fednet, all logging their calls to <dir>/calls in order.
+// Hermetic, see main_test.go; the real herdr runs them in the judge.
 package main
 
 import (
@@ -116,7 +116,9 @@ exit 0
 // <dir>/reacts and failing while <dir>/react-down exists; every call fails
 // while <dir>/fednet-down exists; `open-thread` prints the key of a new
 // thread in the channel it is given; `routes` prints <dir>/routes.json,
-// or no routes without it; `ask` keeps the card in <dir>/card.json and
+// or no routes without it; `threads` prints <dir>/threads.json, or no
+// threads without it, and fails as fednet does against an older hub
+// while <dir>/old-hub exists; `ask` keeps the card in <dir>/card.json and
 // prints card-<n>, n the ref's id, as
 // fednet's JSON, or refuses the card (exit 2) while <dir>/card-refused
 // exists; `ask-close` prints nothing.
@@ -131,6 +133,10 @@ echo "fednet $*" >> "$dir/calls"
 [ -e "$dir/fednet-down" ] && { echo "post: hub unreachable" >&2; exit 4; }
 [ "$2" = open-thread ] && { echo "$6/1700000099.000"; exit 0; }
 [ "$2" = routes ] && { cat "$dir/routes.json" 2>/dev/null || echo '{}'; exit 0; }
+if [ "$2" = threads ]; then
+  [ -e "$dir/old-hub" ] && { echo "fednet: the hub runs an older fednet than this client; upgrade the hub" >&2; exit 2; }
+  cat "$dir/threads.json" 2>/dev/null || echo '{}'; exit 0
+fi
 if [ "$2" = ask ]; then
   [ -e "$dir/card-refused" ] && { echo "fednet: fednet client ask: options: 6, over the limit of 5" >&2; exit 2; }
   n="${8#*:}"; cp "${10}" "$dir/card.json"
@@ -1984,5 +1990,48 @@ func TestThreadPostDeliverPostsToTheGivenThreadSigned(t *testing.T) {
 	}
 	if w.calls() != "" {
 		t.Errorf("a refusal called out: %q", w.calls())
+	}
+}
+
+func TestThreadListPrintsTheThreadsOfTheNamedChannel(t *testing.T) {
+	w := threadWorld(t, "")
+	task(w, "routes.json", `{"routes":[{"channel":"C0456","machine":"workstation","name":"repo-other"},`+
+		`{"channel":"C0789","machine":"laptop","name":"repo-example-dataset"}]}`)
+	task(w, "threads.json", `{"channel_threads":[`+
+		`{"thread":"C0789/1700000200.000","owner":"laptop","channel_name":"repo-example-dataset","started_at":"2023-11-14T22:16:40Z"},`+
+		`{"thread":"C0789/1700000100.000","owner":"workstation","started_at":"2023-11-14T22:15:00Z"}]}`)
+	out := w.run("", []string{"thread", "list", "--channel", "repo-example-dataset", "--limit", "5"})
+	want := "C0789/1700000200.000\tlaptop\t2023-11-14T22:16:40Z\nC0789/1700000100.000\tworkstation\t2023-11-14T22:15:00Z\n"
+	if out.code != 0 || out.stdout != want {
+		t.Fatalf("list: %+v", out)
+	}
+	if calls := w.calls(); calls != "fednet client routes -socket /run/fednet.sock -json\n"+
+		"fednet client threads -socket /run/fednet.sock -channel C0789 -json -limit 5\n" {
+		t.Errorf("calls: %q", calls)
+	}
+
+	// A channel without threads: fednet leaves the field out.
+	_ = os.Remove(filepath.Join(w.dir, "threads.json"))
+	if out := w.run("", []string{"thread", "list", "--channel", "repo-other"}); out.code != 0 || out.stdout != "" {
+		t.Errorf("no threads: %+v", out)
+	}
+}
+
+func TestThreadListRefusesAnUnknownChannelAndFailsOnAnOlderHub(t *testing.T) {
+	w := threadWorld(t, "")
+	task(w, "routes.json", `{"routes":[{"channel":"C0456","name":"repo-other"}]}`)
+	out := w.run("", []string{"thread", "list", "--channel", "repo-missing"})
+	if out.code != 1 || !strings.Contains(out.stderr, "no channel #repo-missing; the channels they name: repo-other") ||
+		strings.Contains(w.calls(), "client threads") {
+		t.Errorf("unknown channel: %+v", out)
+	}
+
+	// An older hub is a failure, never an empty channel.
+	if err := os.WriteFile(filepath.Join(w.dir, "old-hub"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out = w.run("", []string{"thread", "list", "--channel", "repo-other"})
+	if out.code != 5 || out.stdout != "" || !strings.Contains(out.stderr, "upgrade the hub") {
+		t.Errorf("older hub: %+v", out)
 	}
 }

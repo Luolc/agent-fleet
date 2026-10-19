@@ -1,7 +1,8 @@
 // Thread agents: the name a thread's agent gets, the `threads` workspace,
 // starting a thread agent for a message (`fleet inbox` does it), and the
 // commands a thread agent runs on its own thread: `fleet thread post`,
-// `progress`, `end`, `set-project` and `relate`.
+// `progress`, `end`, `set-project` and `relate`. `handoff` and `list` have
+// files of their own.
 
 package cmd
 
@@ -33,7 +34,7 @@ import (
 // ThreadAbout, ThreadEndAbout and the others are the help texts of
 // `thread` and its subcommands.
 const (
-	ThreadAbout         = "What a thread agent does to its own thread: post to it, show its progress, end the session, set the ticket's project, relate an issue, hand work off"
+	ThreadAbout         = "What a thread agent does to its own thread: post to it, show its progress, end the session, set the ticket's project, relate an issue, hand work off; and list a channel's threads"
 	ThreadPostAbout     = "Post to your thread in Slack (thread agents only)"
 	ThreadPostLongAbout = "Post to your thread in Slack (thread agents only).\n\n" +
 		"With --deliver --thread <THREAD>, the text goes to that thread instead, typically the one work was handed off " +
