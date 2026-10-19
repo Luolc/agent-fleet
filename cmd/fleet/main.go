@@ -108,7 +108,7 @@ Options:
   -h, --help  Print help
 `
 
-const threadPostUsage = "Usage: fleet thread post [OPTIONS] --body-file <PATH>\n       fleet thread post [OPTIONS] --deliver --thread <KEY> --body-file <PATH>"
+const threadPostUsage = "Usage: fleet thread post [OPTIONS] --body-file <PATH>\n       fleet thread post [OPTIONS] --deliver --thread <THREAD> --body-file <PATH>"
 
 var threadPostHelp = cmd.ThreadPostLongAbout + "\n\n" + threadPostUsage + `
 
@@ -116,7 +116,7 @@ Options:
       --body-file <PATH>  The text to post, standard Markdown, at most 100 KiB
       --attach <PATH>     A file to upload with the text, passed to fednet as -file; repeatable
       --deliver           Post to the thread --thread names and deliver the text to the machine that owns it
-      --thread <KEY>      With --deliver, the thread to post to, CHANNEL/TS
+      --thread <THREAD>   With --deliver, the thread to post to: CHANNEL/TS, or a Slack link to a message in it
       --scope <NAME>      ` + scopeHelp + `
   -h, --help              Print help
 `
@@ -727,7 +727,7 @@ func runThreadPost(args []string, scope *cliargs.OptString) (exit.Code, error) {
 	body := cliargs.OptString{Name: "body-file", Placeholder: "PATH"}
 	var attach cliargs.Strings
 	deliver := cliargs.Bool{Name: "deliver"}
-	thread := cliargs.OptString{Name: "thread", Placeholder: "KEY"}
+	thread := cliargs.OptString{Name: "thread", Placeholder: "THREAD"}
 	fs.Var(&body, "body-file", "The text to post")
 	fs.Var(&attach, "attach", "A file to upload with the text")
 	fs.Var(&deliver, "deliver", "Post to another thread and deliver the text to the machine that owns it")
@@ -737,15 +737,21 @@ func runThreadPost(args []string, scope *cliargs.OptString) (exit.Code, error) {
 		return exit.Ok, err
 	}
 	if deliver.Value != thread.Given {
-		return 0, &usageError{"--deliver and --thread <KEY> go together", threadPostUsage}
+		return 0, &usageError{"--deliver and --thread <THREAD> go together", threadPostUsage}
 	}
 	if deliver.Value && len(attach.Values) > 0 {
 		return 0, &usageError{"--deliver takes no --attach", threadPostUsage}
 	}
+	key, ok := cmd.ThreadKeyOf(thread.Value)
+	if thread.Given && !ok {
+		return 0, &usageError{fmt.Sprintf("--thread %q is neither a thread key CHANNEL/TS, such as C012AB3CD/1700000000.000100, "+
+			"nor a Slack link to a message, such as https://<workspace>.slack.com/archives/C012AB3CD/p1700000000000100", thread.Value),
+			threadPostUsage}
+	}
 	if _, err := scoped(scope); err != nil {
 		return 0, err
 	}
-	return cmd.ThreadPost(cmd.ThreadPostArgs{BodyFile: body.Value, Attach: attach.Values, Thread: thread.Value})
+	return cmd.ThreadPost(cmd.ThreadPostArgs{BodyFile: body.Value, Attach: attach.Values, Thread: key})
 }
 
 func runThreadProgress(args []string, scope *cliargs.OptString) (exit.Code, error) {

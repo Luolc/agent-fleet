@@ -1955,6 +1955,14 @@ func TestThreadPostDeliverPostsToTheGivenThreadSigned(t *testing.T) {
 		t.Errorf("calls = %q", got)
 	}
 	_ = os.Remove(filepath.Join(w.dir, "calls"))
+	link := "https://ws.example.test/archives/C0B/p1700000020000200?thread_ts=1700000009.000&cid=C0B"
+	if out := w.asThreadAgent("TH-5", "thread", "post", "--deliver", "--thread", link, "--body-file", body); out.code != 0 {
+		t.Errorf("post to a link: %+v", out)
+	}
+	if got := w.calls(); !strings.HasPrefix(got, "fednet client post -socket /run/fednet.sock -thread C0B/1700000009.000 -deliver -- ") {
+		t.Errorf("calls for a link = %q", got)
+	}
+	_ = os.Remove(filepath.Join(w.dir, "calls"))
 	for _, c := range []struct {
 		label string
 		out   result
@@ -1963,10 +1971,15 @@ func TestThreadPostDeliverPostsToTheGivenThreadSigned(t *testing.T) {
 		{"--thread alone", w.asThreadAgent("TH-5", "thread", "post", "--thread", "C0B/1700000009.000", "--body-file", body)},
 		{"--attach", w.asThreadAgent("TH-5", "thread", "post", "--deliver", "--thread", "C0B/1700000009.000", "--attach", "a.png", "--body-file", body)},
 		{"not a key", w.asThreadAgent("TH-5", "thread", "post", "--deliver", "--thread", "repo-x", "--body-file", body)},
+		{"a link without the channel", w.asThreadAgent("TH-5", "thread", "post", "--deliver", "--thread",
+			"https://ws.example.test/archives/p1700000009000100", "--body-file", body)},
 		{"a thread of this machine", w.asThreadAgent("TH-5", "thread", "post", "--deliver", "--thread", threadKey, "--body-file", body)},
 	} {
 		if c.out.code != 1 {
 			t.Errorf("%s: %+v", c.label, c.out)
+		}
+		if strings.HasPrefix(c.label, "a link") && !strings.Contains(c.out.stderr, "nor a Slack link to a message") {
+			t.Errorf("%s: stderr = %q", c.label, c.out.stderr)
 		}
 	}
 	if w.calls() != "" {
