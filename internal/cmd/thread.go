@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -35,8 +36,9 @@ const (
 	ThreadAbout         = "What a thread agent does to its own thread: post to it, show its progress, end the session, set the ticket's project, relate an issue, hand work off"
 	ThreadPostAbout     = "Post to your thread in Slack (thread agents only)"
 	ThreadPostLongAbout = "Post to your thread in Slack (thread agents only).\n\n" +
-		"With --deliver --thread <KEY>, the text goes to that thread instead, typically the one work was handed off " +
-		"from on another machine, with `fednet client post -deliver`: fednet posts it there and delivers it to the " +
+		"With --deliver --thread <THREAD>, the text goes to that thread instead, typically the one work was handed off " +
+		"from on another machine; <THREAD> is its key `CHANNEL/TS` or a Slack link to a message in it (the thread is the " +
+		"link's `thread_ts`, or the linked message when it has none). It is sent with `fednet client post -deliver`: fednet posts it there and delivers it to the " +
 		"machine that owns the thread, as a message of trigger `relay` (nothing when this machine owns it). fleet adds " +
 		"one last line, `— <your name> · <your thread>`, which the receiving fleet shows as who it is from and where to " +
 		"answer; it is a label you give, only the machine is checked. fednet refuses (exit 3) when its relay list does not " +
@@ -973,9 +975,38 @@ type ThreadPostArgs struct {
 	BodyFile string
 	// Attach are the files to upload with it, as fednet's `-file`.
 	Attach []string
-	// Thread, given with --deliver, is the thread to post to instead of
+	// Thread, given with --deliver, is the key of the thread to post to instead of
 	// the caller's, the text also delivered to the machine that owns it.
 	Thread string
+}
+
+// slackLink is the path of a Slack message link, /archives/<CHANNEL>/p<TS
+// without its dot>.
+var slackLink = regexp.MustCompile(`^/archives/([A-Z0-9]+)/p([0-9]{7,})$`)
+
+// ThreadKeyOf is the thread key `s` names, a key CHANNEL/TS as it is or a
+// Slack link to a message, and false when it is neither. A link to a reply
+// carries its thread's TS as `thread_ts`; one without it is to the thread's
+// first message, whose TS is the `p` segment with a dot before its last six
+// digits. Only the path and the query are read, not the host.
+func ThreadKeyOf(s string) (string, bool) {
+	if threadKey.MatchString(s) {
+		return s, true
+	}
+	u, err := url.Parse(s)
+	if err != nil {
+		return "", false
+	}
+	m := slackLink.FindStringSubmatch(u.Path)
+	if m == nil {
+		return "", false
+	}
+	ts := u.Query().Get("thread_ts")
+	if ts == "" {
+		ts = m[2][:len(m[2])-6] + "." + m[2][len(m[2])-6:]
+	}
+	key := m[1] + "/" + ts
+	return key, threadKey.MatchString(key)
 }
 
 // ThreadPost runs `thread post`: the thread comes from the caller's live
@@ -1006,9 +1037,6 @@ func ThreadPost(args ThreadPostArgs) (exit.Code, error) {
 		return 0, err
 	}
 	if args.Thread != "" {
-		if !threadKey.MatchString(args.Thread) {
-			return 0, exit.Refusedf("--thread %q is not a thread key, CHANNEL/TS such as C012AB3CD/1700000000.000100", args.Thread)
-		}
 		if err := notOurs(me.Scope, args.Thread); err != nil {
 			return 0, err
 		}

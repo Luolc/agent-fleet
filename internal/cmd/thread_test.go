@@ -42,3 +42,29 @@ func TestWithoutLeadingMentionsDropsOnlyTheMentionsAtTheStart(t *testing.T) {
 		}
 	}
 }
+
+func TestThreadKeyOfTakesAKeyOrASlackLink(t *testing.T) {
+	for in, want := range map[string]string{
+		"C0B/1700000009.000100": "C0B/1700000009.000100",
+		"https://ws.example.test/archives/C0B/p1700000020000200?thread_ts=1700000009.000100&cid=C0B": "C0B/1700000009.000100",
+		"https://ws.example.test/archives/C0B/p1700000009000100":                                     "C0B/1700000009.000100",
+	} {
+		if got, ok := ThreadKeyOf(in); got != want || !ok {
+			t.Errorf("ThreadKeyOf(%q) = %q, %v, want %q", in, got, ok, want)
+		}
+	}
+	for _, in := range []string{
+		"repo-x",
+		"C0B",
+		"https://ws.example.test/archives/C0B",
+		"https://ws.example.test/archives/p1700000009000100",
+		"https://ws.example.test/archives/C0B/1700000009000100",
+		"https://ws.example.test/archives/C0B/p17000x0009000100",
+		"https://ws.example.test/archives/C0B/p1700000009000100?thread_ts=soon",
+		"https://ws.example.test/team/C0B/p1700000009000100",
+	} {
+		if got, ok := ThreadKeyOf(in); ok {
+			t.Errorf("ThreadKeyOf(%q) = %q, want none", in, got)
+		}
+	}
+}
