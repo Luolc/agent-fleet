@@ -1,10 +1,10 @@
 # Written by statute from statute.toml; do not edit by hand.
 
-statute = "0.1.25"
+statute = "0.1.29"
 
 [constitution]
 git = "https://github.com/Luolc/agent-constitution"
-commit = "938f76a1b927e960b06764e3a17153c97d273441"
+commit = "573a5c312a95502018a67f963aca86a7377d565c"
 edition = "2026-10"
 revision = "4"
 
@@ -12,7 +12,7 @@ revision = "4"
 name = "R"
 git = "https://github.com/Luolc/agent-constitution"
 branch = "main"
-commit = "938f76a1b927e960b06764e3a17153c97d273441"
+commit = "573a5c312a95502018a67f963aca86a7377d565c"
 
 [[rules]]
 rule = "R1"
@@ -518,13 +518,6 @@ rule = "R171"
 revision = 3
 sha256 = "8af578b73faf10165e838c3ae93eddd2e57e5c7635fd2d1631a7d7f3ccba3734"
 original-sha256 = "e8c530716d3d89ac97aabf3ca9d6823320cab5605ef3cf4561d1f644a8c863af"
-by = "default"
-
-[[rules]]
-rule = "R172"
-revision = 3
-sha256 = "cafa5dbdcafe204ce7d18e0fb85e27c1e68303e76bf5378b3e819475e15fa770"
-original-sha256 = "9fd97238cec2607ae37db3adc78498f7919003758577505cbabb550db1b47ca9"
 by = "default"
 
 [[rules]]
@@ -1076,6 +1069,27 @@ rule = "R354"
 revision = 1
 sha256 = "af3f650d0cc3b248ac78d6a9320eec51eac7cd2fc95f926294e7249a62a7dc5f"
 original-sha256 = "053a6c2d0dc38320fb4daafe61b69e8d6abe4b0d921b62759860eea8155ec0e9"
+by = "default"
+
+[[rules]]
+rule = "R355"
+revision = 1
+sha256 = "094582cd6105121cfb2dd2b1ffd441c74a13bcac250425d81714efbd69d31a66"
+original-sha256 = "bef0ac03de70d0d8a1970ca937c4e242bf52a8edb3427bb1537aafd31a0c1147"
+by = "default"
+
+[[rules]]
+rule = "R356"
+revision = 1
+sha256 = "db62fea255c3e359dc3a1e00d9712e350d85b819a82e8a7f34ab3ebd0b2b7ec7"
+original-sha256 = "6d9810672044c8b332575a27b58fbc760f03ec34af796608e1534bb05323f132"
+by = "default"
+
+[[rules]]
+rule = "R357"
+revision = 1
+sha256 = "eb5012e29d7baa0f19c70fc1bec1ec8e09c1279ed90cede4d731ce0b26b615f0"
+original-sha256 = "c3c7f072c2629c246816bc787f468519e9a457fd7bc5972619b4a0e495d6e70c"
 by = "default"
 
 [[rules]]
