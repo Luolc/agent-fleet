@@ -398,30 +398,65 @@ func TestWorktreeWithoutStatuteTomlRunsNoStatute(t *testing.T) {
 	}
 }
 
-func TestWorktreeWarnsWhenStatuteIsMissingOrFails(t *testing.T) {
+// statuteFailures are the ledger's statute_failure of each worktree row.
+func (w *world) statuteFailures() []string {
+	w.t.Helper()
+	conn := w.ledger()
+	defer conn.Close()
+	rows, err := conn.Query("SELECT statute_failure FROM worktrees ORDER BY id")
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	defer rows.Close()
+	var got []string
+	for rows.Next() {
+		var failure string
+		if err := rows.Scan(&failure); err != nil {
+			w.t.Fatal(err)
+		}
+		got = append(got, failure)
+	}
+	return got
+}
+
+func TestWorktreeExits6WithThePathWhenStatuteIsMissingOrTheCompileFails(t *testing.T) {
 	w := newWorld(t)
 	_, seed := w.origin()
 	w.withStatute(seed)
 	wt := filepath.Join(w.dir, "home", "wt", dataset)
+	repair := "`statute upgrade --private && statute compile --private-only` in "
 
 	out := w.worktree("item-1", dataset)
-	if out.code != 0 || out.stdout != filepath.Join(wt, "item-1")+"\n" ||
-		!strings.Contains(out.stderr, "warning: ") || !strings.Contains(out.stderr, "statute is not on PATH") {
-		t.Errorf("no statute: %+v, want exit 0, the path and a warning", out)
+	if out.code != 6 || out.stdout != filepath.Join(wt, "item-1")+"\n" ||
+		!strings.Contains(out.stderr, "statute is not on PATH") || !strings.Contains(out.stderr, repair+filepath.Join(wt, "item-1")) {
+		t.Errorf("no statute: %+v, want exit 6, the path, why and how to fix it", out)
 	}
 	if _, err := os.Stat(filepath.Join(wt, "item-1", "statute.toml")); err != nil {
 		t.Errorf("no statute: the worktree is not there")
 	}
 
-	w.fakeStatute(3, 3)
+	w.fakeStatute(3, 4)
 	out = w.worktree("item-2", dataset)
-	if out.code != 0 || out.stdout != filepath.Join(wt, "item-2")+"\n" ||
-		!strings.Contains(out.stderr, "`statute compile --private-only` in "+filepath.Join(wt, "item-2")+" failed") ||
+	if out.code != 6 || out.stdout != filepath.Join(wt, "item-2")+"\n" ||
+		!strings.Contains(out.stderr, "`statute upgrade --private` failed (exit 3), then `statute compile --private-only` failed (exit 4)") ||
 		!strings.Contains(out.stderr, "statute out") || !strings.Contains(out.stderr, "statute err") {
-		t.Errorf("failing statute: %+v, want exit 0, the path, statute's output and a warning", out)
+		t.Errorf("failing statute: %+v, want exit 6, the path, statute's output and why", out)
 	}
 	if len(w.worktreeRows()) != 2 {
 		t.Errorf("rows = %q, want both worktrees", w.worktreeRows())
+	}
+	want := []string{"statute.toml is there but statute is not on PATH",
+		"`statute upgrade --private` failed (exit 3), then `statute compile --private-only` failed (exit 4)"}
+	if got := w.statuteFailures(); strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("statute_failure = %q, want %q", got, want)
+	}
+
+	w.fakeStatute(0, 0)
+	if out := w.worktree("item-3", dataset); out.code != 0 || out.stdout != filepath.Join(wt, "item-3")+"\n" {
+		t.Errorf("working statute: %+v, want exit 0 and the path", out)
+	}
+	if got := w.statuteFailures(); len(got) != 3 || got[2] != "" {
+		t.Errorf("statute_failure = %q, want none for item-3", got)
 	}
 }
 
@@ -434,12 +469,57 @@ func TestWorktreeStillCompilesWhenTheStatuteUpgradeFails(t *testing.T) {
 
 	out := w.worktree("item-1", dataset)
 	if out.code != 0 || out.stdout != path+"\n" ||
-		!strings.Contains(out.stderr, "warning: `statute upgrade --private` in "+path+" failed") ||
-		strings.Contains(out.stderr, "`statute compile --private-only` in "+path+" failed") {
+		!strings.Contains(out.stderr, "warning: `statute upgrade --private` failed (exit 3) in "+path) ||
+		strings.Contains(out.stderr, "`statute compile --private-only` failed") {
 		t.Errorf("%+v, want exit 0, the path and a warning for the upgrade alone", out)
 	}
 	if got, want := w.statuteCalls(), "upgrade --private in "+path+"\ncompile --private-only in "+path+"\n"; got != want {
 		t.Errorf("statute calls = %q, want %q", got, want)
+	}
+	if got := w.statuteFailures(); len(got) != 1 || got[0] != "" {
+		t.Errorf("statute_failure = %q, want none", got)
+	}
+}
+
+// Calling again for a worktree whose statute failed runs statute again:
+// exit 6 while it still fails, 0 and the record cleared once it works,
+// and no statute at all for a worktree whose statute did not fail.
+func TestWorktreeAgainRetriesARecordedStatuteFailure(t *testing.T) {
+	w := newWorld(t)
+	_, seed := w.origin()
+	w.withStatute(seed)
+	w.fakeStatute(0, 4)
+	path := filepath.Join(w.dir, "home", "wt", dataset, "item-1")
+	again := func() result {
+		return w.asAgent("item-1-lead", "lead", "thread-1", "item-1", "worktree", dataset)
+	}
+	if out := w.worktree("item-1", dataset); out.code != 6 {
+		t.Fatalf("%+v", out)
+	}
+
+	_ = os.Remove(filepath.Join(w.dir, "statute-calls"))
+	out := again()
+	if out.code != 6 || out.stdout != path+"\n" || !strings.Contains(out.stderr, "`statute compile --private-only` failed (exit 4)") {
+		t.Errorf("still failing: %+v, want exit 6, the path and why", out)
+	}
+	if got, want := w.statuteCalls(), "upgrade --private in "+path+"\ncompile --private-only in "+path+"\n"; got != want {
+		t.Errorf("still failing: statute calls = %q, want %q", got, want)
+	}
+
+	w.fakeStatute(0, 0)
+	if out := again(); out.code != 0 || out.stdout != path+"\n" {
+		t.Errorf("fixed: %+v, want exit 0 and the path", out)
+	}
+	if got := w.statuteFailures(); len(got) != 1 || got[0] != "" {
+		t.Errorf("fixed: statute_failure = %q, want it cleared", got)
+	}
+
+	_ = os.Remove(filepath.Join(w.dir, "statute-calls"))
+	if out := again(); out.code != 0 || out.stdout != path+"\n" {
+		t.Errorf("after the fix: %+v, want exit 0 and the path", out)
+	}
+	if got := w.statuteCalls(); got != "" {
+		t.Errorf("after the fix: statute calls = %q, want none", got)
 	}
 }
 

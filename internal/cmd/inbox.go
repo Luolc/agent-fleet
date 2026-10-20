@@ -107,6 +107,8 @@ const (
 		"what is missing and the message is delivered. Before the start, the thread's " +
 		"checkout is fetched from origin and fast-forwarded when it is on origin/HEAD's " +
 		"branch, clean and only behind; otherwise it is left and the first message says why. " +
+		"Then statute refreshes its private output there as `fleet worktree` does; when it " +
+		"does not generate it, the first message says why and how to. " +
 		"The agent's first " +
 		"message is the thread prompt and `common` (as `fleet prompt show thread` shows them), the channel context, the summaries, fleet's " +
 		"notes and the message. A run killed after the agent started leaves its row `starting`: the retry " +

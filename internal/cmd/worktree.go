@@ -39,16 +39,23 @@ const (
 		"job, so `fleet job end` removes it (and its branch, when it has one). Use it rather " +
 		"than `git worktree add`, which fleet would not know to remove.\n\n" +
 		"When the path already exists and the ledger records it for this job, the path is " +
-		"printed and nothing changes, so every agent of a job gets the same worktree. A path " +
+		"printed and nothing else changes (except statute's retry, below), so every agent of a " +
+		"job gets the same worktree. A path " +
 		"that exists otherwise is refused. stdout carries only the path.\n\n" +
-		"When the new worktree's root has statute.toml and statute is on PATH, `statute " +
-		"upgrade --private` runs there, to fetch the private sources and lock them for this " +
-		"worktree alone, then `statute compile --private-only`, to generate the private " +
-		"output the checkout does not track; neither touches tracked files, and their output " +
-		"goes to stderr. A missing statute, or a command that fails or is still running after " +
-		"60 s (it is then killed), is only a warning on stderr: a failed upgrade still leaves " +
-		"the compile to run, the worktree stays and the exit code is unchanged.\n\n" +
-		"Exit: 0 when the path is printed; 1 when FLEET_JOB is not set, <repo> has no " +
+		"When the new worktree's root has statute.toml, `statute upgrade --private` runs " +
+		"there, to fetch the private sources and lock them for this worktree alone, then " +
+		"`statute compile --private-only`, to generate the private output the checkout does " +
+		"not track; neither touches tracked files, and their output goes to stderr. Each is " +
+		"killed with what it started when still running after 60 s. When statute is not on " +
+		"PATH, or the compile fails or is killed, the private output is missing: the worktree " +
+		"stays, its path is still printed, stderr says why and how to generate it, the exit is " +
+		"6, and the ledger records the failure, so `fleet spawn` tells a worker started in the " +
+		"worktree. A failed upgrade alone is a warning on stderr: the compile still runs, on the " +
+		"private lock as it is. When the same job calls again and the ledger records a failure " +
+		"for the path, both commands run again and the ledger takes the new result, so every " +
+		"agent that shares the worktree learns of a failure that remains.\n\n" +
+		"Exit: 0 when the path is printed; 6 when the path is printed but statute did not " +
+		"generate the private output (above); 1 when FLEET_JOB is not set, <repo> has no " +
 		"checkout, the scope config is invalid, --name or --branch is invalid, --detach comes " +
 		"with --branch or names no commit of the checkout, the branch already exists, or the " +
 		"path exists and is not this job's; 5 when git or the database fails."
@@ -170,17 +177,18 @@ func resolveCommit(checkout, ref string) (string, error) {
 	return strings.TrimSpace(sha), nil
 }
 
-// worktreeOwner is the job the ledger records for `path`, or "" when none.
-func worktreeOwner(conn *sql.DB, path string) (string, error) {
-	var job string
-	err := conn.QueryRow("SELECT job FROM worktrees WHERE path = ?1 AND removed_at IS NULL", path).Scan(&job)
+// worktreeOwner is the job the ledger records for `path` and the statute
+// failure recorded with it, or "" for both when none.
+func worktreeOwner(conn *sql.DB, path string) (job, failure string, err error) {
+	err = conn.QueryRow("SELECT job, statute_failure FROM worktrees WHERE path = ?1 AND removed_at IS NULL", path).
+		Scan(&job, &failure)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
+		return "", "", nil
 	}
 	if err != nil {
-		return "", exit.Database(err)
+		return "", "", exit.Database(err)
 	}
-	return job, nil
+	return job, failure, nil
 }
 
 // Worktree runs `worktree`.
@@ -194,7 +202,7 @@ func Worktree(args WorktreeArgs) (exit.Code, error) {
 		return 0, err
 	}
 	defer conn.Close()
-	owner, err := worktreeOwner(conn, path)
+	owner, failure, err := worktreeOwner(conn, path)
 	if err != nil {
 		return 0, err
 	}
@@ -205,8 +213,13 @@ func Worktree(args WorktreeArgs) (exit.Code, error) {
 			}
 			return 0, exit.Refusedf("%s belongs to job %s", path, owner)
 		}
-		fmt.Fprintln(os.Stdout, path)
-		return exit.Ok, nil
+		// A recorded failure is retried, so a fix since then clears it and
+		// an agent that shares the worktree learns of one that remains.
+		if failure == "" {
+			fmt.Fprintln(os.Stdout, path)
+			return exit.Ok, nil
+		}
+		return statuteOutcome(conn, path, failure, refreshStatute(path))
 	}
 	add, err := worktreeAdd(args.Detach, checkout, path, branch)
 	if err != nil {
@@ -231,9 +244,26 @@ func Worktree(args WorktreeArgs) (exit.Code, error) {
 		}
 		return 0, err
 	}
-	refreshStatute(path)
+	return statuteOutcome(conn, path, "", refreshStatute(path))
+}
+
+// statuteOutcome records `failure` for the worktree at `path` when it
+// differs from the `recorded` one, prints the path, and, when statute
+// failed, says so on stderr and exits 6.
+func statuteOutcome(conn *sql.DB, path, recorded, failure string) (exit.Code, error) {
+	if failure != recorded {
+		if _, err := conn.Exec("UPDATE worktrees SET statute_failure = ?1 WHERE path = ?2 AND removed_at IS NULL",
+			failure, path); err != nil {
+			return 0, exit.Database(err)
+		}
+	}
 	fmt.Fprintln(os.Stdout, path)
-	return exit.Ok, nil
+	if failure == "" {
+		return exit.Ok, nil
+	}
+	fmt.Fprintf(os.Stderr, "fleet: %s is ready, but statute did not generate its private output: %s; "+
+		"the agents in it lack the private rules until you %s\n", path, failure, statuteRepair(path))
+	return exit.Partial, nil
 }
 
 // statuteTimeout bounds each statute command; a hung one must not hold up
@@ -246,26 +276,37 @@ var statuteTimeout = 60 * time.Second
 // --private-only`: the private output statute writes is not tracked, so a
 // fresh checkout lacks it, a checkout's private lock goes stale unless
 // something fetches, and the full commands would rewrite tracked files.
-// statute is optional, so its absence, failure or timeout is only a
-// warning, and the upgrade's failure still leaves the compile to run on
-// the old lock; their output goes to stderr: stdout carries the path.
-func refreshStatute(dir string) {
+// It returns why the private output was not generated: statute is not on
+// PATH, or the compile failed or timed out (after the upgrade's failure,
+// when that failed too); "" when it was, or when `dir` has no
+// statute.toml. A failed upgrade alone only warns, since the compile still
+// generates the output from the lock as it is. Their output goes to
+// stderr: stdout carries the path.
+func refreshStatute(dir string) string {
 	if !exists(filepath.Join(dir, "statute.toml")) {
-		return
+		return ""
 	}
 	bin, err := exec.LookPath("statute")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "fleet: warning: %s has statute.toml but statute is not on PATH; "+
-			"its private output was not generated\n", dir)
-		return
+		return "statute.toml is there but statute is not on PATH"
 	}
-	runStatute(bin, dir, "upgrade", "--private")
-	runStatute(bin, dir, "compile", "--private-only")
+	upgrade := runStatute(bin, dir, "upgrade", "--private")
+	compile := runStatute(bin, dir, "compile", "--private-only")
+	switch {
+	case compile == "":
+		if upgrade != "" {
+			fmt.Fprintf(os.Stderr, "fleet: warning: %s in %s; the compile ran on the private lock as it was\n", upgrade, dir)
+		}
+		return ""
+	case upgrade != "":
+		return upgrade + ", then " + compile
+	}
+	return compile
 }
 
-// runStatute runs `statute <args>` in `dir` within statuteTimeout, warning
-// on stderr when it fails or times out.
-func runStatute(bin, dir string, args ...string) {
+// runStatute runs `statute <args>` in `dir` within statuteTimeout; how it
+// failed or timed out, or "" when it exited 0.
+func runStatute(bin, dir string, args ...string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), statuteTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, args...)
@@ -276,11 +317,52 @@ func runStatute(bin, dir string, args ...string) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	err := cmd.Run()
-	name := "statute " + strings.Join(args, " ")
+	name := "`statute " + strings.Join(args, " ") + "`"
+	var exitErr *exec.ExitError
 	switch {
 	case ctx.Err() != nil:
-		fmt.Fprintf(os.Stderr, "fleet: warning: `%s` in %s timed out after %v and was killed\n", name, dir, statuteTimeout)
+		return fmt.Sprintf("%s timed out after %v and was killed", name, statuteTimeout)
+	case errors.As(err, &exitErr):
+		return fmt.Sprintf("%s failed (exit %d)", name, exitErr.ExitCode())
 	case err != nil:
-		fmt.Fprintf(os.Stderr, "fleet: warning: `%s` in %s failed: %v\n", name, dir, err)
+		return fmt.Sprintf("%s could not run: %v", name, err)
 	}
+	return ""
+}
+
+// statuteRepair is how an agent in `dir` makes the private output itself.
+func statuteRepair(dir string) string {
+	return "run `statute upgrade --private && statute compile --private-only` in " + dir
+}
+
+// statuteNote is what an agent starting in or under `dir` is told when
+// statute did not generate the private output there.
+func statuteNote(dir, failure string) string {
+	return fmt.Sprintf("statute did not generate the private output of %s when fleet last ran it there: %s. "+
+		"The instructions you read there lack the repo's private rules: before anything else, %s, and when "+
+		"that fails too, say so to whoever you report to before you go on.", dir, failure, statuteRepair(dir))
+}
+
+// worktreeStatuteNote is statuteNote for the live worktree that holds
+// `cwd` when the ledger records a statute failure for it; "" when none
+// does.
+func worktreeStatuteNote(conn *sql.DB, cwd string) (string, error) {
+	rows, err := conn.Query("SELECT path, statute_failure FROM worktrees WHERE removed_at IS NULL AND statute_failure != ''")
+	if err != nil {
+		return "", exit.Database(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var path, failure string
+		if err := rows.Scan(&path, &failure); err != nil {
+			return "", exit.Database(err)
+		}
+		if pathStartsWith(cwd, path) {
+			return statuteNote(path, failure), nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return "", exit.Database(err)
+	}
+	return "", nil
 }

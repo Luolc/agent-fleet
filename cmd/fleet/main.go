@@ -36,7 +36,8 @@ const longAbout = "Runs and coordinates coding agents through herdr.\n\n" +
 	"  2  herdr gave no clear signal (timeout, stalled): the outcome is unknown, do not resend blindly\n" +
 	"  3  target blocked (its screen is printed), or spawn stopped at an unknown screen\n" +
 	"  4  target not found\n" +
-	"  5  environment error (herdr, atb, git or the database failed)"
+	"  5  environment error (herdr, atb, git or the database failed)\n" +
+	"  6  done, but a step after it failed: stdout is as for 0, and the command's help names the step"
 
 const scopeHelp = "Scope to act in: its ledger, settings and herdr session fleet-<NAME>. " +
 	"Default: FLEET_SCOPE, which every agent has, then `main`. Use it from a timer or a plain shell"

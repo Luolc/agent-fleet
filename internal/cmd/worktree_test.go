@@ -12,7 +12,7 @@ import (
 
 // The end-to-end tests of `worktree` are in cmd/fleet; this one needs a
 // shorter statuteTimeout, which only a test in this package can set.
-func TestRefreshStatuteKillsAHungStatuteAndOnlyWarns(t *testing.T) {
+func TestRefreshStatuteKillsAHungStatuteAndSaysSo(t *testing.T) {
 	dir, bin := t.TempDir(), t.TempDir()
 	pidFile := filepath.Join(dir, "child")
 	script := "#!/bin/sh\nsleep 30 &\necho $! > " + pidFile + "\nwait\n"
@@ -26,22 +26,14 @@ func TestRefreshStatuteKillsAHungStatuteAndOnlyWarns(t *testing.T) {
 	old := statuteTimeout
 	statuteTimeout = 300 * time.Millisecond
 	t.Cleanup(func() { statuteTimeout = old })
-	stderr, err := os.Create(filepath.Join(t.TempDir(), "stderr"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	saved := os.Stderr
-	os.Stderr = stderr
-	t.Cleanup(func() { os.Stderr = saved })
-
 	start := time.Now()
-	refreshStatute(dir)
+	failure := refreshStatute(dir)
 	if took := time.Since(start); took > 5*time.Second {
 		t.Errorf("refreshStatute took %v", took)
 	}
-	out, _ := os.ReadFile(stderr.Name())
-	if want := "warning: `statute compile --private-only` in " + dir + " timed out"; !strings.Contains(string(out), want) {
-		t.Errorf("stderr = %q, want %q", out, want)
+	if want := "`statute upgrade --private` timed out after 300ms and was killed, " +
+		"then `statute compile --private-only` timed out after 300ms and was killed"; failure != want {
+		t.Errorf("failure = %q, want %q", failure, want)
 	}
 	data, err := os.ReadFile(pidFile)
 	if err != nil {

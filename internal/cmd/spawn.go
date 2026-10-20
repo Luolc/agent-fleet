@@ -21,7 +21,9 @@ const (
 	SpawnLongAbout = "Start a worker in your job (lead only) and hand it a task.\n\n" +
 		"The worker is named `<job>-<NAME>` and runs in --cwd, an existing directory: typically " +
 		"a worktree from `fleet worktree` (`--detach <ref>` for a reviewer's checkout of a PR " +
-		"head), which several workers may share. A job is started " +
+		"head), which several workers may share. When --cwd is in a worktree for which the " +
+		"ledger records that statute did not generate the private output (`fleet worktree` " +
+		"exited 6), the worker's first message says so, why, and how to generate it. A job is started " +
 		"by a thread agent with `fleet job start`; workers cannot spawn.\n\n" +
 		"Settings come from .fleet/config.json in the main checkout of the job's repo: " +
 		"`max_agents_per_job` (default 16), `resource_check` (default true) and `linear` " +
@@ -108,6 +110,9 @@ type spawnChecked struct {
 	// read.
 	panes int
 	light bool
+	// statuteNote tells the worker when the ledger records that statute
+	// failed in the worktree that holds --cwd.
+	statuteNote string
 }
 
 // spawnChecks runs every check in order: the caller and the names, the
@@ -162,6 +167,9 @@ func (c *spawnChecked) ledgerAndHerdr(h *herdr.Herdr, conn *sql.DB) error {
 	}
 	if c.job == nil {
 		return exit.Refusedf("job %s is not open in scope %s", c.me.Job, c.me.Scope)
+	}
+	if c.statuteNote, err = worktreeStatuteNote(conn, c.cwd); err != nil {
+		return err
 	}
 	if c.sc, err = config.LoadScope(c.me.Scope); err != nil {
 		return err
@@ -274,7 +282,7 @@ func Spawn(h *herdr.Herdr, args SpawnArgs) (exit.Code, error) {
 	created = append(created, fmt.Sprintf("tab %s (%s)", args.Name, place.TabID))
 	body := c.prompt.fill(roleSlots(c.sc, c.id, c.cwd, c.job.Repo, c.job.LeadCwd, c.cfg.MaxAgentsPerJob, issue,
 		c.job.ParentIssue)) +
-		noteSection(lightNote(c.light)) + taskSection(issue.URL, c.body)
+		noteSection(c.statuteNote, lightNote(c.light)) + taskSection(issue.URL, c.body)
 	code, err := startAndDeliver(h, conn, c.id, place, c.cwd, orDefault(args.Model, c.sc.Models.Worker.Model),
 		orDefault(args.Effort, c.sc.Models.Worker.Effort), c.me.Agent, body, &created)
 	if err != nil || code != exit.Ok {

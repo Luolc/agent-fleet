@@ -83,6 +83,10 @@ const (
 		"relate`): the ticket is not the parent, so do not pass it as --parent-issue. If an atb " +
 		"step fails, nothing else is created; what was created is listed, with the cleanup " +
 		"command, and the rows keep the identifiers written so far.\n\n" +
+		"Then the checkout the lead reads (the repo's, or for a cross-repo job the initiative's) " +
+		"is fetched and fast-forwarded and statute refreshes its private output there, as " +
+		"`fleet inbox --help` says; when the checkout is left as it is or statute does not " +
+		"generate the private output, the lead's first message says why. " +
 		"Then the cross-repo directory is made, the workspace is created with the FLEET_* " +
 		"variables set (FLEET_SCOPE, FLEET_JOB, FLEET_ISSUE), Claude Code is started as `fleet " +
 		"spawn` starts a worker, the task is delivered with the work order's URL, and the " +
