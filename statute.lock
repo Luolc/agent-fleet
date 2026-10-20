@@ -1,10 +1,10 @@
 # Written by statute from statute.toml; do not edit by hand.
 
-statute = "0.1.29"
+statute = "0.1.30"
 
 [constitution]
 git = "https://github.com/Luolc/agent-constitution"
-commit = "573a5c312a95502018a67f963aca86a7377d565c"
+commit = "bfcf5a909d966540500379ebf52d0da4ed9abb26"
 edition = "2026-10"
 revision = "4"
 
@@ -12,7 +12,7 @@ revision = "4"
 name = "R"
 git = "https://github.com/Luolc/agent-constitution"
 branch = "main"
-commit = "573a5c312a95502018a67f963aca86a7377d565c"
+commit = "bfcf5a909d966540500379ebf52d0da4ed9abb26"
 
 [[rules]]
 rule = "R1"
