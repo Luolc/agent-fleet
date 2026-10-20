@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -114,12 +115,14 @@ func TestSyncCheckoutLeavesACheckoutThatIsUpToDateOrAhead(t *testing.T) {
 }
 
 // fakeStatuteOnPath puts a statute on PATH that appends its argv and cwd
-// to the returned file and exits 3 for `statute upgrade`, 0 otherwise.
-func fakeStatuteOnPath(t *testing.T) string {
+// to the returned file and exits 3 for `statute upgrade`, `compile`
+// otherwise.
+func fakeStatuteOnPath(t *testing.T, compile int) string {
 	t.Helper()
 	bin := t.TempDir()
 	calls := filepath.Join(bin, "calls")
-	script := "#!/bin/sh\necho \"$* in $(pwd)\" >> " + calls + "\nif [ \"$1\" = upgrade ]; then exit 3; fi\n"
+	script := "#!/bin/sh\necho \"$* in $(pwd)\" >> " + calls + "\nif [ \"$1\" = upgrade ]; then exit 3; fi\nexit " +
+		strconv.Itoa(compile) + "\n"
 	if err := os.WriteFile(filepath.Join(bin, "statute"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +132,7 @@ func fakeStatuteOnPath(t *testing.T) string {
 
 func TestSyncCheckoutRefreshesStatuteAfterTheFastForwardOrWithout(t *testing.T) {
 	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
-	calls := fakeStatuteOnPath(t)
+	calls := fakeStatuteOnPath(t, 0)
 	stderr, err := os.Create(filepath.Join(t.TempDir(), "stderr"))
 	if err != nil {
 		t.Fatal(err)
@@ -150,7 +153,7 @@ func TestSyncCheckoutRefreshesStatuteAfterTheFastForwardOrWithout(t *testing.T) 
 		t.Errorf("behind: statute calls = %q, want %q", got, want)
 	}
 	out, _ := os.ReadFile(stderr.Name())
-	if !strings.Contains(string(out), "warning: `statute upgrade --private` in "+checkout+" failed") {
+	if !strings.Contains(string(out), "warning: `statute upgrade --private` failed (exit 3) in "+checkout) {
 		t.Errorf("stderr = %q, want the upgrade's warning", out)
 	}
 
@@ -162,6 +165,29 @@ func TestSyncCheckoutRefreshesStatuteAfterTheFastForwardOrWithout(t *testing.T) 
 	}
 	if got, _ := os.ReadFile(calls); string(got) != want {
 		t.Errorf("ahead: statute calls = %q, want %q", got, want)
+	}
+}
+
+// A compile that fails adds a paragraph saying why and how to generate
+// the private output, after the one on the checkout when there is one.
+func TestSyncCheckoutSaysWhenStatuteDoesNotGenerateThePrivateOutput(t *testing.T) {
+	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+	fakeStatuteOnPath(t, 4)
+	checkout, other := behindOrigin(t)
+	commit(t, other, "statute.toml")
+	gitIn(t, other, "push", "--quiet", "origin", "main")
+	statute := "statute did not generate the private output of " + checkout + " when fleet last ran it there: " +
+		"`statute upgrade --private` failed (exit 3), then `statute compile --private-only` failed (exit 4). " +
+		"The instructions you read there lack the repo's private rules: before anything else, run " +
+		"`statute upgrade --private && statute compile --private-only` in " + checkout + ", and when that fails " +
+		"too, say so to whoever you report to before you go on."
+	if note := syncCheckout(checkout); note != statute {
+		t.Errorf("fast-forwarded: %q, want %q", note, statute)
+	}
+	commit(t, checkout, "c")
+	if note := syncCheckout(checkout); !strings.HasPrefix(note, "The checkout "+checkout+" was not updated") ||
+		!strings.HasSuffix(note, ".\n\n"+statute) {
+		t.Errorf("ahead: %q, want the checkout's paragraph, then %q", note, statute)
 	}
 }
 

@@ -563,3 +563,39 @@ func TestAVersion17LedgerGetsAnEmptyHandoffsTable(t *testing.T) {
 		t.Errorf("threads %d, handoffs %d, version %d", threads, handoffs, version)
 	}
 }
+
+// A worktree a version-18 binary recorded reads as one whose private
+// output statute generated.
+func TestAVersion18LedgerKeepsItsWorktreesWithNoStatuteFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fleet.db")
+	conn, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range append(migrations[:18:18],
+		"INSERT INTO worktrees (path, repo, branch, job, created_by, created_at) VALUES ('/w/r/j', 'r', 'j', 'j', 'j-a', 1)",
+		"PRAGMA user_version = 18") {
+		if _, err := conn.Exec(step); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	conn, err = OpenAt(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	var version int64
+	var failure string
+	if err := conn.QueryRow("SELECT statute_failure FROM worktrees WHERE path = '/w/r/j'").Scan(&failure); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if failure != "" || version != schemaVersion {
+		t.Errorf("statute_failure %q, version %d", failure, version)
+	}
+}

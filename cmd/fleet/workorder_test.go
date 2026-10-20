@@ -275,6 +275,54 @@ func TestLightStartsAreRecordedAndToldToOnlyRead(t *testing.T) {
 	}
 }
 
+// A worker started in or under a live worktree whose row records a
+// statute failure is told so before its task; one in a worktree whose
+// statute worked, or whose failing row is removed, is told nothing.
+func TestSpawnTellsAWorkerInAWorktreeWhoseStatuteFailed(t *testing.T) {
+	w := newWorld(t)
+	w.configure(`{"resource_check": false}`)
+	openJobWithLead(w, "")
+	w.useStartHerdr()
+	failed, worked := dir(w, "wt/failed"), dir(w, "wt/worked")
+	sub := dir(w, "wt/failed/sub")
+	conn := w.ledger()
+	for _, row := range []struct {
+		path, failure string
+		removed       any
+	}{{failed, "`statute compile --private-only` failed (exit 4)", nil}, {worked, "", nil}, {worked, "gone", 1}} {
+		if _, err := conn.Exec("INSERT INTO worktrees (path, repo, branch, job, created_by, created_at, statute_failure, removed_at) "+
+			"VALUES (?1, 'example-dataset', '', 'item-1', 'item-1-lead', 0, ?2, ?3)", row.path, row.failure, row.removed); err != nil {
+			t.Fatal(err)
+		}
+	}
+	conn.Close()
+	taskFile := task(w, "task.md", "look around\n")
+	spawn := func(name, cwd string) string {
+		t.Helper()
+		out := w.run("", []string{"spawn", name, "--task-file", taskFile, "--cwd", cwd},
+			"FLEET_AGENT=item-1-lead", "FLEET_ROLE=lead", "FLEET_PARENT=thread-1", "FLEET_SCOPE="+scope, "FLEET_JOB=item-1")
+		if out.code != 0 {
+			t.Fatalf("spawn %s: %+v", name, out)
+		}
+		argv, err := os.ReadFile(filepath.Join(w.dir, "argv"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(argv)
+	}
+	note := "\n## Note from fleet\n\nstatute did not generate the private output of " + failed +
+		" when fleet last ran it there: `statute compile --private-only` failed (exit 4). The instructions you read " +
+		"there lack the repo's private rules: before anything else, run `statute upgrade --private && statute " +
+		"compile --private-only` in " + failed + ", and when that fails too"
+	if argv := spawn("a", sub); !strings.Contains(argv, note) ||
+		strings.Index(argv, note) > strings.Index(argv, "\n## Your task\n") {
+		t.Errorf("under the failed worktree: argv %q, want %q before the task", argv, note)
+	}
+	if argv := spawn("b", worked); strings.Contains(argv, "statute did not generate") {
+		t.Errorf("in the worktree that worked: argv %q, want no statute note", argv)
+	}
+}
+
 func TestSpawnCreatesAndClaimsTheWorkOrderBeforeAnythingElse(t *testing.T) {
 	w := newWorld(t)
 	w.configure(withLinear)

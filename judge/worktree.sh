@@ -123,3 +123,30 @@ out=$(SCOPE=custom in_job item-11 worktree "x-repo-$I" 2>&1); rc=$?
 check "worktree in a scope with another initiative prefix: x-repo-<I> refused" 1 "$rc"
 git -C "/home/agent/x-repo/$I" worktree remove "/home/agent/trees/multi-$I/item-11"
 git -C "/home/agent/x-repo/$I" branch -q -D item-11
+
+# A repo with statute.toml: a statute whose compile fails leaves the
+# worktree and its path, exit 6; calling again retries it, 0 once it works.
+S=example-statute
+SWT=/home/agent/wt/$S
+git init -q --bare -b main "/home/agent/remote/$S.git"
+git clone -q "/home/agent/remote/$S.git" "/home/agent/seed-$S" 2>/dev/null
+touch "/home/agent/seed-$S/statute.toml"
+git -C "/home/agent/seed-$S" add statute.toml
+git -C "/home/agent/seed-$S" commit -q -m statute
+git -C "/home/agent/seed-$S" push -q origin main
+git clone -q "/home/agent/remote/$S.git" "/home/agent/dev/$S"
+SB=/home/agent/statute-bin
+mkdir -p "$SB"
+fake_statute() { printf '#!/bin/sh\n[ "$1" = upgrade ] || exit %s\n' "$1" >"$SB/statute"; chmod +x "$SB/statute"; }
+fake_statute 4
+out=$(PATH=$SB:$PATH in_job item-12 worktree "$S" 2>/home/agent/statute.err); rc=$?
+check "worktree: exit 6 with the path when the statute compile fails" "6 $SWT/item-12" "$rc $out"
+has "worktree: stderr says the compile failed and how to fix it" "$(cat /home/agent/statute.err)" \
+  "\`statute compile --private-only\` failed (exit 4)" "statute upgrade --private && statute compile --private-only"
+out=$(PATH=$SB:$PATH in_job item-12 worktree "$S" 2>/dev/null); rc=$?
+check "worktree: again while the compile still fails, exit 6 with the path" "6 $SWT/item-12" "$rc $out"
+fake_statute 0
+out=$(PATH=$SB:$PATH in_job item-12 worktree "$S" 2>/dev/null); rc=$?
+check "worktree: again once the compile works, exit 0 with the path" "0 $SWT/item-12" "$rc $out"
+out=$(thr job end item-12 --force 2>&1); rc=$?
+check "job end --force: the statute repo's worktree removed" "0 no" "$rc $([ -e "$SWT/item-12" ] && echo yes || echo no)"

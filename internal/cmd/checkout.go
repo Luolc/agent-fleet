@@ -24,19 +24,25 @@ var fetchTimeout = 30 * time.Second
 // is only behind, `git merge --ff-only`, which leaves an untracked or
 // ignored file alone. It never stops a start: anything
 // else leaves the checkout as it is, and the returned sentence says why,
-// for the agent's first message; "" when the checkout is up to date.
-// Either way it then refreshes statute's private lock and output, which
-// are not tracked, so a checkout left as it is still gets current private
-// rules.
+// for the agent's first message. Either way it then refreshes statute's
+// private lock and output, which are not tracked, so a checkout left as it
+// is still gets current private rules; when statute does not generate
+// them, a second paragraph says so. "" when the checkout is up to date
+// and statute did not fail.
 func syncCheckout(dir string) string {
 	reason := fastForward(dir)
-	refreshStatute(dir)
+	failure := refreshStatute(dir)
+	var notes []string
 	if reason != "" {
 		fmt.Fprintf(os.Stderr, "note: %s was not updated from origin: %s\n", dir, reason)
-		return fmt.Sprintf("The checkout %s was not updated from origin before you started: %s. What you read there "+
-			"(AGENTS.md, a charter, the docs) may be behind origin; leave the checkout itself as it is.", dir, reason)
+		notes = append(notes, fmt.Sprintf("The checkout %s was not updated from origin before you started: %s. What you read there "+
+			"(AGENTS.md, a charter, the docs) may be behind origin; leave the checkout itself as it is.", dir, reason))
 	}
-	return ""
+	if failure != "" {
+		fmt.Fprintf(os.Stderr, "note: statute did not generate the private output of %s: %s\n", dir, failure)
+		notes = append(notes, statuteNote(dir, failure))
+	}
+	return strings.Join(notes, "\n\n")
 }
 
 // fastForward does syncCheckout's git steps; the reason it stopped, or ""

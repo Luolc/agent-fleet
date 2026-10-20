@@ -24,6 +24,9 @@ const (
 	NotFound Code = 4
 	// Environment is an environment error: herdr, atb, git or the database failed.
 	Environment Code = 5
+	// Partial means the command did its work, but a step after it failed:
+	// stdout is what exit 0 prints, and the command's help names the step.
+	Partial Code = 6
 )
 
 // Failure is a command failure: the exit code plus the message printed to
