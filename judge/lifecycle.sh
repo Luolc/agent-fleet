@@ -427,11 +427,11 @@ out=$(as item-4-lead lead thread-1 item-4 -- spawn p --cwd "$DEV" --task-file "$
 check "spawn with a prompt addition: exit 0" 0 "$rc"
 [ "$rc" = 0 ] || printf '%s\n' "$out"
 has "spawn with a prompt addition: it follows the worker prompt, before the task" "$(received item-4-p | tr '\n' '|')" \
-  "leave the issues fleet claims to fleet.||Then list every file you changed. 0xAPPEND||## Your task||worker p 0xWORKP"
+  "Never reset or buy usage, even with a person's yes.||Then list every file you changed. 0xAPPEND||## Your task||worker p 0xWORKP"
 out=$(as item-4-lead lead thread-1 item-4 -- prompt show worker 2>&1); rc=$?
 check "prompt show worker: exit 0" 0 "$rc"
 has "prompt show worker: the addition under its source, after the built-in text and common" "$(printf '%s\n' "$out" | tr '\n' '|')" \
-  "==> built-in <==|" "==> built-in common <==|" "leave the issues fleet claims to fleet.||==> prompts.worker.append (~/.config/$T/prompts/worker.append.md) <==|Then list every file you changed. 0xAPPEND|"
+  "==> built-in <==|" "==> built-in common <==|" "Never reset or buy usage, even with a person's yes.||==> prompts.worker.append (~/.config/$T/prompts/worker.append.md) <==|Then list every file you changed. 0xAPPEND|"
 printf 'Before anything else,\nread {{repo}}.\n' > "/home/agent/.config/$T/prompts/worker.append.md"
 tabs=$("${S[@]}" tab list --workspace "$(agent_field item-4-lead workspace_id)" | jq '.result.tabs | length')
 out=$(as item-4-lead lead thread-1 item-4 -- spawn q --cwd "$DEV" --task-file "$(task q 'worker q')" 2>&1); rc=$?
