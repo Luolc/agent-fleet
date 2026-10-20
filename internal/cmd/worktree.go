@@ -215,10 +215,11 @@ func Worktree(args WorktreeArgs) (exit.Code, error) {
 		}
 		// A recorded failure is retried, so a fix since then clears it and
 		// an agent that shares the worktree learns of one that remains.
-		if failure != "" {
-			failure = refreshStatute(path)
+		if failure == "" {
+			fmt.Fprintln(os.Stdout, path)
+			return exit.Ok, nil
 		}
-		return statuteOutcome(conn, path, failure)
+		return statuteOutcome(conn, path, failure, refreshStatute(path))
 	}
 	add, err := worktreeAdd(args.Detach, checkout, path, branch)
 	if err != nil {
@@ -243,15 +244,18 @@ func Worktree(args WorktreeArgs) (exit.Code, error) {
 		}
 		return 0, err
 	}
-	return statuteOutcome(conn, path, refreshStatute(path))
+	return statuteOutcome(conn, path, "", refreshStatute(path))
 }
 
-// statuteOutcome records `failure` for the worktree at `path`, prints the
-// path, and, when statute failed, says so on stderr and exits 6.
-func statuteOutcome(conn *sql.DB, path, failure string) (exit.Code, error) {
-	if _, err := conn.Exec("UPDATE worktrees SET statute_failure = ?1 WHERE path = ?2 AND removed_at IS NULL",
-		failure, path); err != nil {
-		return 0, exit.Database(err)
+// statuteOutcome records `failure` for the worktree at `path` when it
+// differs from the `recorded` one, prints the path, and, when statute
+// failed, says so on stderr and exits 6.
+func statuteOutcome(conn *sql.DB, path, recorded, failure string) (exit.Code, error) {
+	if failure != recorded {
+		if _, err := conn.Exec("UPDATE worktrees SET statute_failure = ?1 WHERE path = ?2 AND removed_at IS NULL",
+			failure, path); err != nil {
+			return 0, exit.Database(err)
+		}
 	}
 	fmt.Fprintln(os.Stdout, path)
 	if failure == "" {
