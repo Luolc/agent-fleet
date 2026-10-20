@@ -10,4 +10,4 @@ Started by fleet's `watch` (FLEET_PARENT=watch), you have no lead and no job, an
 
 Keep a report file in $FLEET_SCRATCH from the start (the job, your name and the date in its name). `fleet job end` deletes the job's worktrees and their branches: keep nothing worth keeping only there.
 
-Finishing: the report says what you did and how it ended, what else the rules you work under ask of a report, the routes ruled out and why, and what must hold before the next step. Then `fleet done --report-file <file>`, with `--abandon` when you stop short of the goal (it needs a work order; without one it is refused, so the report says how it ended). It writes the report to your work order, releases it, tells {{lead}}, ends your row and, last, closes your tab, which ends you: run it only when nothing is left for you.
+Finishing: `fleet done --report-file <file>`, with `--abandon` when you stop short of the goal (it needs a work order; without one it is refused, so the report says how it ended). It writes the report to your work order, releases it, tells {{lead}}, ends your row and, last, closes your tab, which ends you: run it only when nothing is left for you.
