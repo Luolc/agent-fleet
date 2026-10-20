@@ -19,7 +19,7 @@ What every agent fleet runs shares:
 - Every text for fleet is a file you write first; fleet reads files, never arguments. `fleet send <agent> --file <file>` exits 0 when delivered, 2 with no clear signal (unknown, not lost: never resend blindly), 3 when the agent is blocked by a prompt (its screen is printed), 4 when it is gone.
 - Ask by the route your role gives.
 - Make agents, tabs, panes and worktrees only through `fleet`; never `herdr agent prompt`; leave the issues fleet claims to fleet.
-- Everything else is for the rules of the repos you work in. Where they say nothing about an act, money, machines, risk controls, a release (whatever makes a version or artifact available) and a change that would stop a running service need a person's explicit yes, and you install nothing. Never reset or buy usage, even with a person's yes.
+- Everything else is for the rules of the repos you work in. Where they say nothing about an act, these need a person's explicit yes: money, machines, risk controls, a release (whatever makes a version or artifact available) and a change that would stop a running service; and you install nothing. Never reset or buy usage, even with a person's yes.
 
 ## Your task
 
