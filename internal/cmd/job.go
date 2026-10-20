@@ -68,7 +68,8 @@ const (
 		"`resources.min_available_mib` plus `resources.agent_mib` (see `fleet spawn --help`); " +
 		"last, for a cross-repo job, the parent's team and project are read from Linear.\n\n" +
 		"Then the job is reserved: the job's row (open, with the caller's thread as the job's " +
-		"home thread when it has one) and the lead's row (`starting`) are " +
+		"home thread when it has one: the lead's questions and the job's conclusion arrive " +
+		"there) and the lead's row (`starting`) are " +
 		"written in one transaction with the dedup checks, so two starts on the same name, " +
 		"key or parent cannot both pass. With Linear on, next and before anything else: the " +
 		"parent is created (--new-parent) and written onto both rows at once; the parent is " +
@@ -79,7 +80,7 @@ const (
 		"question; over 80 characters, cut to 79 and ended with `…`) and described by " +
 		"the task file, written onto the lead's row, and claimed in the lead's name; when the " +
 		"caller has a thread ticket (FLEET_ISSUE), it is related to the parent (`atb linear " +
-		"relate`). If an atb " +
+		"relate`): the ticket is not the parent, so it is never the --parent-issue. If an atb " +
 		"step fails, nothing else is created; what was created is listed, with the cleanup " +
 		"command, and the rows keep the identifiers written so far.\n\n" +
 		"Then the cross-repo directory is made, the workspace is created with the FLEET_* " +
