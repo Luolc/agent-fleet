@@ -254,7 +254,8 @@ Options:
       --effort <EFFORT>   Effort passed to the agent as --effort. Default: the scope's models.lead,
                           else the agent's own
       --light             Skip the load check (memory is still checked) for a lead that only reads;
-                          its first message tells it not to build, test or run anything CPU-heavy
+                          its first message tells it not to build, test or run anything CPU-heavy;
+                          its workers are light only when it spawns them with --light
       --scope <NAME>      ` + scopeHelp + `
   -h, --help              Print help
 `

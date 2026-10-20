@@ -386,11 +386,11 @@ func (m inboundMessage) sender() string {
 	return inboxSender
 }
 
-// seePrompt points a thread agent at what its prompt says to do with a
-// message from fleet. The message itself gives the facts and the least
-// to do, so an agent started on an older prompt, which has no such
-// paragraph, still knows its next step.
-const seePrompt = `Your prompt says what to do under "Messages from fleet"`
+// seePrompt points a thread agent at what the user-level skill `fleet`
+// says to do with a message from fleet. The message itself gives the
+// facts and the least to do, so an agent without the skill still knows
+// its next step.
+const seePrompt = "The user-level skill `fleet` (`references/thread.md`) says what to do with it"
 
 // body is the message as the thread agent reads it.
 func (m inboundMessage) body() string {

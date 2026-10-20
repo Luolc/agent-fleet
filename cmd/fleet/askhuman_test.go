@@ -82,8 +82,8 @@ func TestAskThreadReachesTheLiveThreadAgent(t *testing.T) {
 	}
 	argv := w.file("argv")
 	if !strings.HasPrefix(argv, "agent\nprompt\nthread-c0123-1700000000-123\n[FROM: item-1-lead]\n[QUESTION #1 from item-1-lead]\n"+
-		"Yours to settle, in thread "+threadKey+"; fleet has posted nothing. Your prompt says what to do under "+
-		"\"Messages from fleet\"; at the least, answer it with `fleet send item-1-lead --file <file>`, or ask the people "+
+		"Yours to settle, in thread "+threadKey+"; fleet has posted nothing. The user-level skill `fleet` "+
+		"(`references/thread.md`) says what to do with it; at the least, answer it with `fleet send item-1-lead --file <file>`, or ask the people "+
 		"with `fleet ask-human --card <file> --for 1` (this card or one of your own), whose answers reach item-1-lead "+
 		"too.\n\nWhich month: September or October?\n") {
 		t.Errorf("argv = %q", argv)
@@ -159,8 +159,7 @@ func TestAskThreadStartsAThreadAgentWhenTheHomeThreadHasNone(t *testing.T) {
 	for _, want := range []string{"[FROM: item-1-lead]\nYou are a thread agent", "## Earlier sessions on this thread",
 		"## The message\n\n[QUESTION #1 from item-1-lead]\nYours to settle, in thread " + threadKey, "Which month?\n",
 		"A lead's question (`[QUESTION #<id> from <lead>]`, a card's JSON) is yours to settle: fleet has recorded it as pending and posted nothing",
-		"`fleet send <lead> --file <file>`, which settles it",
-		"tell each open lead `fleet status` lists with PARENT thread-c0123-1700000000-123 what changed."} {
+		"`fleet send <lead> --file <file>`, which settles it"} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt = %q, want %q in it", prompt, want)
 		}
@@ -397,7 +396,7 @@ func TestJobEndTakesTheConclusionToTheHomeThread(t *testing.T) {
 	}
 	argv := w.file("argv")
 	if !strings.HasPrefix(argv, "agent\nprompt\nthread-c0123-1700000000-123\n[FROM: item-1-lead]\nConclusion of a job from item-1-lead for the people in thread "+
-		threadKey+". Your prompt says what to do under \"Messages from fleet\"; at the least, post it to the thread with "+
+		threadKey+". The user-level skill `fleet` (`references/thread.md`) says what to do with it; at the least, post it to the thread with "+
 		"`fleet thread post`.\n\nJob item-1 ended: done.\n") {
 		t.Errorf("argv = %q", argv)
 	}
