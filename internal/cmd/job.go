@@ -80,7 +80,7 @@ const (
 		"question; over 80 characters, cut to 79 and ended with `…`) and described by " +
 		"the task file, written onto the lead's row, and claimed in the lead's name; when the " +
 		"caller has a thread ticket (FLEET_ISSUE), it is related to the parent (`atb linear " +
-		"relate`): the ticket is not the parent, so it is never the --parent-issue. If an atb " +
+		"relate`): the ticket is not the parent, so do not pass it as --parent-issue. If an atb " +
 		"step fails, nothing else is created; what was created is listed, with the cleanup " +
 		"command, and the rows keep the identifiers written so far.\n\n" +
 		"Then the cross-repo directory is made, the workspace is created with the FLEET_* " +
