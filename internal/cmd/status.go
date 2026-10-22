@@ -26,8 +26,9 @@ const (
 	StatusLongAbout = "Show the open jobs, who is running and who owes work (read-only).\n\n" +
 		"First the scope's open jobs as `fleet job list --all` prints them, then the agents: the " +
 		"ledger's live rows (state starting or active) joined with `herdr agent list`. For each " +
-		"agent: role, job, parent, age, herdr status, and time since `fleet watch` last saw its " +
-		"status, state_change_seq or screen change (`-` before watch has looked at it). Flags:\n" +
+		"agent: role, job, parent, thread (a thread agent's thread key `CHANNEL/TS`, which `fleet send` takes as <to>), age, herdr status, and time since `fleet watch` last saw its " +
+		"status, state_change_seq or screen change (`-` before watch has looked at it). The herdr status `done` " +
+		"means idle after a finished turn, not that the agent has ended: an ended agent is not listed. Flags:\n" +
 		"  owes-work  a lead or worker that has not run `fleet done` but is idle or done in herdr\n" +
 		"  blocked    herdr reports it blocked by an interactive prompt\n" +
 		"  missing    in the ledger but gone from herdr\n" +
@@ -62,6 +63,7 @@ type Live struct {
 	Suspect        bool
 	Light          bool
 	Pane           string
+	Thread         string
 }
 
 // InHerdr is what `herdr agent list` says about one agent.
@@ -76,6 +78,7 @@ type line struct {
 	Role            string   `json:"role"`
 	Job             string   `json:"job"`
 	Parent          string   `json:"parent"`
+	Thread          string   `json:"thread"`
 	State           string   `json:"state"`
 	AgeSecs         int64    `json:"age_secs"`
 	HerdrStatus     *string  `json:"herdr_status"`
@@ -111,7 +114,7 @@ func LiveRows(conn *sql.DB, job *string) ([]Live, error) {
 	}
 	rows, err := conn.Query(
 		"SELECT id, name, role, job, parent, state, started_at, last_status, last_seq, "+
-			"last_screen_hash, last_change_at, suspect, light, pane_id FROM agents "+
+			"last_screen_hash, last_change_at, suspect, light, pane_id, thread FROM agents "+
 			"WHERE state != 'ended' AND (?1 IS NULL OR job = ?1) ORDER BY job, started_at, id",
 		jobArg)
 	if err != nil {
@@ -122,7 +125,7 @@ func LiveRows(conn *sql.DB, job *string) ([]Live, error) {
 	for rows.Next() {
 		var l Live
 		if err := rows.Scan(&l.ID, &l.Name, &l.Role, &l.Job, &l.Parent, &l.State, &l.StartedAt,
-			&l.LastStatus, &l.LastSeq, &l.LastScreenHash, &l.LastChangeAt, &l.Suspect, &l.Light, &l.Pane); err != nil {
+			&l.LastStatus, &l.LastSeq, &l.LastScreenHash, &l.LastChangeAt, &l.Suspect, &l.Light, &l.Pane, &l.Thread); err != nil {
 			return nil, exit.Database(err)
 		}
 		lives = append(lives, l)
@@ -275,6 +278,7 @@ func statusLine(live Live, agent *InHerdr, now int64) line {
 		Role:            live.Role,
 		Job:             live.Job,
 		Parent:          live.Parent,
+		Thread:          live.Thread,
 		State:           live.State,
 		AgeSecs:         now - live.StartedAt,
 		HerdrStatus:     herdrStatus,
@@ -288,7 +292,7 @@ func printTable(lines []line) {
 		fmt.Fprintln(os.Stdout, "no live agents")
 		return
 	}
-	cells := make([][8]string, 0, len(lines))
+	cells := make([][9]string, 0, len(lines))
 	for _, l := range lines {
 		herdrStatus, sinceChange := "-", "-"
 		if l.HerdrStatus != nil {
@@ -297,8 +301,8 @@ func printTable(lines []line) {
 		if l.SinceChangeSecs != nil {
 			sinceChange = Duration(*l.SinceChangeSecs)
 		}
-		cells = append(cells, [8]string{
-			l.Name, l.Role, orDash(l.Job), orDash(l.Parent), Duration(l.AgeSecs),
+		cells = append(cells, [9]string{
+			l.Name, l.Role, orDash(l.Job), orDash(l.Parent), orDash(l.Thread), Duration(l.AgeSecs),
 			herdrStatus, sinceChange, strings.Join(l.Flags, ","),
 		})
 	}
@@ -306,7 +310,7 @@ func printTable(lines []line) {
 	for _, row := range cells {
 		rows = append(rows, row[:])
 	}
-	printAligned([]string{"NAME", "ROLE", "JOB", "PARENT", "AGE", "HERDR", "CHANGED", "FLAGS"}, rows)
+	printAligned([]string{"NAME", "ROLE", "JOB", "PARENT", "THREAD", "AGE", "HERDR", "CHANGED", "FLAGS"}, rows)
 }
 
 // printAligned prints a header and rows in columns two spaces apart, with

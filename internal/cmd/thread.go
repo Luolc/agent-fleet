@@ -44,7 +44,7 @@ const (
 		"one last line, `— <your name> · <your thread>`, which the receiving fleet shows as who it is from and where to " +
 		"answer; it is a label you give, only the machine is checked. fednet refuses (exit 3) when its relay list does not " +
 		"let this machine deliver there, and exits 1 for a thread without an owner. --deliver takes no --attach, and is " +
-		"refused (exit 1) for a thread this scope's ledger records, one of this machine's: tell its agent with `fleet send`.\n\n" +
+		"refused (exit 1) for a thread of this machine's that has a live thread agent: tell it with `fleet send CHANNEL/TS`. A thread of this machine's with none is posted to, and no agent is told.\n\n" +
 		"The text is read from --body-file and posted with `fednet client post` to the " +
 		"thread your row in the ledger records, through the socket in the scope's settings " +
 		"(`fednet.socket`); you never name either. Each --attach is passed to fednet as " +
@@ -1047,22 +1047,23 @@ func ThreadPost(args ThreadPostArgs) (exit.Code, error) {
 	return handBack(fednet.Relay(socket, thread, text, args.Attach))
 }
 
-// notOurs refuses a --deliver to a thread this scope's ledger records:
-// fednet delivers nothing to the machine that owns the thread itself, so
-// its agent would never hear of the post.
+// notOurs refuses a --deliver to a thread this machine's live thread agent
+// has: fednet delivers nothing to the machine that owns the thread itself,
+// so that agent would never hear of the post. A thread with no live agent
+// is posted to as any other: there is no one to tell.
 func notOurs(scope, thread string) error {
 	conn, err := db.Open(scope)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
-	row, err := threadByKey(conn, thread)
+	name, _, err := liveThreadAgent(conn, thread)
 	if err != nil {
 		return err
 	}
-	if row != nil {
-		return exit.Refusedf("thread %s is this machine's, so --deliver would deliver it to no one: tell its agent "+
-			"with `fleet send`", thread)
+	if name != "" {
+		return exit.Refusedf("thread %s is this machine's and %s is running it, so --deliver would deliver it to no one: "+
+			"tell it with `fleet send %s`", thread, name, thread)
 	}
 	return nil
 }

@@ -26,6 +26,9 @@ const (
 		"--timeout 20000` and the result is mapped to the exit codes.\n\n" +
 		"There is no automatic resend: exit 2 means the outcome is unknown, not that the " +
 		"message was lost.\n\n" +
+		"<to> is an agent's name, or a thread key `CHANNEL/TS` (as the THREAD column of `fleet status` " +
+		"shows it): then the message goes to that thread's live thread agent, and exit 4 says so when " +
+		"the thread has none, with the route to take.\n\n" +
 		"A thread agent's message that reaches a lead answers the lead's questions pending in " +
 		"the thread agent's thread (`fleet ask-thread`): the thread agent has settled them, by " +
 		"itself or with the people; but not one a card of the thread agent's still asks the " +
@@ -39,7 +42,8 @@ const (
 
 // SendArgs are the arguments of `send`.
 type SendArgs struct {
-	// To is the name of the receiving agent, as shown by `fleet status`.
+	// To is the name of the receiving agent, as shown by `fleet status`, or a
+	// thread key `CHANNEL/TS`, which stands for that thread's live thread agent.
 	To string
 	// File, when set, is read for the body instead of stdin.
 	File *string
@@ -107,11 +111,49 @@ func Send(h *herdr.Herdr, args SendArgs) (exit.Code, error) {
 	if err != nil {
 		return 0, err
 	}
-	code, err := Deliver(h, args.To, text)
+	to, code, err := resolveTo(args.To)
+	if err != nil || code != exit.Ok {
+		return code, err
+	}
+	code, err = Deliver(h, to, text)
 	if err == nil && code == exit.Ok && os.Getenv("FLEET_ROLE") == identity.Thread.String() {
-		answerLead(os.Getenv("FLEET_THREAD"), args.To)
+		answerLead(os.Getenv("FLEET_THREAD"), to)
 	}
 	return code, err
+}
+
+// resolveTo is the agent `to` names: itself, or for a thread key
+// `CHANNEL/TS` (an agent's name has no `/`) the live thread agent of that
+// thread. A thread with none is exit 4 with what to do instead.
+func resolveTo(to string) (string, exit.Code, error) {
+	if !strings.Contains(to, "/") {
+		return to, exit.Ok, nil
+	}
+	conn, err := OpenLedger()
+	if err != nil {
+		return "", 0, err
+	}
+	defer conn.Close()
+	name, _, err := liveThreadAgent(conn, to)
+	if err != nil {
+		return "", 0, err
+	}
+	if name != "" {
+		return name, exit.Ok, nil
+	}
+	row, err := threadByKey(conn, to)
+	if err != nil {
+		return "", 0, err
+	}
+	if row == nil {
+		fmt.Fprintf(os.Stderr, "thread %s is not in this scope's ledger, so no agent here has it; "+
+			"if another machine owns it, post there with `fleet thread post --deliver --thread %s --body-file <file>`\n", to, to)
+	} else {
+		fmt.Fprintf(os.Stderr, "thread %s has no live thread agent (none is running, whatever `fleet status` shows for other agents); "+
+			"nothing was sent. Post to it in Slack with `fleet thread post --deliver --thread %s --body-file <file>`: "+
+			"people see it, no agent is told\n", to, to)
+	}
+	return "", exit.NotFound, nil
 }
 
 // answerLead marks the questions `lead` asked in `thread` and that are
