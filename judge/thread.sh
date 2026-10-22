@@ -140,8 +140,9 @@ has "send: the thread's agent has the message" "$(screen "$A")" "[FROM: judge-se
 settled "$A"
 out=$(PATH=/home/agent/fake-thread:$PATH env "${P}SCOPE=main" "$T" status 2>&1)
 has "status: the thread agent's key is shown" "$out" "THREAD" "$K"
-echo "nobody" | PATH=/home/agent/fake-thread:$PATH env "${P}AGENT=judge-sender" "${P}ROLE=worker" "${P}SCOPE=main" "$T" send C0NONE/1700000999.000 >/dev/null 2>&1; rc=$?
+out=$(echo "nobody" | PATH=/home/agent/fake-thread:$PATH env "${P}AGENT=judge-sender" "${P}ROLE=worker" "${P}SCOPE=main" "$T" send C0NONE/1700000999.000 2>&1 >/dev/null); rc=$?
 check "send: a thread key not in the ledger, exit 4" 4 "$rc"
+has "send: a thread key not in the ledger, the route is named" "$out" "thread post --deliver --thread C0NONE/1700000999.000"
 
 # The same event again (fednet retrying) does nothing.
 : > /home/agent/atb.log

@@ -116,6 +116,11 @@ func Send(h *herdr.Herdr, args SendArgs) (exit.Code, error) {
 		return code, err
 	}
 	code, err = Deliver(h, to, text)
+	if err == nil && code == exit.NotFound && to != args.To {
+		fmt.Fprintf(os.Stderr, "the ledger has %s as thread %s's agent, but herdr has no such agent; nothing was sent. "+
+			"Post to the thread in Slack with `fleet thread post --deliver --thread %s --body-file <file>`: "+
+			"people see it, no agent is told\n", to, args.To, args.To)
+	}
 	if err == nil && code == exit.Ok && os.Getenv("FLEET_ROLE") == identity.Thread.String() {
 		answerLead(os.Getenv("FLEET_THREAD"), to)
 	}

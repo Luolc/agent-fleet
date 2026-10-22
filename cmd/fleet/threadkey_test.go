@@ -96,3 +96,25 @@ func TestStatusShowsAThreadAgentsThreadKey(t *testing.T) {
 		t.Errorf("table: %+v", out)
 	}
 }
+
+// A thread agent live in the ledger but gone from herdr: `send <key>` is
+// exit 4 and names the route that works.
+func TestSendToAThreadKeyWhoseAgentHerdrLostNamesTheRoute(t *testing.T) {
+	w := threadWorld(t, "")
+	if out := w.inbox(w.event("m1", "first", "")); out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	if err := os.WriteFile(filepath.Join(w.dir, "prompt-not-found"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := w.run("hello\n", []string{"send", threadKey}, "FLEET_AGENT=x-worker")
+	if out.code != 4 || !strings.Contains(out.stderr, "agent "+threadAgent+" not found") ||
+		!strings.Contains(out.stderr, "fleet thread post --deliver --thread "+threadKey) {
+		t.Errorf("send: %+v", out)
+	}
+	// By name, the same loss says only what it did before.
+	out = w.run("hello\n", []string{"send", threadAgent}, "FLEET_AGENT=x-worker")
+	if out.code != 4 || strings.Contains(out.stderr, "thread post") {
+		t.Errorf("by name: %+v", out)
+	}
+}
