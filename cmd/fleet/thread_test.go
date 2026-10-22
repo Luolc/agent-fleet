@@ -70,6 +70,7 @@ case "$1 $2" in
     echo "$3" > "$dir/closed-tab"; echo '{"result":{}}' ;;
   "agent read") printf '%s\n' "────────────" "❯ " "────────────" ;;
   "agent prompt")
+    if [ -e "$dir/prompt-not-found" ]; then echo '{"error":{"code":"agent_not_found","message":"no agent"}}'; exit 1; fi
     printf '%s\n' "$@" > "$dir/argv"
     printf '%s\n' "$@" >> "$dir/prompts"
     echo '{"id":"cli:agent:prompt","result":{"type":"agent_prompted"}}' ;;
