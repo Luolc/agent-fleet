@@ -74,7 +74,7 @@ const sendUsage = "Usage: fleet send [OPTIONS] <TO>"
 var sendHelp = cmd.SendLongAbout + "\n\n" + sendUsage + `
 
 Arguments:
-  <TO>  Name of the receiving agent, as shown by ` + "`fleet status`" + `
+  <TO>  Name of the receiving agent, as shown by ` + "`fleet status`" + `, or a thread key CHANNEL/TS (its THREAD column)
 
 Options:
       --file <PATH>     Read the body from this file instead of stdin
@@ -117,7 +117,7 @@ var threadPostHelp = cmd.ThreadPostLongAbout + "\n\n" + threadPostUsage + `
 Options:
       --body-file <PATH>  The text to post, standard Markdown, at most 100 KiB
       --attach <PATH>     A file to upload with the text, passed to fednet as -file; repeatable
-      --deliver           Post to the thread --thread names and deliver the text to the machine that owns it
+      --deliver           Post to the thread --thread names and deliver the text to the machine that owns it (for a thread of this machine's with a live thread agent, use fleet send)
       --thread <THREAD>   With --deliver, the thread to post to: CHANNEL/TS, or a Slack link to a message in it
       --scope <NAME>      ` + scopeHelp + `
   -h, --help              Print help

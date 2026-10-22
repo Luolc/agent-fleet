@@ -132,6 +132,17 @@ check "inbox: the thread's root marked busy, fleet's other two marks taken off, 
   "$(tr '\n' '|' < /home/agent/react.log)"
 settled "$A"
 
+# A thread key names the thread's live agent to `send`, and `status` shows
+# the key.
+echo "keyed message 0xBYKEY" | PATH=/home/agent/fake-thread:$PATH env "${P}AGENT=judge-sender" "${P}ROLE=worker" "${P}SCOPE=main" "$T" send "$K" >/dev/null 2>&1; rc=$?
+check "send: a thread key reaches the thread's live agent, exit 0" 0 "$rc"
+has "send: the thread's agent has the message" "$(screen "$A")" "[FROM: judge-sender]" "0xBYKEY"
+settled "$A"
+out=$(PATH=/home/agent/fake-thread:$PATH env "${P}SCOPE=main" "$T" status 2>&1)
+has "status: the thread agent's key is shown" "$out" "THREAD" "$K"
+echo "nobody" | PATH=/home/agent/fake-thread:$PATH env "${P}AGENT=judge-sender" "${P}ROLE=worker" "${P}SCOPE=main" "$T" send C0NONE/1700000999.000 >/dev/null 2>&1; rc=$?
+check "send: a thread key not in the ledger, exit 4" 4 "$rc"
+
 # The same event again (fednet retrying) does nothing.
 : > /home/agent/atb.log
 out=$(inbox /home/agent/events/m1.json 2>&1); rc=$?
