@@ -39,14 +39,17 @@ type NoResponse struct {
 
 func (e *NoResponse) Error() string { return e.Message }
 
-// Get runs `gh api --include --method GET <path>`. A reply of any status is
-// a Response; a call that printed none, or that hit herdr.Exec's deadline,
-// is a *NoResponse; gh missing from PATH is an *exit.Failure.
-func Get(path string) (*Response, error) {
+// CallTimeout bounds one gh call.
+const CallTimeout = 60 * time.Second
+
+// Get runs `gh api --include --method GET <path>`, killed after timeout. A
+// reply of any status is a Response; a call that printed none, or that hit
+// the deadline, is a *NoResponse; gh missing from PATH is an *exit.Failure.
+func Get(path string, timeout time.Duration) (*Response, error) {
 	if _, err := exec.LookPath("gh"); err != nil {
 		return nil, exit.Environmentf("cannot run gh: %v", err)
 	}
-	stdout, stderr, err := herdr.Exec("gh api", envNames, "gh", "api", "--include", "--method", "GET",
+	stdout, stderr, err := herdr.ExecInput("gh api", envNames, timeout, 0, nil, "gh", "api", "--include", "--method", "GET",
 		"-H", "Accept: application/vnd.github+json", "-H", "X-GitHub-Api-Version: 2022-11-28", path)
 	var failure *exit.Failure
 	if errors.As(err, &failure) {

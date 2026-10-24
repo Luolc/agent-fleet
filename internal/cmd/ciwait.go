@@ -43,7 +43,8 @@ const (
 		"long as Retry-After says, else until X-RateLimit-Reset when none remain, else 1 minute, doubled at each " +
 		"hit in a row up to 16 minutes; every watcher on the machine holds off as long (the file " +
 		"$XDG_STATE_HOME/fleet/ci/hold). A reply of 5xx, or a call with no reply, is tried again after --interval, " +
-		"doubled each time up to 5 minutes, 5 tries in all; so is a call gh does not answer within 60 s.\n\n" +
+		"doubled each time up to 5 minutes, 5 tries in all; so is a call gh does not answer within 60 s, or within " +
+		"what is left of --timeout.\n\n" +
 		"The wait ends when the run completes, or as soon as a job of its latest attempt has failed, been " +
 		"cancelled or timed out while the run still runs (a job with continue-on-error counts as failed here). " +
 		"--attempt N waits for attempt N or later: after a re-run, pass the new attempt, or a record of the " +
@@ -358,11 +359,16 @@ func (w *ciWait) sleep(d time.Duration) error {
 		left := time.Until(w.deadline)
 		if left <= d {
 			time.Sleep(max(left, 0))
-			return exit.New(exit.Unknown, fmt.Sprintf("timed out after %v; last seen: %s", w.args.Timeout, w.last))
+			return w.timedOut()
 		}
 	}
 	time.Sleep(d)
 	return nil
+}
+
+// timedOut is the exit 2 failure of a wait past its --timeout.
+func (w *ciWait) timedOut() error {
+	return exit.New(exit.Unknown, fmt.Sprintf("timed out after %v; last seen: %s", w.args.Timeout, w.last))
 }
 
 // ciLookup is what a lookup by SHA found, and when.
@@ -583,7 +589,15 @@ func (w *ciWait) get(path string) (*gh.Response, error) {
 // try asks GitHub once: the reply, or why to try again, or neither after a
 // rate limit, which the hold-off waits out.
 func (w *ciWait) try(path string) (*gh.Response, string, error) {
-	resp, err := gh.Get(path)
+	timeout := gh.CallTimeout
+	if !w.deadline.IsZero() {
+		left := time.Until(w.deadline)
+		if left <= 0 {
+			return nil, "", w.timedOut()
+		}
+		timeout = min(timeout, left)
+	}
+	resp, err := gh.Get(path, timeout)
 	var none *gh.NoResponse
 	if errors.As(err, &none) {
 		return nil, none.Message, nil
@@ -608,6 +622,9 @@ func (w *ciWait) retry(reason string, failures int) error {
 		return exit.Environmentf("%s (%d tries)", reason, failures)
 	}
 	wait := min(w.args.Interval<<(failures-1), ciErrorCap)
+	if !w.deadline.IsZero() && time.Until(w.deadline) <= wait {
+		return w.sleep(wait)
+	}
 	fmt.Fprintf(os.Stderr, "fleet: %s; trying again in %v\n", reason, wait)
 	return w.sleep(wait)
 }

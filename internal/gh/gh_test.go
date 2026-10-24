@@ -48,16 +48,30 @@ func TestFirstLineHidesTokens(t *testing.T) {
 func TestGetWithoutAReply(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("PATH", dir)
-	if _, err := Get("repos/o/r"); err == nil || errors.As(err, new(*NoResponse)) {
+	if _, err := Get("repos/o/r", CallTimeout); err == nil || errors.As(err, new(*NoResponse)) {
 		t.Errorf("gh missing from PATH is no try to repeat: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "gh"), []byte("#!/bin/sh\necho 'error connecting to api.github.example.test' >&2\nexit 1\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+":/usr/bin:/bin")
-	_, err := Get("repos/o/r")
+	_, err := Get("repos/o/r", CallTimeout)
 	var none *NoResponse
 	if !errors.As(err, &none) || !strings.Contains(none.Message, "error connecting") {
 		t.Errorf("a call that printed no reply is a NoResponse: %v", err)
+	}
+}
+
+func TestGetPastItsDeadlineIsNoReply(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "gh"), []byte("#!/bin/sh\nsleep 5\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+":/usr/bin:/bin")
+	start := time.Now()
+	_, err := Get("repos/o/r", 200*time.Millisecond)
+	var none *NoResponse
+	if !errors.As(err, &none) || time.Since(start) > 3*time.Second {
+		t.Errorf("a call past its 200 ms deadline is a NoResponse at once, got %v after %v", err, time.Since(start))
 	}
 }

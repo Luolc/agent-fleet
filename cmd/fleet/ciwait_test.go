@@ -17,7 +17,8 @@ import (
 // fakeGh answers `gh api --include ... <path>` from files in <dir>/gh: a
 // run's path from `run-<id>.<n>` on its n-th call, else `run-<id>`; its
 // jobs from `jobs-<id>[.<n>]`; a workflow's runs from `list[.<n>]`. Each
-// call appends `<caller pid> <time> <kind>` to <dir>/gh/calls.
+// call appends `<caller pid> <time> <kind>` to <dir>/gh/calls, then sleeps
+// the seconds in `sleep-<kind>` when that file exists.
 const fakeGh = `#!/bin/sh
 dir=$(dirname "$0")/../gh
 for path; do :; done
@@ -28,6 +29,7 @@ case "$path" in
   *) echo "fake gh: unexpected path $path" >&2; exit 2 ;;
 esac
 echo "$PPID $(date +%s.%N) $kind" >> "$dir/calls"
+[ -f "$dir/sleep-$kind" ] && sleep "$(cat "$dir/sleep-$kind")"
 n=$(grep -c " $kind\$" "$dir/calls")
 f="$dir/$kind.$n"
 [ -f "$f" ] || f="$dir/$kind"
@@ -264,17 +266,19 @@ func TestCIWaitWaitsOutRateLimits(t *testing.T) {
 func TestCIWaitOutcomes(t *testing.T) {
 	w := newWorld(t)
 	w.ghReplies(map[string]string{
-		"run-15":   runReply(15, 1, "completed", "failure"),
-		"jobs-15":  jobsReply("lint:completed:failure", "race:completed:success"),
-		"run-16":   runReply(16, 1, "in_progress", ""),
-		"jobs-16":  jobsReply("lint:completed:failure", "race:in_progress:"),
-		"run-17":   runReply(17, 1, "in_progress", ""),
-		"jobs-17":  jobsReply("lint:in_progress:"),
-		"run-19":   reply(404, "", `{"message":"Not Found"}`),
-		"run-20":   reply(403, "", `{"message":"Resource not accessible by integration"}`),
-		"run-22.1": runReply(22, 1, "completed", "failure"),
-		"run-22":   runReply(22, 2, "completed", "success"),
-		"jobs-22":  jobsReply("lint:completed:success"),
+		"run-15":       runReply(15, 1, "completed", "failure"),
+		"jobs-15":      jobsReply("lint:completed:failure", "race:completed:success"),
+		"run-16":       runReply(16, 1, "in_progress", ""),
+		"jobs-16":      jobsReply("lint:completed:failure", "race:in_progress:"),
+		"run-17":       runReply(17, 1, "in_progress", ""),
+		"jobs-17":      jobsReply("lint:in_progress:"),
+		"run-19":       reply(404, "", `{"message":"Not Found"}`),
+		"run-23":       runReply(23, 1, "completed", "success"),
+		"sleep-run-23": "30",
+		"run-20":       reply(403, "", `{"message":"Resource not accessible by integration"}`),
+		"run-22.1":     runReply(22, 1, "completed", "failure"),
+		"run-22":       runReply(22, 2, "completed", "success"),
+		"jobs-22":      jobsReply("lint:completed:success"),
 	})
 	ciWait := func(args ...string) result {
 		return w.run("", append([]string{"ci", "wait", "--repo", "o/r", "--interval", "100ms"}, args...))
@@ -287,6 +291,10 @@ func TestCIWaitOutcomes(t *testing.T) {
 	}
 	if out := ciWait("--run", "17", "--timeout", "1s"); out.code != 2 || !strings.Contains(out.stderr, "timed out after 1s") {
 		t.Errorf("a run still in progress at --timeout is exit 2: %+v", out)
+	}
+	start := time.Now()
+	if out := ciWait("--run", "23", "--timeout", "1500ms"); out.code != 2 || time.Since(start) > 4*time.Second {
+		t.Errorf("a gh call that hangs is cut at --timeout, exit 2, got after %v: %+v", time.Since(start), out)
 	}
 	if out := ciWait("--run", "19"); out.code != 4 {
 		t.Errorf("no such run is exit 4: %+v", out)
