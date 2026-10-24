@@ -239,4 +239,36 @@ has "watch threads: the thread is told" "$(cat "$QD/fednet.log")" "-thread $Q3 -
 qwatch 4500
 has "watch threads: Q2, 72h after its last message, is reclaimed" "$(qreceived "$(qname "$Q2")")" "rule \`thread idle\`: thread $Q2 has had no message for 3d01h"
 
+# Thread tabs: in the threads workspace, a tab a failed start of Q8 left
+# (an ended row of Q8 records its pane), one of Q9 whose row is still
+# `starting` long after its start, and two that watch leaves: one no row
+# records, and one of Q11 whose shell runs a process in the background.
+qws=$("${QS[@]}" workspace list | jq -r '.result.workspaces[] | select(.label == "threads") | .workspace_id')
+qtab() { "${QS[@]}" tab create --workspace "$qws" --label "$1" --no-focus --cwd /home/agent | jq -r .result.root_pane.pane_id; }
+p8=$(qtab c0708-8-8) p9=$(qtab c0709-9-9) p10=$(qtab c0710-10-10) p11=$(qtab c0711-11-11)
+"${QS[@]}" pane run "$p11" 'sleep 600 &' >/dev/null
+now=$(date +%s)
+sqlite3 "$QDB" "INSERT INTO agents (name, role, state, started_at, ended_at, thread, pane_id) VALUES
+    ('$(qname C0708/8.8)', 'thread', 'ended', $now, $now, 'C0708/8.8', '$p8'),
+    ('$(qname C0711/11.11)', 'thread', 'ended', $now, $now, 'C0711/11.11', '$p11');
+  INSERT INTO agents (name, role, state, started_at, thread, pane_id) VALUES
+    ('$(qname C0709/9.9)', 'thread', 'starting', $now, 'C0709/9.9', '$p9')"
+there() { for p in "$@"; do "${QS[@]}" pane get "$p" 2>&1 | jq -r '.error.code // "there"'; done | tr '\n' ' '; }
+qwatch 4510
+has "watch thread tabs: the row left starting is ended" "$(cat "$QD/watch-4510.out")" \
+  "watch: ended $(qname C0709/9.9) (thread), starting since"
+check "watch thread tabs: no tab closed in the first run that finds them" "there there there there " "$(there "$p8" "$p9" "$p10" "$p11")"
+qwatch 4515
+check "watch thread tabs: nor 5 minutes later" "there there there there " "$(there "$p8" "$p9" "$p10" "$p11")"
+qwatch 4520
+check "watch thread tabs: 10 minutes later the ended sessions' tabs are closed, the other two left" \
+  "pane_not_found pane_not_found there there " "$(there "$p8" "$p9" "$p10" "$p11")"
+has "watch thread tabs: each close is a line on stderr" "$(cat "$QD/watch-4520.out")" \
+  "watch: closed tab " "(c0708-8-8) of thread C0708/8.8: its pane $p8 is an ended session's" \
+  "(c0709-9-9) of thread C0709/9.9: its pane $p9 is an ended session's"
+check "watch thread tabs: status lists the tabs left, with why" \
+  "c0710-10-10 false no thread agent's ended row records its pane|c0711-11-11 false child process(es)|" \
+  "$("$T" --scope quiet status --json | jq -r '.orphan_tabs[] | "\(.label) \(.watch_closes) \(.why)"' |
+    sed 's/its shell (pid [0-9]*) has [0-9]* //' | tr '\n' '|')"
+
 "${QS[@]}" server stop >/dev/null

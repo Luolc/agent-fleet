@@ -69,6 +69,14 @@ const (
 		"or a fednet socket, stderr) is told once (rule `lead gone`), and decides whether to end it with `job end " +
 		"--force`. Then the tab of every ended lead's or worker's pane that herdr still has under the agent's name is " +
 		"closed, unless a live row records that pane.\n\n" +
+		"Thread tabs: a thread agent's row still `starting` 10 minutes after its start, missing from `herdr agent " +
+		"list` with no agent in its pane, is ended (a start that failed and was not tried again). A tab of the " +
+		"`threads` workspace that no live row records, other than its `shell` tab, is closed only when all of these " +
+		"hold: it has one pane, an ended thread agent's row records that pane, the tab's label is that thread's " +
+		"slug, herdr sees no agent in the pane, and the pane's shell is its foreground alone with no child process; " +
+		"and two runs 10 minutes apart or more found it so, in the same tab with the same shell, as did every run " +
+		"between them that read it. Each tab closed is a line on stderr; the others, a tab no ledger row records " +
+		"among them, are left open, and `fleet status` lists them.\n\n" +
 		"Workers: the workers watch started (`watch-<watch>-<key>`, in the `threads` workspace, with " +
 		"no job and the parent `watch`) that finished their turn, or worked for 30 minutes, are " +
 		"closed; the question one wrote in its question file is asked in the thread of its " +
@@ -270,6 +278,7 @@ func Watch(h *herdr.Herdr) (exit.Code, error) {
 	if all, err = r.leadsAndWorkers(all); err != nil {
 		return 0, err
 	}
+	r.threadTabs(inHerdr)
 	if r.workers, err = r.newWorkers(inHerdr); err != nil {
 		return 0, err
 	}

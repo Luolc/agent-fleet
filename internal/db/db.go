@@ -17,7 +17,7 @@ import (
 	"github.com/Luolc/agent-fleet/internal/exit"
 )
 
-const schemaVersion = 19
+const schemaVersion = 20
 
 // Version 1: the `agents` table. Ended rows are kept as history, so `name`
 // is unique only among rows that have not ended.
@@ -315,8 +315,22 @@ const schemaV19 = `
 ALTER TABLE worktrees ADD COLUMN statute_failure TEXT NOT NULL DEFAULT '';
 `
 
+// Version 20: `orphan_tabs`, the tabs of the `threads` workspace that
+// `fleet watch` found it may close, one row per pane: its tab, the pid of
+// its shell and the run that first found it so. Its tab is closed only
+// when a run 10 minutes later or more finds it so again, in the same tab
+// with the same shell; a run that finds it otherwise deletes its row.
+const schemaV20 = `
+CREATE TABLE orphan_tabs (
+    pane_id       TEXT    PRIMARY KEY,
+    tab_id        TEXT    NOT NULL,
+    shell_pid     INTEGER NOT NULL,
+    first_seen_at INTEGER NOT NULL
+);
+`
+
 // migrations[v] upgrades a ledger at version v to v+1.
-var migrations = [schemaVersion]string{schema, schemaV2, schemaV3, schemaV4, schemaV5, schemaV6, schemaV7, schemaV8, schemaV9, schemaV10, schemaV11, schemaV12, schemaV13, schemaV14, schemaV15, schemaV16, schemaV17, schemaV18, schemaV19}
+var migrations = [schemaVersion]string{schema, schemaV2, schemaV3, schemaV4, schemaV5, schemaV6, schemaV7, schemaV8, schemaV9, schemaV10, schemaV11, schemaV12, schemaV13, schemaV14, schemaV15, schemaV16, schemaV17, schemaV18, schemaV19, schemaV20}
 
 // Path is where the ledger of `scope` lives:
 // `$XDG_STATE_HOME/fleet/<scope>.db`, with `~/.local/state` when
