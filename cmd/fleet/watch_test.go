@@ -26,7 +26,9 @@ const rule = "──────────────────────
 // answers with `reply`; `agent get` finds the agents of list.json; a pane
 // has the tab `tab-<pane>`, and `tab close` writes the pane to
 // <dir>/closed, after which neither is found; `pane list` prints
-// <dir>/panes.json, or no pane without it.
+// <dir>/panes.json, or no pane without it; `workspace list` and `tab
+// list` print <dir>/workspaces.json and <dir>/tabs.json, or none without
+// them; `pane process-info --pane <pane>` prints <dir>/procinfo-<pane>.
 func watchHerdr(dir, reply string) string {
 	return `#!/bin/sh
 if [ "$1" = --session ]; then shift 2; fi
@@ -78,10 +80,16 @@ REPLY
     fi
     ;;
   "workspace list")
-    echo '{"result":{"workspaces":[]}}'
+    cat "$dir/workspaces.json" 2>/dev/null || echo '{"result":{"workspaces":[]}}'
+    ;;
+  "tab list")
+    cat "$dir/tabs.json" 2>/dev/null || echo '{"result":{"tabs":[]}}'
     ;;
   "pane list")
     cat "$dir/panes.json" 2>/dev/null || echo '{"result":{"panes":[]}}'
+    ;;
+  "pane process-info")
+    cat "$dir/procinfo-$4"
     ;;
   *)
     echo "fake herdr: unexpected command: $*" >&2

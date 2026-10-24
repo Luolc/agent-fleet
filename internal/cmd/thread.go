@@ -791,9 +791,12 @@ func (s *threadStart) place() (Place, error) {
 
 // start starts the thread agent and delivers the prompt with the message.
 // Returns the exit code of the delivery; a failure after the reservation
-// is printed with what was created, the row staying `starting` (the next
-// message for the thread starts again once herdr has no such agent).
+// is printed with what was created. A start that left no agent in its pane
+// is undone (abandon); any other leaves the row `starting` (the next
+// message for the thread finishes it, or starts again once herdr has no
+// such agent).
 func (s *threadStart) start() (exit.Code, error) {
+	row := len(s.created)
 	s.created = append(s.created, fmt.Sprintf("ledger row %s (state starting)", s.id.Agent))
 	place, err := s.place()
 	if err != nil {
@@ -801,10 +804,33 @@ func (s *threadStart) start() (exit.Code, error) {
 	}
 	code, err := startAndDeliver(s.h, s.conn, s.id, place, s.cwd, nil, nil, s.msg.sender(), s.firstMessage(), &s.created)
 	if err != nil || code != exit.Ok {
+		s.abandon(place, row)
 		return startFailed(s.id.Agent, err, code, s.created, "")
 	}
 	fmt.Fprintf(os.Stdout, "started %s for thread %s (session %d, %s)\n", s.id.Agent, s.msg.Thread, s.session, s.cwd)
 	return exit.Ok, nil
+}
+
+// abandon undoes a start that left no agent in its pane: the row is ended
+// and the tab closed, so the next message starts afresh and the `threads`
+// workspace keeps no tab of it. `row` is the row's entry in s.created, the
+// tab's the next. A start whose agent runs, or whose pane herdr cannot
+// show, is left as it is; a step that fails is said and the rest left to
+// the next message or `fleet watch`.
+func (s *threadStart) abandon(place Place, row int) {
+	if empty, err := paneHasNoAgent(s.h, place.PaneID); err != nil || !empty {
+		return
+	}
+	if err := endRow(s.conn, s.id.Agent); err != nil {
+		fmt.Fprintf(os.Stderr, "note: the row of %s, whose start left no agent, is not ended: %v\n", s.id.Agent, err)
+		return
+	}
+	s.created[row] = fmt.Sprintf("ledger row %s, now ended: no agent runs in its pane", s.id.Agent)
+	if err := closePaneTab(s.h, place.PaneID, s.id.Agent); err != nil {
+		fmt.Fprintf(os.Stderr, "note: the tab of %s, whose start left no agent, is not closed: %v\n", s.id.Agent, err)
+		return
+	}
+	s.created[row+1] += ", now closed"
 }
 
 // withoutLinear is what a start does when a Linear step still failed
@@ -1516,10 +1542,16 @@ func closePaneTab(h *herdr.Herdr, pane, name string) error {
 	if tab == "" {
 		return exit.Environmentf("herdr pane get %s has no tab_id", pane)
 	}
+	return closeTab(h, tab, name)
+}
+
+// closeTab closes `tab`, the tab of `name`, and checks that it is gone.
+func closeTab(h *herdr.Herdr, tab, name string) error {
 	if _, err := h.CallOK("tab", "close", tab); err != nil {
 		return err
 	}
-	if reply, err = h.Call("tab", "get", tab); err != nil {
+	reply, err := h.Call("tab", "get", tab)
+	if err != nil {
 		return err
 	}
 	switch {

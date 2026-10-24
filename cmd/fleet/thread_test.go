@@ -22,7 +22,10 @@ import (
 // is not running while <dir>/session-down exists, lists a `threads`
 // workspace once <dir>/threads-workspace exists (made by `workspace
 // create`) with a `shell` tab unless <dir>/no-shell exists, says an agent
-// exists when <dir>/has-<name> exists, and lets a start run to the end.
+// exists when <dir>/has-<name> exists, and lets a start run to the end,
+// with the agent in its pane (<dir>/agent-in-<pane>), or fails it while
+// <dir>/start-fails exists; `pane list` prints <dir>/panes.json, or no
+// pane without it.
 const threadHerdr = `#!/bin/sh
 dir="$(dirname "$0")/.."
 if [ "$1" = --session ]; then echo "$2" > "$dir/session"; shift 2; fi
@@ -53,14 +56,18 @@ case "$1 $2" in
   "tab create")
     printf '%s\n' "$@" > "$dir/tab-argv"
     echo '{"result":{"root_pane":{"workspace_id":"w7","tab_id":"t8","pane_id":"p8"}}}' ;;
-  "agent start") : > "$dir/has-$3"; echo '{"result":{}}' ;;
+  "agent start")
+    if [ -e "$dir/start-fails" ]; then echo '{"error":{"code":"timeout","message":"timed out waiting for agent startup"}}'; exit 1; fi
+    : > "$dir/has-$3"; : > "$dir/agent-in-$7"; echo '{"result":{}}' ;;
+  "pane list") cat "$dir/panes.json" 2>/dev/null || echo '{"result":{"panes":[]}}' ;;
   "pane rename")
     if [ -e "$dir/kill-at-rename" ]; then rm "$dir/kill-at-rename"; kill -9 $PPID; sleep 1; fi
     echo '{"result":{}}' ;;
   "tab rename"|"workspace close") echo '{"result":{}}' ;;
   "pane get")
     if [ -e "$dir/pane-gone" ]; then echo '{"error":{"code":"pane_not_found","message":"pane '"$3"' not found"}}'; else
-      echo '{"result":{"pane":{"pane_id":"'"$3"'","tab_id":"t9","workspace_id":"w7"}}}'; fi ;;
+      agent=; [ -e "$dir/agent-in-$3" ] && agent='"agent":"claude",'
+      echo '{"result":{"pane":{'"$agent"'"pane_id":"'"$3"'","tab_id":"t9","workspace_id":"w7"}}}'; fi ;;
   "tab get")
     if [ -e "$dir/tab-get-breaks" ]; then echo '{"error":{"code":"server_not_running","message":"no server"}}'; exit 1; fi
     if [ -e "$dir/closed-tab" ]; then echo '{"error":{"code":"tab_not_found","message":"tab '"$3"' not found"}}'; else
@@ -447,8 +454,13 @@ func TestInboxReopensAKnownThreadWithItsSummariesWhenTheAgentIsGone(t *testing.T
 	if out.code != 0 || !strings.Contains(out.stderr, "gone from herdr") {
 		t.Fatalf("%+v", out)
 	}
-	if got := strings.TrimSpace(w.calls()); !strings.HasPrefix(got, "herdr status server\nherdr agent get\nherdr status server\natb linear claim") {
+	// The old session's tab, found by the pane its row records, is closed.
+	if got := strings.TrimSpace(w.calls()); !strings.HasPrefix(got, "herdr status server\nherdr agent get\nherdr pane get\n"+
+		"herdr tab close\nherdr tab get\nherdr status server\natb linear claim") {
 		t.Errorf("calls = %q", got)
+	}
+	if got := w.file("closed-tab"); got != "t9\n" {
+		t.Errorf("closed tab = %q", got)
 	}
 	conn = w.defaultLedger()
 	defer conn.Close()
@@ -1250,6 +1262,53 @@ func TestInboxFinishesAStartItsEarlierRunWasKilledIn(t *testing.T) {
 	}
 	if got := threadRow(w); got != "TH-5 ss ctx" {
 		t.Errorf("thread row = %q, want two sessions, not three", got)
+	}
+}
+
+// A start that left no agent in its pane (Claude exited at once, both
+// tries) ends its row and closes its tab, and the message's next try
+// starts afresh; a start whose agent runs but did not get the message
+// keeps its row `starting` and its tab, for the next try to finish.
+func TestInboxUndoesAStartThatLeftNoAgentInItsPane(t *testing.T) {
+	w := threadWorld(t, "")
+	if err := os.WriteFile(filepath.Join(w.dir, "start-fails"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := w.inbox(w.event("m1", "first", ""))
+	if out.code != 5 || !strings.Contains(out.stderr, "ledger row "+threadAgent+", now ended: no agent runs in its pane\n") ||
+		!strings.Contains(out.stderr, "tab c0123-1700000000-123 (t8), now closed\n") {
+		t.Fatalf("%+v", out)
+	}
+	if got := threadAgentRow(w); got != "TH-5 ended" {
+		t.Errorf("row = %q", got)
+	}
+	if got := w.file("closed-tab"); got != "t9\n" {
+		t.Errorf("closed tab = %q", got)
+	}
+	if got := inboxRow(w, "m1"); got != "reserved" {
+		t.Errorf("inbox row = %q", got)
+	}
+	_ = os.Remove(filepath.Join(w.dir, "start-fails"))
+	out = w.inbox(w.event("m1", "first", ""))
+	if out.code != 0 || strings.Contains(out.stderr, "gone from herdr") || threadAgentRow(w) != "TH-5 active" {
+		t.Fatalf("the next try: %+v, row %q", out, threadAgentRow(w))
+	}
+
+	conn := w.defaultLedger()
+	if _, err := conn.Exec("UPDATE agents SET state = 'ended' WHERE role = 'thread'"); err != nil {
+		t.Fatal(err)
+	}
+	conn.Close()
+	for _, f := range []string{"closed-tab", "calls"} {
+		_ = os.Remove(filepath.Join(w.dir, f))
+	}
+	if err := os.WriteFile(filepath.Join(w.dir, "prompt-not-found"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out = w.inbox(w.event("m2", "again", ""))
+	if out.code == 0 || threadAgentRow(w) != "TH-5 starting" || w.file("closed-tab") != "" ||
+		strings.Contains(w.calls(), "herdr tab close") {
+		t.Errorf("an agent without its message: %+v, row %q, closed tab %q", out, threadAgentRow(w), w.file("closed-tab"))
 	}
 }
 

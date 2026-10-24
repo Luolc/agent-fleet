@@ -417,6 +417,11 @@ func route(h *herdr.Herdr, conn *sql.DB, scope string, cfg *config.Scope, msg in
 		if err := endRow(conn, name); err != nil {
 			return 0, false, err
 		}
+		// A tab left open does not hold up the message: `fleet watch`
+		// closes it later.
+		if err := closeOwnTab(h, conn, name); err != nil {
+			fmt.Fprintf(os.Stderr, "note: the tab of %s's ended session is not closed: %v\n", name, err)
+		}
 	}
 	return startThread(h, conn, scope, cfg, msg)
 }

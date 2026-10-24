@@ -39,7 +39,7 @@ func TestMain(m *testing.M) {
 // answers with `reply`, records its argv in <dir>/argv and appends a line
 // to <dir>/calls; `agent read`
 // prints a fixed screen, or fails when readFails is set; `agent list`
-// answers with `list`.
+// answers with `list`; `workspace list` has no workspace.
 func fakeHerdr(reply, list string, readFails bool) string {
 	fails := ""
 	if readFails {
@@ -52,6 +52,9 @@ case "$1 $2" in
     cat <<'LIST'
 ` + list + `
 LIST
+    ;;
+  "workspace list")
+    echo '{"result":{"workspaces":[]}}'
     ;;
   "agent read")
     if [ -n "` + fails + `" ]; then

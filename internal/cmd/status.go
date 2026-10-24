@@ -34,6 +34,9 @@ const (
 		"  missing    in the ledger but gone from herdr\n" +
 		"  suspect    `fleet watch` currently counts it as stuck\n" +
 		"  light      started with --light: past the load check, told to only read\n\n" +
+		"Last, without --job, the tabs of the `threads` workspace that no live agent has, other than its " +
+		"`shell` tab (`orphan_tabs` in --json), each with when `fleet watch` closes it or why it does not " +
+		"(`fleet watch --help` says when it may); nothing is printed when there are none.\n\n" +
 		"Exit: 0; 1 when the scope is not a scope name; 5 when herdr or the database fails, " +
 		"or the ledger does not exist."
 )
@@ -42,7 +45,7 @@ const (
 type StatusArgs struct {
 	// Job, when set, keeps only this job and its agents.
 	Job *string
-	// JSON asks for machine-readable output: {"jobs": [...], "agents": [...]}.
+	// JSON asks for machine-readable output: {"jobs": [...], "agents": [...], "orphan_tabs": [...]}.
 	JSON bool
 }
 
@@ -176,8 +179,9 @@ func HerdrAgents(h *herdr.Herdr) (map[string]InHerdr, error) {
 
 // report is the whole of `status`.
 type report struct {
-	Jobs   []jobLine `json:"jobs"`
-	Agents []line    `json:"agents"`
+	Jobs       []jobLine    `json:"jobs"`
+	Agents     []line       `json:"agents"`
+	OrphanTabs []orphanLine `json:"orphan_tabs"`
 }
 
 // Status runs `status`.
@@ -202,6 +206,12 @@ func Status(h *herdr.Herdr, args StatusArgs) (exit.Code, error) {
 	if err != nil {
 		return 0, err
 	}
+	orphans := []orphanLine{}
+	if args.Job == nil {
+		if orphans, err = orphanLines(h, conn); err != nil {
+			return 0, err
+		}
+	}
 	now := db.Now()
 	lines := make([]line, 0, len(rows))
 	for _, live := range rows {
@@ -216,7 +226,7 @@ func Status(h *herdr.Herdr, args StatusArgs) (exit.Code, error) {
 		encoder := json.NewEncoder(&buf)
 		encoder.SetEscapeHTML(false)
 		encoder.SetIndent("", "  ")
-		if err := encoder.Encode(report{Jobs: jobs, Agents: lines}); err != nil {
+		if err := encoder.Encode(report{Jobs: jobs, Agents: lines, OrphanTabs: orphans}); err != nil {
 			return 0, exit.Environmentf("json: %v", err)
 		}
 		fmt.Fprint(os.Stdout, buf.String())
@@ -224,8 +234,24 @@ func Status(h *herdr.Herdr, args StatusArgs) (exit.Code, error) {
 		printJobs(jobs, now)
 		fmt.Fprintln(os.Stdout)
 		printTable(lines)
+		printOrphans(orphans)
 	}
 	return exit.Ok, nil
+}
+
+// printOrphans prints the orphan tabs as a table after a blank line, and
+// nothing when there are none.
+func printOrphans(orphans []orphanLine) {
+	if len(orphans) == 0 {
+		return
+	}
+	rows := make([][]string, 0, len(orphans))
+	for _, o := range orphans {
+		rows = append(rows, []string{o.Tab, orDash(o.Label), orDash(o.Pane), o.Why})
+	}
+	fmt.Fprintln(os.Stdout)
+	fmt.Fprintln(os.Stdout, "tabs in the threads workspace that no live agent has:")
+	printAligned([]string{"TAB", "LABEL", "PANE", "WHY"}, rows)
 }
 
 // printJobs prints the open jobs as a table.

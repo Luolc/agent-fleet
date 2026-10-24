@@ -361,7 +361,7 @@ var statusHelp = cmd.StatusLongAbout + "\n\n" + statusUsage + `
 
 Options:
       --job <JOB>        Only this job and its agents
-      --json             Machine-readable output: {"jobs": [...], "agents": [...]}
+      --json             Machine-readable output: {"jobs": [...], "agents": [...], "orphan_tabs": [...]}
       --scope <NAME>     ` + scopeHelp + `
   -h, --help             Print help
 `

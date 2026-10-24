@@ -958,3 +958,43 @@ check "thread list: exit 0 and one line per thread, newest first" \
   "$rc $(echo "$out" | tr '\n' '|' | sed 's/|$//')"
 check "thread list: asks fednet for the threads of the channel's id" 1 \
   "$(grep -c -- "^client threads -socket /home/agent/fednet.sock -channel C0HR -json$" /home/agent/fednet.log)"
+
+# A thread agent whose Claude exited leaves its tab: the next message ends
+# its row, closes that tab by the pane the row records, and starts a new
+# session. A start that leaves no agent in its pane (the gateway refuses
+# every session) ends its row and closes its tab, and the message's retry
+# starts afresh.
+tabs_labelled() { "${S[@]}" tab list | jq "[.result.tabs[] | select(.label == \"$1\")] | length"; }
+KG=C0555/1700000555.000
+AG=thread-c0555-1700000555-000
+inbox "$(event g1 "$KG" 'first 0xGONE1')" >/dev/null 2>&1; rc=$?
+check "inbox, agent gone: the first session started" "0 $AG" "$rc $(agent_field "$AG" name)"
+settled "$AG"
+gpane=$(agent_field "$AG" pane_id)
+"${S[@]}" pane send-keys "$gpane" ctrl+d >/dev/null
+for _ in $(seq 1 50); do [ "$(agent_field "$AG" name)" = agent_not_found ] && break; sleep 0.2; done
+check "inbox, agent gone: its Claude exited, its pane left" "agent_not_found $gpane" \
+  "$(agent_field "$AG" name) $("${S[@]}" pane get "$gpane" | jq -r .result.pane.pane_id)"
+out=$(inbox "$(event g2 "$KG" 'still there? 0xGONE2')" 2>&1); rc=$?
+check "inbox, agent gone: a new session, exit 0" 0 "$rc"
+has "inbox, agent gone: says the session before is gone" "$out" "$AG is gone from herdr"
+check "inbox, agent gone: the old tab is closed" pane_not_found \
+  "$("${S[@]}" pane get "$gpane" 2>&1 | jq -r '.error.code // "there"')"
+check "inbox, agent gone: the thread has one tab, the new session's" "1 $AG" \
+  "$(tabs_labelled c0555-1700000555-000) $(agent_field "$AG" name)"
+settled "$AG"
+KF=C0666/1700000666.000
+AF=thread-c0666-1700000666-000
+touch "$fake/gateway-full"
+out=$(inbox "$(event f1 "$KF" 'hello 0xFAIL1')" 2>&1); rc=$?
+rm "$fake/gateway-full"
+check "inbox, start failed: exit 5" 5 "$rc"
+has "inbox, start failed: says the row is ended and the tab closed" "$out" \
+  "ledger row $AF, now ended: no agent runs in its pane" "tab c0666-1700000666-000 (" "), now closed"
+check "inbox, start failed: the row ended, the message reserved, no tab of the thread left" "ended reserved 0" \
+  "$(tledger "SELECT state FROM agents WHERE name = '$AF'")$(tledger "SELECT state FROM inbox WHERE msg_id = 'f1'")$(tabs_labelled c0666-1700000666-000)"
+out=$(inbox /home/agent/events/f1.json 2>&1); rc=$?
+check "inbox, start failed: the retry starts afresh, exit 0" "0 active 1" \
+  "$rc $(tledger "SELECT state FROM agents WHERE name = '$AF' AND state != 'ended'")$(tabs_labelled c0666-1700000666-000)"
+lacks "inbox, start failed: the retry finds nothing gone" "$out" "gone from herdr"
+settled "$AF"
