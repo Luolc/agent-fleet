@@ -14,7 +14,7 @@
 #   JUDGE_IMAGE       use an image built elsewhere (CI) instead of building
 #   JUDGE_SUITES      the suites to run, space-separated names out of usage,
 #                     send, lifecycle, watch, worktree, thread, watchthread,
-#                     watches and unblock; they run
+#                     watches, unblock and ci; they run
 #                     in that order whatever order they are given in
 #                     (default: all of them)
 #

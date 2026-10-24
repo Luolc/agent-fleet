@@ -22,6 +22,12 @@ func TestMain(m *testing.M) {
 	if os.Getenv("FLEET_TEST_RUN_MAIN") == "1" {
 		// A Linear step's retries wait milliseconds here, not seconds.
 		cmd.LinearPauses = []time.Duration{10 * time.Millisecond, 10 * time.Millisecond}
+		// `ci wait`'s paces are shortened the same way.
+		cmd.CIIntervalFloor = 100 * time.Millisecond
+		cmd.CIRateLimitFloor = time.Second
+		cmd.CIReadEvery = 50 * time.Millisecond
+		cmd.CIRunAppears = 2 * time.Second
+		cmd.CILookupFresh = 500 * time.Millisecond
 		main()
 		return
 	}
@@ -150,7 +156,7 @@ func TestEverySubcommandHasHelp(t *testing.T) {
 	w := newWorld(t)
 	for _, name := range [][]string{{"send"}, {"spawn"}, {"done"}, {"status"}, {"watch"}, {"worktree"},
 		{"job", "start"}, {"job", "list"}, {"job", "end"}, {"inbox"}, {"thread", "end"}, {"thread", "set-project"},
-		{"thread", "relate"}, {"thread", "list"}, {"ask-human"}, {"prompt", "show"}, {"worker", "end"}} {
+		{"thread", "relate"}, {"thread", "list"}, {"ask-human"}, {"prompt", "show"}, {"worker", "end"}, {"ci", "wait"}} {
 		out := w.run("", append(name, "--help"))
 		if out.code != 0 {
 			t.Errorf("%s --help failed: %+v", name, out)
