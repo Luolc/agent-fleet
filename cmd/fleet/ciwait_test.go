@@ -345,9 +345,29 @@ func TestCIWaitBySHA(t *testing.T) {
 	if got := pids(w.ghCalls()); len(got) != 1 || lists != 2 {
 		t.Errorf("one process looks the run up, twice (none yet, then two runs): %d lists, the calls of %v", lists, got)
 	}
-	if out := w.run("", []string{"ci", "wait", "--repo", "o/r", "--sha", strings.Repeat("c", 40), "--workflow", "ci.yml",
-		"--event", "push", "--interval", "500ms"}); out.code != 0 {
-		t.Errorf("a SHA whose list has runs: %+v", out)
+	countLists := func() int {
+		n := 0
+		for _, c := range w.ghCalls() {
+			if c.kind == "list" {
+				n++
+			}
+		}
+		return n
+	}
+	// A newer run of the SHA (a reopened PR, a dispatch) after the lookup
+	// went stale (CILookupFresh is 500 ms in the test binary): looked up again.
+	time.Sleep(600 * time.Millisecond)
+	w.ghReplies(map[string]string{
+		"list":    reply(200, "", `{"total_count":3,"workflow_runs":[{"id":33},{"id":31},{"id":30}]}`),
+		"run-33":  runReply(33, 1, "completed", "failure"),
+		"jobs-33": jobsReply("lint:completed:failure"),
+	})
+	if out := w.run("", args); out.code != 7 || !strings.Contains(out.stdout, "runs/33 attempt 1: failure") || countLists() != 3 {
+		t.Errorf("a stale lookup is made again and finds the newer run 33 (%d lists): %+v", countLists(), out)
+	}
+	// With --event, even one named any, a lookup of its own, not the fresh one without.
+	if out := w.run("", append(args, "--event", "any")); out.code != 7 || countLists() != 4 {
+		t.Errorf("--event any looks up apart from no --event (%d lists): %+v", countLists(), out)
 	}
 }
 

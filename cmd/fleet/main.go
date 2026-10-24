@@ -34,7 +34,8 @@ const longAbout = "Runs and coordinates coding agents through herdr.\n\n" +
 	"Exit codes, shared by every command:\n" +
 	"  0  ok\n" +
 	"  1  usage error or precondition refused (role, cap, resources, empty body)\n" +
-	"  2  herdr gave no clear signal (timeout, stalled): the outcome is unknown, do not resend blindly\n" +
+	"  2  herdr gave no clear signal (timeout, stalled): the outcome is unknown, do not resend blindly;\n" +
+	"     for `fleet ci wait`, its --timeout passed first\n" +
 	"  3  target blocked (its screen is printed), or spawn stopped at an unknown screen\n" +
 	"  4  target not found\n" +
 	"  5  environment error (herdr, atb, git or the database failed)\n" +

@@ -30,8 +30,9 @@ const (
 	CIWaitAbout     = "Wait for a GitHub Actions run to end; one caller per run asks GitHub, the others read its record"
 	CIWaitLongAbout = "Wait for a GitHub Actions run to end; one caller per run asks GitHub, the others read its record.\n\n" +
 		"The run is --run, or the newest run of --workflow (its file name, such as ci.yml, or its id) for the " +
-		"commit --sha, of the event --event when given; a run of the SHA that has not appeared yet is waited for " +
-		"up to 10 minutes. On this machine, whatever the scope, one caller per run is its watcher: the one holding " +
+		"commit --sha, of the event --event when given, as GitHub lists them when looked up; a run of the SHA that " +
+		"has not appeared yet is waited for up to 10 minutes, and a lookup answers the callers that come within a " +
+		"minute of it, a later caller looking up again. On this machine, whatever the scope, one caller per run is its watcher: the one holding " +
 		"the lock $XDG_STATE_HOME/fleet/ci/<OWNER>/<NAME>/run-<ID>.lock (a SHA's lookup has a lock of its own " +
 		"beside it). Only the watcher asks GitHub, through `gh api` as the account gh's configuration and " +
 		"environment select; it writes what it saw to run-<ID>.json beside the lock after every look. Every other " +
@@ -42,7 +43,7 @@ const (
 		"long as Retry-After says, else until X-RateLimit-Reset when none remain, else 1 minute, doubled at each " +
 		"hit in a row up to 16 minutes; every watcher on the machine holds off as long (the file " +
 		"$XDG_STATE_HOME/fleet/ci/hold). A reply of 5xx, or a call with no reply, is tried again after --interval, " +
-		"doubled each time up to 5 minutes, 5 tries in all.\n\n" +
+		"doubled each time up to 5 minutes, 5 tries in all; so is a call gh does not answer within 60 s.\n\n" +
 		"The wait ends when the run completes, or as soon as a job of its latest attempt has failed, been " +
 		"cancelled or timed out while the run still runs (a job with continue-on-error counts as failed here). " +
 		"--attempt N waits for attempt N or later: after a re-run, pass the new attempt, or a record of the " +
@@ -70,6 +71,8 @@ var (
 	CIReadEvery = time.Second
 	// CIRunAppears is how long a lookup by SHA waits for the run to appear.
 	CIRunAppears = 10 * time.Minute
+	// CILookupFresh is how long a lookup by SHA answers later callers.
+	CILookupFresh = time.Minute
 )
 
 const (
@@ -362,26 +365,28 @@ func (w *ciWait) sleep(d time.Duration) error {
 	return nil
 }
 
+// ciLookup is what a lookup by SHA found, and when.
+type ciLookup struct {
+	RunID     int64 `json:"run_id"`
+	CheckedAt int64 `json:"checked_at_ms"`
+}
+
 // resolve finds the run of the SHA, shared as a run is: one caller looks it
-// up and writes its id to `sha-<SHA>-<workflow>-<event>.json`.
+// up and writes its id to `sha-<SHA>-<workflow>@<event>.json` (no event
+// after the `@` without --event), which answers the callers that come
+// within CILookupFresh; a later one looks up again, since a newer run of
+// the SHA may have started.
 func (w *ciWait) resolve() (int64, error) {
-	event := w.args.Event
-	if event == "" {
-		event = "any"
-	}
-	base := filepath.Join(w.dir, fmt.Sprintf("sha-%s-%s-%s", w.args.SHA, w.args.Workflow, event))
+	base := filepath.Join(w.dir, fmt.Sprintf("sha-%s-%s@%s", w.args.SHA, w.args.Workflow, w.args.Event))
 	data, err := w.shared(base, func(data []byte) bool {
-		var found struct {
-			RunID int64 `json:"run_id"`
-		}
-		return json.Unmarshal(data, &found) == nil && found.RunID > 0
+		var found ciLookup
+		return json.Unmarshal(data, &found) == nil && found.RunID > 0 &&
+			time.Since(time.UnixMilli(found.CheckedAt)) < CILookupFresh
 	}, w.lookUp)
 	if err != nil {
 		return 0, err
 	}
-	var found struct {
-		RunID int64 `json:"run_id"`
-	}
+	var found ciLookup
 	_ = json.Unmarshal(data, &found)
 	return found.RunID, nil
 }
@@ -396,7 +401,7 @@ func (w *ciWait) lookUp(base string) ([]byte, error) {
 			return nil, err
 		}
 		if newest > 0 {
-			data, _ := json.Marshal(map[string]int64{"run_id": newest})
+			data, _ := json.Marshal(ciLookup{RunID: newest, CheckedAt: time.Now().UnixMilli()})
 			if err := writeFile(base+".json", data); err != nil {
 				return nil, err
 			}
@@ -632,8 +637,17 @@ func (w *ciWait) holdPath() string {
 	return filepath.Join(w.root, "hold")
 }
 
-// hold makes the machine's hold-off last at least until `until`.
+// hold makes the machine's hold-off last at least until `until`, under
+// `hold.lock` so two watchers rate-limited at once keep the longer wait.
 func (w *ciWait) hold(until time.Time) error {
+	f, err := os.OpenFile(w.holdPath()+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return exit.IO(err)
+	}
+	defer func() { _ = f.Close() }()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		return exit.IO(err)
+	}
 	if current, ok := w.holdUntil(); ok && current.After(until) {
 		return nil
 	}

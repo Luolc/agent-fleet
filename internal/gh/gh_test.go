@@ -1,6 +1,10 @@
 package gh
 
 import (
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -38,5 +42,22 @@ func TestFirstLineHidesTokens(t *testing.T) {
 	got := firstLine([]byte("bad credentials ghp_FAKE0123456789 and github_pat_FAKE_01\nsecond line"))
 	if got != "bad credentials [redacted] and [redacted]" {
 		t.Errorf("got %q", got)
+	}
+}
+
+func TestGetWithoutAReply(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("PATH", dir)
+	if _, err := Get("repos/o/r"); err == nil || errors.As(err, new(*NoResponse)) {
+		t.Errorf("gh missing from PATH is no try to repeat: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "gh"), []byte("#!/bin/sh\necho 'error connecting to api.github.example.test' >&2\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+":/usr/bin:/bin")
+	_, err := Get("repos/o/r")
+	var none *NoResponse
+	if !errors.As(err, &none) || !strings.Contains(none.Message, "error connecting") {
+		t.Errorf("a call that printed no reply is a NoResponse: %v", err)
 	}
 }

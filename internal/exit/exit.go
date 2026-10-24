@@ -15,7 +15,7 @@ const (
 	// resources, empty body).
 	Refused Code = 1
 	// Unknown means herdr gave no clear signal (timeout, stalled): the
-	// outcome is unknown.
+	// outcome is unknown; for `ci wait`, its --timeout passed first.
 	Unknown Code = 2
 	// Blocked means the target is blocked, or `spawn` stopped at an unknown
 	// screen.

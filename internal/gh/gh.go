@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Luolc/agent-fleet/internal/exit"
 	"github.com/Luolc/agent-fleet/internal/herdr"
 )
 
@@ -39,16 +40,17 @@ type NoResponse struct {
 func (e *NoResponse) Error() string { return e.Message }
 
 // Get runs `gh api --include --method GET <path>`. A reply of any status is
-// a Response; a call that printed none is a *NoResponse; gh missing or
-// timing out is the *exit.Failure herdr.Exec returns.
+// a Response; a call that printed none, or that hit herdr.Exec's deadline,
+// is a *NoResponse; gh missing from PATH is an *exit.Failure.
 func Get(path string) (*Response, error) {
+	if _, err := exec.LookPath("gh"); err != nil {
+		return nil, exit.Environmentf("cannot run gh: %v", err)
+	}
 	stdout, stderr, err := herdr.Exec("gh api", envNames, "gh", "api", "--include", "--method", "GET",
 		"-H", "Accept: application/vnd.github+json", "-H", "X-GitHub-Api-Version: 2022-11-28", path)
-	if err != nil {
-		var exitErr *exec.ExitError
-		if !errors.As(err, &exitErr) {
-			return nil, err
-		}
+	var failure *exit.Failure
+	if errors.As(err, &failure) {
+		return nil, &NoResponse{failure.Message}
 	}
 	resp, ok := parse(stdout)
 	if !ok {

@@ -27,6 +27,7 @@ func TestMain(m *testing.M) {
 		cmd.CIRateLimitFloor = time.Second
 		cmd.CIReadEvery = 50 * time.Millisecond
 		cmd.CIRunAppears = 2 * time.Second
+		cmd.CILookupFresh = 500 * time.Millisecond
 		main()
 		return
 	}
