@@ -188,8 +188,11 @@ func TestCIWaitNextCallerTakesOverFromAKilledWatcher(t *testing.T) {
 	w.ghReplies(replies)
 	args := []string{"ci", "wait", "--repo", "o/r", "--run", "18", "--interval", "300ms", "--timeout", "20s"}
 	a := w.start(args...)
-	for len(w.ghCalls()) == 0 {
-		time.Sleep(20 * time.Millisecond)
+	for deadline := time.Now().Add(10 * time.Second); len(w.ghCalls()) == 0; time.Sleep(20 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			_ = a.cmd.Process.Kill()
+			t.Fatal("the first caller asked GitHub nothing within 10 s")
+		}
 	}
 	b := w.start(args...)
 	time.Sleep(100 * time.Millisecond)
