@@ -10,6 +10,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Luolc/agent-fleet/internal/atb"
 	"github.com/Luolc/agent-fleet/internal/cliargs"
@@ -37,7 +38,8 @@ const longAbout = "Runs and coordinates coding agents through herdr.\n\n" +
 	"  3  target blocked (its screen is printed), or spawn stopped at an unknown screen\n" +
 	"  4  target not found\n" +
 	"  5  environment error (herdr, atb, git or the database failed)\n" +
-	"  6  done, but a step after it failed: stdout is as for 0, and the command's help names the step"
+	"  6  done, but a step after it failed: stdout is as for 0, and the command's help names the step\n" +
+	"  7  the CI run `fleet ci wait` waited for ended in anything but success"
 
 const scopeHelp = "Scope to act in: its ledger, settings and herdr session fleet-<NAME>. " +
 	"Default: FLEET_SCOPE, which every agent has, then `main`. Use it from a timer or a plain shell"
@@ -61,6 +63,7 @@ Commands:
   watch      ` + cmd.WatchAbout + `
   worktree   ` + cmd.WorktreeAbout + `
   prompt     ` + cmd.PromptAbout + `
+  ci         ` + cmd.CIAbout + `
   help       Print this message or the help of the given subcommand(s)
 
 Options:
@@ -420,6 +423,34 @@ Options:
   -h, --help            Print help
 `
 
+const ciUsage = "Usage: fleet ci <COMMAND>"
+
+var ciHelp = cmd.CIAbout + ".\n\n" + ciUsage + `
+
+Commands:
+  wait  ` + cmd.CIWaitAbout + `
+
+Options:
+  -h, --help  Print help
+`
+
+const ciWaitUsage = "Usage: fleet ci wait [OPTIONS] --repo <OWNER/NAME> (--run <ID> | --sha <SHA> --workflow <WORKFLOW> [--event <EVENT>])"
+
+var ciWaitHelp = cmd.CIWaitLongAbout + "\n\n" + ciWaitUsage + `
+
+Options:
+      --repo <OWNER/NAME>    The repository on GitHub
+      --run <ID>             The run's id, as in its URL .../actions/runs/<ID>
+      --sha <SHA>            Without --run: the commit whose run to wait for, all 40 hex digits
+      --workflow <WORKFLOW>  With --sha: the workflow's file name, such as ci.yml, or its id
+      --event <EVENT>        With --sha: only a run of this event, such as push or pull_request
+      --attempt <N>          Wait for attempt N or later of the run. Default: 1
+      --timeout <DURATION>   Give up after this long, such as 30m (exit 2). Default: no limit
+      --interval <DURATION>  How often the watcher looks, at least 15s. Default: 30s
+      --json                 Print the run's record instead of the summary
+  -h, --help                 Print help
+`
+
 func main() {
 	os.Exit(run(os.Args[1:]))
 }
@@ -536,6 +567,8 @@ func dispatch(args []string) (exit.Code, error) {
 		return runWorktree(rest[1:], &scope)
 	case "prompt":
 		return runPrompt(rest[1:], &scope)
+	case "ci":
+		return runCI(rest[1:], &scope)
 	default:
 		return 0, &usageError{fmt.Sprintf("unrecognized subcommand '%s'", rest[0]), topUsage}
 	}
@@ -544,7 +577,7 @@ func dispatch(args []string) (exit.Code, error) {
 // help is clap's implicit `help [COMMAND]` subcommand.
 func help(args []string) (exit.Code, error) {
 	helps := map[string]string{"inbox": inboxHelp, "thread": threadHelp, "job": jobHelp, "ask-human": askHumanHelp, "ask-thread": askThreadHelp, "send": sendHelp, "spawn": spawnHelp, "done": doneHelp, "worker": workerHelp,
-		"status": statusHelp, "report": reportHelp, "watch": watchHelp, "worktree": worktreeHelp, "prompt": promptHelp, "help": topHelp}
+		"status": statusHelp, "report": reportHelp, "watch": watchHelp, "worktree": worktreeHelp, "prompt": promptHelp, "ci": ciHelp, "help": topHelp}
 	if len(args) == 0 {
 		fmt.Fprint(os.Stdout, topHelp)
 		return exit.Ok, nil
@@ -564,6 +597,10 @@ func help(args []string) (exit.Code, error) {
 	}
 	if args[0] == "worker" && len(args) > 1 && args[1] == "end" {
 		fmt.Fprint(os.Stdout, workerEndHelp)
+		return exit.Ok, nil
+	}
+	if args[0] == "ci" && len(args) > 1 && args[1] == "wait" {
+		fmt.Fprint(os.Stdout, ciWaitHelp)
 		return exit.Ok, nil
 	}
 	if args[0] == "prompt" && len(args) > 1 && args[1] == "show" {
@@ -1138,4 +1175,71 @@ func runPrompt(args []string, scope *cliargs.OptString) (exit.Code, error) {
 	default:
 		return 0, &usageError{fmt.Sprintf("unrecognized subcommand '%s'", args[0]), promptUsage}
 	}
+}
+
+// runCI dispatches `fleet ci <COMMAND>`.
+func runCI(args []string, scope *cliargs.OptString) (exit.Code, error) {
+	if len(args) == 0 {
+		return 0, &usageError{"'fleet ci' requires a subcommand but one was not provided", ciUsage}
+	}
+	switch args[0] {
+	case "-h", "--help", "help":
+		fmt.Fprint(os.Stdout, ciHelp)
+		return exit.Ok, nil
+	case "wait":
+		return runCIWait(args[1:], scope)
+	default:
+		return 0, &usageError{fmt.Sprintf("unrecognized subcommand '%s'", args[0]), ciUsage}
+	}
+}
+
+func runCIWait(args []string, scope *cliargs.OptString) (exit.Code, error) {
+	fs := flagSet("ci wait", scope)
+	repo := cliargs.OptString{Name: "repo", Placeholder: "OWNER/NAME"}
+	run := cliargs.OptString{Name: "run", Placeholder: "ID"}
+	sha := cliargs.OptString{Name: "sha", Placeholder: "SHA"}
+	workflow := cliargs.OptString{Name: "workflow", Placeholder: "WORKFLOW"}
+	event := cliargs.OptString{Name: "event", Placeholder: "EVENT"}
+	attempt := cliargs.OptString{Name: "attempt", Placeholder: "N"}
+	timeout := cliargs.OptString{Name: "timeout", Placeholder: "DURATION"}
+	interval := cliargs.OptString{Name: "interval", Placeholder: "DURATION"}
+	asJSON := cliargs.Bool{Name: "json"}
+	fs.Var(&repo, "repo", "The repository")
+	fs.Var(&run, "run", "The run's id")
+	fs.Var(&sha, "sha", "The commit")
+	fs.Var(&workflow, "workflow", "The workflow")
+	fs.Var(&event, "event", "The event")
+	fs.Var(&attempt, "attempt", "The attempt")
+	fs.Var(&timeout, "timeout", "Give up after this long")
+	fs.Var(&interval, "interval", "How often to look")
+	fs.Var(&asJSON, "json", "Print the record")
+	_, helped, err := parse(fs, args, ciWaitHelp, ciWaitUsage, nil, &repo)
+	if err != nil || helped {
+		return exit.Ok, err
+	}
+	if scope.Given {
+		return 0, exit.Refusedf("--scope does not apply to ci wait: a run's record is the machine's")
+	}
+	a := cmd.CIWaitArgs{Repo: repo.Value, SHA: sha.Value, Workflow: workflow.Value, Event: event.Value, JSON: asJSON.Value}
+	if run.Given {
+		if a.Run, err = strconv.ParseInt(run.Value, 10, 64); err != nil || a.Run < 1 {
+			return 0, &usageError{fmt.Sprintf("--run %q is not a run id", run.Value), ciWaitUsage}
+		}
+	}
+	if attempt.Given {
+		if a.Attempt, err = strconv.Atoi(attempt.Value); err != nil || a.Attempt < 1 {
+			return 0, &usageError{fmt.Sprintf("--attempt %q is not a positive number", attempt.Value), ciWaitUsage}
+		}
+	}
+	for _, d := range []struct {
+		flag *cliargs.OptString
+		to   *time.Duration
+	}{{&timeout, &a.Timeout}, {&interval, &a.Interval}} {
+		if d.flag.Given {
+			if *d.to, err = time.ParseDuration(d.flag.Value); err != nil || *d.to <= 0 {
+				return 0, &usageError{fmt.Sprintf("--%s %q is not a duration such as 30s or 10m", d.flag.Name, d.flag.Value), ciWaitUsage}
+			}
+		}
+	}
+	return cmd.CIWait(os.Stdout, a)
 }

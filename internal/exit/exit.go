@@ -27,6 +27,9 @@ const (
 	// Partial means the command did its work, but a step after it failed:
 	// stdout is what exit 0 prints, and the command's help names the step.
 	Partial Code = 6
+	// Failed means the CI run `ci wait` waited for ended in anything but
+	// success, or a job of it failed while it still runs.
+	Failed Code = 7
 )
 
 // Failure is a command failure: the exit code plus the message printed to
