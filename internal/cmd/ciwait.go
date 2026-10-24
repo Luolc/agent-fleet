@@ -180,7 +180,11 @@ func CIWait(stdout io.Writer, args CIWaitArgs) (exit.Code, error) {
 	}
 	data, err := w.shared(filepath.Join(w.dir, fmt.Sprintf("run-%d", run)), func(data []byte) bool {
 		var rec ciRecord
-		return json.Unmarshal(data, &rec) == nil && rec.settles(args.Attempt)
+		if json.Unmarshal(data, &rec) != nil {
+			return false
+		}
+		w.last = fmt.Sprintf("run %s attempt %d %s, by its record", rec.URL, rec.RunAttempt, rec.Status)
+		return rec.settles(args.Attempt)
 	}, func(base string) ([]byte, error) { return w.watchRun(base, run) })
 	if err != nil {
 		return 0, err
