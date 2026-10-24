@@ -418,8 +418,8 @@ func route(h *herdr.Herdr, conn *sql.DB, scope string, cfg *config.Scope, msg in
 			return 0, false, err
 		}
 		// A tab left open does not hold up the message: `fleet watch`
-		// closes it later.
-		if err := closeOwnTab(h, conn, name); err != nil {
+		// closes it later, or `fleet status` lists it.
+		if err := closeGoneTab(h, conn, name); err != nil {
 			fmt.Fprintf(os.Stderr, "note: the tab of %s's ended session is not closed: %v\n", name, err)
 		}
 	}

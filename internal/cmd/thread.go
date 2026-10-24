@@ -1523,6 +1523,48 @@ func closeOwnTab(h *herdr.Herdr, conn querier, name string) error {
 	return closePaneTab(h, pane, name)
 }
 
+// closeGoneTab closes the tab of the pane the newest row of `name` records,
+// an agent herdr no longer knows by its name, only when herdr sees no
+// agent in that pane and the tab has that pane alone: Claude still running
+// there, or a pane beside it, leaves the tab open. A pane herdr no longer
+// has means the tab is gone.
+func closeGoneTab(h *herdr.Herdr, conn querier, name string) error {
+	var pane string
+	if err := conn.QueryRow("SELECT pane_id FROM agents WHERE name = ?1 ORDER BY id DESC LIMIT 1", name).Scan(&pane); err != nil {
+		return exit.Database(err)
+	}
+	if pane == "" {
+		return exit.Environmentf("the ledger recorded no pane for %s", name)
+	}
+	reply, err := h.Call("pane", "get", pane)
+	if err != nil {
+		return err
+	}
+	if reply.Error != nil && reply.Error.Code == "pane_not_found" {
+		return nil
+	}
+	if reply.Error != nil {
+		return exit.Environmentf("herdr: %s: %s", reply.Error.Code, reply.Error.Message)
+	}
+	inner, _ := herdr.Lookup(reply.Result, "pane").(map[string]any)
+	if agent, _ := inner["agent"].(string); agent != "" {
+		return exit.Environmentf("an agent still runs in its pane %s", pane)
+	}
+	tab, _ := inner["tab_id"].(string)
+	if tab == "" {
+		return exit.Environmentf("herdr pane get %s has no tab_id", pane)
+	}
+	result, err := h.CallOK("tab", "get", tab)
+	if err != nil {
+		return err
+	}
+	info, _ := herdr.Lookup(result, "tab").(map[string]any)
+	if count, _ := info["pane_count"].(json.Number); count.String() != "1" {
+		return exit.Environmentf("its tab %s has %s panes, not 1", tab, count)
+	}
+	return closeTab(h, tab, name)
+}
+
 // closePaneTab closes the tab of `pane`, the pane of the agent `name`; a
 // pane herdr no longer has means the tab is gone. The close is checked:
 // the tab must be gone afterwards.

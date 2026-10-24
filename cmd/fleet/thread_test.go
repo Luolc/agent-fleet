@@ -71,7 +71,8 @@ case "$1 $2" in
   "tab get")
     if [ -e "$dir/tab-get-breaks" ]; then echo '{"error":{"code":"server_not_running","message":"no server"}}'; exit 1; fi
     if [ -e "$dir/closed-tab" ]; then echo '{"error":{"code":"tab_not_found","message":"tab '"$3"' not found"}}'; else
-      echo '{"result":{"tab":{"tab_id":"'"$3"'"}}}'; fi ;;
+      n=1; [ -e "$dir/two-panes" ] && n=2
+      echo '{"result":{"tab":{"tab_id":"'"$3"'","pane_count":'"$n"'}}}'; fi ;;
   "tab close")
     if [ -e "$dir/tab-close-fails" ]; then rm "$dir/tab-close-fails"; echo '{"error":{"code":"internal","message":"tab busy"}}'; exit 1; fi
     echo "$3" > "$dir/closed-tab"; echo '{"result":{}}' ;;
@@ -446,17 +447,46 @@ func TestInboxReopensAKnownThreadWithItsSummariesWhenTheAgentIsGone(t *testing.T
 		t.Errorf("thread row = %q", got)
 	}
 
-	// A live row whose agent herdr does not know is ended and a new
-	// session started; the old row stays ended.
+	// A live row whose agent herdr does not know by its name, while
+	// Claude still runs in its pane: the row is ended and a new session
+	// started, but the old tab is left open.
 	_ = os.Remove(filepath.Join(w.dir, "calls"))
 	_ = os.Remove(filepath.Join(w.dir, "has-thread-c0123-1700000000-123"))
+	out = w.inbox(w.event("m3a", "anyone?", ""))
+	if out.code != 0 || !strings.Contains(out.stderr, "is not closed: an agent still runs in its pane p8") ||
+		strings.Contains(w.calls(), "herdr tab close") || w.file("closed-tab") != "" {
+		t.Fatalf("agent still in its pane: %+v calls %q", out, w.calls())
+	}
+
+	// Nor is it closed when another pane shares the tab.
+	gone := func() {
+		_ = os.Remove(filepath.Join(w.dir, "calls"))
+		for _, f := range []string{"has-thread-c0123-1700000000-123", "agent-in-p8"} {
+			_ = os.Remove(filepath.Join(w.dir, f))
+		}
+	}
+	gone()
+	if err := os.WriteFile(filepath.Join(w.dir, "two-panes"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out = w.inbox(w.event("m3b", "hello?", ""))
+	_ = os.Remove(filepath.Join(w.dir, "two-panes"))
+	if out.code != 0 || !strings.Contains(out.stderr, "is not closed: its tab t9 has 2 panes, not 1") ||
+		strings.Contains(w.calls(), "herdr tab close") || w.file("closed-tab") != "" {
+		t.Fatalf("two panes: %+v calls %q", out, w.calls())
+	}
+
+	// A live row whose agent herdr does not know, with no agent left in
+	// its pane alone in its tab, is ended and a new session started; the
+	// old rows stay ended.
+	gone()
 	out = w.inbox(w.event("m3", "still there?", ""))
 	if out.code != 0 || !strings.Contains(out.stderr, "gone from herdr") {
 		t.Fatalf("%+v", out)
 	}
 	// The old session's tab, found by the pane its row records, is closed.
 	if got := strings.TrimSpace(w.calls()); !strings.HasPrefix(got, "herdr status server\nherdr agent get\nherdr pane get\n"+
-		"herdr tab close\nherdr tab get\nherdr status server\natb linear claim") {
+		"herdr tab get\nherdr tab close\nherdr tab get\nherdr status server\natb linear claim") {
 		t.Errorf("calls = %q", got)
 	}
 	if got := w.file("closed-tab"); got != "t9\n" {
@@ -471,7 +501,7 @@ func TestInboxReopensAKnownThreadWithItsSummariesWhenTheAgentIsGone(t *testing.T
 	if err := conn.QueryRow("SELECT count(*) FROM agents WHERE role = 'thread' AND state = 'ended'").Scan(&ended); err != nil {
 		t.Fatal(err)
 	}
-	if live != 1 || ended != 2 {
+	if live != 1 || ended != 4 {
 		t.Errorf("live %d, ended %d", live, ended)
 	}
 }
