@@ -535,10 +535,12 @@ func IsInputBox(screen string) bool {
 
 // IsPiInputBox is whether `screen` shows Pi's editor. Pi draws the editor
 // between two borders, above its footer: the text typed so far, or one
-// empty line. Every dialog (project trust, a model picker, an extension's
-// confirmation or selection) takes the editor's place between the same
-// borders, but opens with an empty line and goes on; herdr reports Pi idle
-// at those too.
+// empty line. The dialogs fleet can meet (project trust, a model picker,
+// an extension's confirmation, selection or input, a loader) take the
+// editor's place between the same borders, but open with an empty line
+// and go on; herdr reports Pi idle at those too. The login dialog, opened
+// only by a `/login` typed into the editor, opens with its title instead,
+// and reads as the editor.
 func IsPiInputBox(screen string) bool {
 	_, ok := piEditorTop(lines(screen))
 	return ok
