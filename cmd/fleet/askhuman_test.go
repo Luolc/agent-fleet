@@ -74,7 +74,7 @@ func TestAskThreadReachesTheLiveThreadAgent(t *testing.T) {
 		t.Fatalf("%+v", out)
 	}
 	// fleet posts nothing: the thread agent asks the people.
-	if got := strings.TrimSpace(w.calls()); got != "herdr status server\nherdr agent get\nherdr agent prompt" {
+	if got := strings.TrimSpace(w.calls()); got != "herdr status server\nherdr agent get\nherdr agent get\nherdr agent prompt" {
 		t.Errorf("calls = %q", got)
 	}
 	if !strings.Contains(out.stdout, "gave question #1 to the agent of thread "+threadKey) {

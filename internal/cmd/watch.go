@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/Luolc/agent-fleet/internal/config"
 	"github.com/Luolc/agent-fleet/internal/db"
@@ -531,7 +532,7 @@ func watchRead(h *herdr.Herdr, conn *sql.DB, inHerdr map[string]InHerdr, now int
 			if err != nil {
 				return nil, err
 			}
-			filtered := FilterClaudeScreen(screen)
+			filtered := kindOf(agent.Kind).filter(screen)
 			r = &reading{
 				status: agent.Status,
 				seq:    agent.Seq,
@@ -693,6 +694,33 @@ func FilterClaudeScreen(screen string) string {
 		kept = kept[:len(kept)-1]
 	}
 	return strings.Join(kept, "\n")
+}
+
+// FilterPiScreen is Pi's visible screen without the parts that move while
+// the agent is stuck: the editor, whose top border carries the working
+// spinner, the footer below it with the usage that counts up, and blank
+// or spinner lines just above it. A screen whose last frame is a dialog
+// stays whole, as Claude Code's dialogs stay. What remains is the
+// transcript.
+func FilterPiScreen(screen string) string {
+	all := lines(screen)
+	top, ok := piEditorTop(all)
+	if !ok {
+		return screen
+	}
+	kept := all[:top]
+	for len(kept) > 0 && isPiStatusLine(kept[len(kept)-1]) {
+		kept = kept[:len(kept)-1]
+	}
+	return strings.Join(kept, "\n")
+}
+
+// isPiStatusLine is a line of the status area above Pi's editor: blank, or
+// a status that starts with one of Pi's braille spinner frames.
+func isPiStatusLine(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	first, _ := utf8.DecodeRuneInString(trimmed)
+	return trimmed == "" || strings.ContainsRune("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏", first)
 }
 
 func isRule(line string) bool {

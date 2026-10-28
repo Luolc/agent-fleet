@@ -25,11 +25,21 @@ import (
 // starts at its input box, and a prompt that is delivered. `workspace
 // create`, `tab create`, `agent start` and `agent prompt` keep their argv
 // in <dir>/workspace-argv, <dir>/tab-argv, <dir>/start-argv and <dir>/argv.
+// An agent started with `--kind pi` is a Pi: `agent get` gives its kind and
+// `agent read` its editor, or an extension's confirmation while
+// <dir>/pi-dialog exists.
 const startHerdr = `#!/bin/sh
 if [ "$1" = --session ]; then shift 2; fi
 dir="$(dirname "$0")/.."
 echo "herdr $1 $2" >> "$dir/calls"
+rule=────────────
+pi() { grep -qsx pi "$dir/start-argv"; }
 case "$1 $2" in
+  "agent read") if ! pi; then printf '%s\n' "$rule" "❯ " "$rule"
+    elif [ -e "$dir/pi-dialog" ]; then printf '%s\n' "$rule" "" " Delete build?" "" " → Yes" "   No" "" "$rule" "~/wt"
+    else printf '%s\n' "$rule" "" "$rule" "~/wt"; fi ;;
+  "agent get") if pi; then echo '{"result":{"agent":{"agent":"pi","agent_status":"idle"}}}'
+    else echo '{"result":{"agent":{"agent_status":"idle"}}}'; fi ;;
   "agent list") echo '{"result":{"agents":[]}}' ;;
   "workspace list")
     if [ -e "$dir/wire-workspace" ]; then
@@ -51,8 +61,6 @@ case "$1 $2" in
     printf '%s\n' "$@" > "$dir/start-argv"
     echo '{"result":{}}' ;;
   "tab rename"|"pane rename") echo '{"result":{}}' ;;
-  "agent read") printf '%s\n' "────────────" "❯ " "────────────" ;;
-  "agent get") echo '{"result":{"agent":{"agent_status":"idle"}}}' ;;
   "agent prompt")
     printf '%s\n' "$@" > "$dir/argv"
     echo '{"id":"cli:agent:prompt","result":{"type":"agent_prompted"}}' ;;
@@ -224,6 +232,91 @@ func TestStartsPassTheScopesModelsWhenTheCommandGivesNone(t *testing.T) {
 	}
 }
 
+// `spawn --agent pi` starts Pi with its own arguments, not the scope's
+// `models.worker`, presses no key and delivers the task; without --model,
+// or with an agent fleet does not start, it is refused before anything is
+// created.
+func TestSpawnStartsPiWithItsOwnArguments(t *testing.T) {
+	w := newWorld(t)
+	w.configure(`{"resource_check": false}`)
+	openJobWithLead(w, "")
+	w.useStartHerdr()
+	if err := os.WriteFile(filepath.Join(dir(w, filepath.Join("home", ".config", "fleet")), scope+".json"),
+		[]byte(`{"models": {"worker": {"model": "example-small", "effort": "low"}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cwd := dir(w, "wt")
+	taskFile := task(w, "task.md", "import\n")
+	spawn := func(name string, flags ...string) result {
+		_ = os.Remove(filepath.Join(w.dir, "calls"))
+		_ = os.Remove(filepath.Join(w.dir, "argv"))
+		return w.run("", append([]string{"spawn", name, "--task-file", taskFile, "--cwd", cwd}, flags...),
+			"FLEET_AGENT=item-1-lead", "FLEET_ROLE=lead", "FLEET_PARENT=thread-1", "FLEET_SCOPE="+scope, "FLEET_JOB=item-1")
+	}
+	out := spawn("a", "--agent", "pi", "--model", "example/fake-model", "--effort", "high")
+	if out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	argv, err := os.ReadFile(filepath.Join(w.dir, "start-argv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.ReplaceAll(strings.TrimSpace(string(argv)), "\n", " "); got !=
+		"agent start item-1-a --kind pi --pane p1 --timeout 30000 -- --model example/fake-model --thinking high --approve" {
+		t.Errorf("start argv %q", got)
+	}
+	if calls := w.calls(); strings.Contains(calls, "send-keys") {
+		t.Errorf("a key was pressed: %q", calls)
+	}
+	if got := w.file("argv"); !strings.Contains(got, "import") {
+		t.Errorf("task not delivered: %q", got)
+	}
+	// At a dialog in the editor's place, nothing is typed: exit 3 with the
+	// screen.
+	if err := os.WriteFile(filepath.Join(w.dir, "pi-dialog"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out = spawn("b", "--agent", "pi", "--model", "example/fake-model")
+	if out.code != 3 || !strings.Contains(out.stderr, "Delete build?") || strings.Contains(w.calls(), "agent prompt") {
+		t.Errorf("at a dialog: %+v, calls %q", out, w.calls())
+	}
+	for _, flags := range [][]string{{"--agent", "pi"}, {"--agent", "gemini", "--model", "example/fake-model"}} {
+		out := spawn("c", flags...)
+		if out.code != 1 || w.calls() != "" {
+			t.Errorf("%q: %+v, calls %q", flags, out, w.calls())
+		}
+	}
+	if out := spawn("c", "--agent", "pi"); !strings.Contains(out.stderr, "--agent pi needs --model") {
+		t.Errorf("%+v", out)
+	}
+}
+
+// `send` to a Pi reads its screen first: at a dialog nothing is typed and
+// the send is exit 3 with the screen; at its editor the message goes.
+func TestSendToAPiAtADialogTypesNothing(t *testing.T) {
+	w := newWorld(t)
+	w.useStartHerdr()
+	if err := os.WriteFile(filepath.Join(w.dir, "start-argv"), []byte("agent\nstart\nitem-1-a\n--kind\npi\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	body := task(w, "msg.md", "next step\n")
+	send := func() result {
+		_ = os.Remove(filepath.Join(w.dir, "calls"))
+		return w.run("", []string{"send", "item-1-a", "--file", body}, "FLEET_AGENT=item-1-lead", "FLEET_SCOPE="+scope)
+	}
+	if out := send(); out.code != 0 || w.calls() != "herdr agent get\nherdr agent read\nherdr agent prompt\n" {
+		t.Errorf("at its editor: %+v, calls %q", out, w.calls())
+	}
+	if err := os.WriteFile(filepath.Join(w.dir, "pi-dialog"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := send()
+	if out.code != 3 || !strings.Contains(out.stdout, "Delete build?") || !strings.Contains(out.stderr, "item-1-a (pi) is not at its input box") ||
+		w.calls() != "herdr agent get\nherdr agent read\n" {
+		t.Errorf("at a dialog: %+v, calls %q", out, w.calls())
+	}
+}
+
 // --light is recorded on the row and tells the agent to only read; a start
 // without it says nothing of the kind.
 func TestLightStartsAreRecordedAndToldToOnlyRead(t *testing.T) {
@@ -352,6 +445,7 @@ func TestSpawnCreatesAndClaimsTheWorkOrderBeforeAnythingElse(t *testing.T) {
 		"herdr agent start",
 		"herdr pane rename",
 		"herdr agent read",
+		"herdr agent get",
 		"herdr agent get",
 		"herdr agent prompt",
 	}
@@ -610,6 +704,7 @@ func TestJobStartCreatesTheParentClaimsItAndMakesTheWorkOrderFirst(t *testing.T)
 		"herdr pane rename",
 		"herdr agent read",
 		"herdr agent get",
+		"herdr agent get",
 		"herdr agent prompt",
 	}
 	if got := strings.Split(strings.TrimSpace(w.calls()), "\n"); strings.Join(got, "\n") != strings.Join(want, "\n") {
@@ -768,6 +863,7 @@ func TestJobStartOfACrossRepoJobReadsTheParentsTeamAndProject(t *testing.T) {
 		"herdr agent start",
 		"herdr pane rename",
 		"herdr agent read",
+		"herdr agent get",
 		"herdr agent get",
 		"herdr agent prompt",
 	}

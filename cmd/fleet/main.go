@@ -333,10 +333,11 @@ Arguments:
 Options:
       --task-file <PATH>  File with the task, delivered as the worker's first message (with the header)
       --cwd <DIR>         Directory the worker runs in; must exist (typically a path from ` + "`fleet worktree`" + `)
-      --model <MODEL>     Model passed to the agent as --model. Default: the scope's models.worker,
-                          else the agent's own
-      --effort <EFFORT>   Effort passed to the agent as --effort. Default: the scope's models.worker,
-                          else the agent's own
+      --agent <AGENT>     The agent started: claude (default) or pi
+      --model <MODEL>     Model passed to the agent as --model. Default for claude: the scope's
+                          models.worker, else the agent's own. Required for pi
+      --effort <EFFORT>   Effort passed to the agent as --effort (pi: --thinking). Default for
+                          claude: the scope's models.worker, else the agent's own; for pi, Pi's own
       --light             Skip the load check (memory is still checked) for a worker that only reads;
                           its first message tells it not to build, test or run anything CPU-heavy
       --scope <NAME>      ` + scopeHelp + `
@@ -989,10 +990,12 @@ func runSpawn(args []string, scope *cliargs.OptString) (exit.Code, error) {
 	fs := flagSet("spawn", scope)
 	taskFile := cliargs.OptString{Name: "task-file", Placeholder: "PATH"}
 	cwd := cliargs.OptString{Name: "cwd", Placeholder: "DIR"}
+	agent := cliargs.OptString{Name: "agent", Placeholder: "AGENT"}
 	model := cliargs.OptString{Name: "model", Placeholder: "MODEL"}
 	effort := cliargs.OptString{Name: "effort", Placeholder: "EFFORT"}
 	fs.Var(&taskFile, "task-file", "File with the task")
 	fs.Var(&cwd, "cwd", "Directory the worker runs in")
+	fs.Var(&agent, "agent", "The agent started: claude or pi")
 	fs.Var(&model, "model", "Model passed to the agent as --model")
 	fs.Var(&effort, "effort", "Effort passed to the agent as --effort")
 	light := cliargs.Bool{Name: "light"}
@@ -1006,8 +1009,8 @@ func runSpawn(args []string, scope *cliargs.OptString) (exit.Code, error) {
 		return 0, err
 	}
 	return cmd.Spawn(h, cmd.SpawnArgs{
-		Name: got[0], TaskFile: taskFile.Value, Cwd: cwd.Value, Model: model.Ptr(), Effort: effort.Ptr(),
-		Light: light.Value})
+		Name: got[0], TaskFile: taskFile.Value, Cwd: cwd.Value, Agent: agent.Value, Model: model.Ptr(),
+		Effort: effort.Ptr(), Light: light.Value})
 }
 
 func runDone(args []string, scope *cliargs.OptString) (exit.Code, error) {

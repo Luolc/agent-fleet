@@ -113,7 +113,7 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: tools/*.sum
 
-      # The image depends only on the Dockerfile and the fake claude it copies.
+      # The image depends only on the Dockerfile and the fake agents it copies.
       - name: judge image cache
         id: judge-image
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0

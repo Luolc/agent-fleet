@@ -148,7 +148,8 @@ func (w *watchWorld) insert(r watchRow) {
 }
 
 // herdrList sets what `herdr agent list` reports: name, agent_status and
-// state_change_seq of each agent.
+// state_change_seq of each agent, and its kind when a fourth field gives
+// one (claude otherwise).
 func (w *watchWorld) herdrList(agents ...string) {
 	w.t.Helper()
 	var entries []string
@@ -158,8 +159,12 @@ func (w *watchWorld) herdrList(agents ...string) {
 		if _, err := fmt.Sscanf(a, "%s %s %d", &name, &status, &seq); err != nil {
 			w.t.Fatal(err)
 		}
+		kind := "claude"
+		if fields := strings.Fields(a); len(fields) > 3 {
+			kind = fields[3]
+		}
 		entries = append(entries, fmt.Sprintf(
-			`{"agent":"claude","name":"%s","agent_status":"%s","state_change_seq":%d}`, name, status, seq))
+			`{"agent":"%s","name":"%s","agent_status":"%s","state_change_seq":%d}`, kind, name, status, seq))
 	}
 	list := `{"id":"cli:agent:list","result":{"agents":[` + strings.Join(entries, ",") + `]}}`
 	if err := os.WriteFile(filepath.Join(w.dir, "list.json"), []byte(list), 0o644); err != nil {
@@ -1219,6 +1224,34 @@ func TestWatchPostsNothingWhenItCannotStartAThreadAgent(t *testing.T) {
 	}
 	if got := w.query("SELECT quiet_asked || ' ' || sessions FROM threads"); got != " 0" {
 		t.Errorf("thread row %q", got)
+	}
+}
+
+// pi is a Pi screen: a transcript, the editor whose top border carries
+// the spinner frame, and a footer whose usage counts up.
+func pi(transcript, frame, usage string) string {
+	return transcript + "\n\n── " + frame + " Working " + rule + "\n\n" + rule + "\n~/wt/example\n" + usage +
+		"/128k (auto)       fake-model • high\n"
+}
+
+// A Pi worker's screen is filtered as Pi's, by the kind `agent list`
+// gives: only its spinner and footer moving is still stuck, while a
+// transcript that moves is not.
+func TestWatchReadsAPiWorkersScreenAsPi(t *testing.T) {
+	w := newWatchWorld(t)
+	anHourAgo := db.Now() - 3600
+	stuck := pi(" ⠿ Running the migration", "⠋", "0.4%")
+	w.insert(watchRow{name: "p-lead", role: "lead", job: "p", parent: "thread-1", startedAt: anHourAgo})
+	for _, name := range []string{"p-w1", "p-w2"} {
+		w.insert(watchRow{name: name, role: "worker", job: "p", parent: "p-lead", startedAt: anHourAgo,
+			lastStatus: "working", lastSeq: 4, lastScreenHash: cmd.Hash(cmd.FilterPiScreen(stuck)), lastChangeAt: anHourAgo})
+	}
+	w.herdrList("p-lead working 2", "p-w1 working 4 pi", "p-w2 working 4 pi")
+	w.screen("p-lead", claude("⏺ Planning", "1s", "2hr 59m"))
+	w.screen("p-w1", pi(" ⠿ Running the migration", "⠧", "2.2%"))
+	w.screen("p-w2", pi(" ⠿ Ran the migration", "⠧", "2.2%"))
+	if out := w.run("", []string{"watch", "--scope", scope}); out.code != 0 || w.suspects() != "p-w1" {
+		t.Errorf("%+v %q", out, w.suspects())
 	}
 }
 

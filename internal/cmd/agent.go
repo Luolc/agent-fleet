@@ -1,7 +1,8 @@
 // The building blocks `job start` and `spawn` share: names, the task
-// file, the repo's config, the work order, places in herdr, starting Claude
-// Code and getting it to its input box, the built-in prompts of the lead
-// and the worker, and the machine's resources.
+// file, the repo's config, the work order, places in herdr, starting the
+// agent (Claude Code, or Pi for a worker) and getting it to its input box,
+// the built-in prompts of the lead and the worker, and the machine's
+// resources.
 
 package cmd
 
@@ -57,6 +58,69 @@ func ClaudeArgs(model, effort *string) []string {
 		args = append(args, "--effort", *effort)
 	}
 	return args
+}
+
+// PiArgs are the arguments after `--` in `herdr agent start --kind pi`:
+// --model and --thinking (the effort) when given, and --approve, which
+// trusts the directory fleet chose for the agent for this run, so Pi asks
+// no project-trust question.
+func PiArgs(model, effort *string) []string {
+	var args []string
+	if model != nil {
+		args = append(args, "--model", *model)
+	}
+	if effort != nil {
+		args = append(args, "--thinking", *effort)
+	}
+	return append(args, "--approve")
+}
+
+// The agent runtimes fleet starts, by herdr's `--kind`.
+const (
+	KindClaude = "claude"
+	KindPi     = "pi"
+)
+
+// agentKind is what fleet knows of one agent runtime: how it is started
+// and how its screen reads.
+type agentKind struct {
+	// args are the arguments after `--` in `herdr agent start`.
+	args func(model, effort *string) []string
+	// inputBox is whether a screen shows the agent ready for a message.
+	inputBox func(screen string) bool
+	// trustKey is TrustKey for the runtime's folder-trust dialog; nil when
+	// the runtime is started with its directory trusted, so fleet presses
+	// no key at all.
+	trustKey func(screen, cwd string) (string, error)
+	// filter is the screen without what moves while the agent is stuck,
+	// for watch's screen hash.
+	filter func(screen string) string
+	// readFirst is set when herdr reports no blocked state for the
+	// runtime: a delivery reads the screen first and stops unless it shows
+	// the input box.
+	readFirst bool
+}
+
+var kinds = map[string]agentKind{
+	KindClaude: {args: ClaudeArgs, inputBox: IsInputBox, trustKey: TrustKey, filter: FilterClaudeScreen},
+	KindPi:     {args: PiArgs, inputBox: IsPiInputBox, filter: FilterPiScreen, readFirst: true},
+}
+
+// kindOf is the entry for herdr's kind `name`: Claude Code's for a kind
+// fleet does not start, or none given, as before fleet told kinds apart.
+func kindOf(name string) agentKind {
+	if k, ok := kinds[name]; ok {
+		return k
+	}
+	return kinds[KindClaude]
+}
+
+// CheckKind refuses (exit 1) a kind fleet does not start.
+func CheckKind(name string) error {
+	if _, ok := kinds[name]; !ok {
+		return exit.Refusedf("--agent %s: fleet starts only %s and %s", name, KindClaude, KindPi)
+	}
+	return nil
 }
 
 func envFlags(id *identity.Identity) []string {
@@ -131,27 +195,28 @@ const (
 	startPause    = 3 * time.Second
 )
 
-// StartAgent starts the agent (Claude Code) as `name` in `paneID`, renames
-// the pane, and gets the agent to its input box: the folder-trust dialog
-// for `cwd`, the directory fleet chose for it, is accepted; any other
-// screen is a failure with exit 3 that carries the screen. A start that
+// StartAgent starts the agent of kind `kind` as `name` in `paneID`,
+// renames the pane, and gets the agent to its input box: Claude Code's
+// folder-trust dialog for `cwd`, the directory fleet chose for it, is
+// accepted (Pi is started with that directory trusted); any other screen
+// is a failure with exit 3 that carries the screen. A start that
 // herdr reports as failed (an agent that exits at once, as when a gateway
 // refuses the session or an update has removed claude for a moment, ends up
 // here, as a timeout) is exit 5 with the pane's text. A start that failed
 // with no agent left in the pane is made once more in the same pane; an
 // exit 3 screen is not.
-func StartAgent(h *herdr.Herdr, name, paneID, cwd string, model, effort *string) error {
-	start := func() error { return startOnce(h, name, paneID, cwd, model, effort) }
+func StartAgent(h *herdr.Herdr, name, paneID, cwd, kind string, model, effort *string) error {
+	start := func() error { return startOnce(h, name, paneID, cwd, kind, model, effort) }
 	return startAgain(h, name, paneID, start, start)
 }
 
 // ResumeAgent is SettleAgent for an agent an earlier run started in
-// `paneID`, with StartAgent's second start (no model or effort, as a
-// thread agent has) when it exits before its input box.
+// `paneID`, with StartAgent's second start (Claude Code with no model or
+// effort, as a thread agent has) when it exits before its input box.
 func ResumeAgent(h *herdr.Herdr, name, paneID, cwd string) error {
 	return startAgain(h, name, paneID,
 		func() error { return SettleAgent(h, name, paneID, cwd) },
-		func() error { return startOnce(h, name, paneID, cwd, nil, nil) })
+		func() error { return startOnce(h, name, paneID, cwd, KindClaude, nil, nil) })
 }
 
 // startAgain is retryStart on herdr, with a note on stderr before the
@@ -191,8 +256,8 @@ func retryStart(first, again func() error, gone func() (bool, error), pause func
 }
 
 // paneHasNoAgent is whether herdr sees no agent process in the pane: its
-// `agent` is null once the process has exited, and "claude" while it runs,
-// even before it is ready.
+// `agent` is null once the process has exited, and its kind ("claude",
+// "pi") while it runs, even before it is ready.
 func paneHasNoAgent(h *herdr.Herdr, paneID string) (bool, error) {
 	pane, err := h.CallOK("pane", "get", paneID)
 	if err != nil {
@@ -207,10 +272,10 @@ func paneHasNoAgent(h *herdr.Herdr, paneID string) (bool, error) {
 
 // startOnce is one `herdr agent start` and, when it got that far, the
 // settling of the agent.
-func startOnce(h *herdr.Herdr, name, paneID, cwd string, model, effort *string) error {
-	args := []string{"agent", "start", name, "--kind", "claude", "--pane", paneID,
+func startOnce(h *herdr.Herdr, name, paneID, cwd, kind string, model, effort *string) error {
+	args := []string{"agent", "start", name, "--kind", kind, "--pane", paneID,
 		"--timeout", startTimeoutMS, "--"}
-	args = append(args, ClaudeArgs(model, effort)...)
+	args = append(args, kindOf(kind).args(model, effort)...)
 	reply, err := h.Call(args...)
 	if err != nil {
 		return err
@@ -224,23 +289,28 @@ func startOnce(h *herdr.Herdr, name, paneID, cwd string, model, effort *string) 
 		return exit.Environmentf("agent %s did not start: herdr: %s: %s\npane %s:\n%s",
 			name, reply.Error.Code, reply.Error.Message, paneID, pane)
 	}
-	return SettleAgent(h, name, paneID, cwd)
+	return settleKind(h, name, paneID, cwd, kindOf(kind))
 }
 
-// SettleAgent renames the pane after the started agent `name` and gets it
-// to its input box, as StartAgent does after the start; also what
+// SettleAgent renames the pane after the started Claude Code `name` and
+// gets it to its input box, as StartAgent does after the start; also what
 // ResumeAgent runs first. `cwd` is the agent's directory, the only
 // one whose trust dialog is accepted.
 func SettleAgent(h *herdr.Herdr, name, paneID, cwd string) error {
+	return settleKind(h, name, paneID, cwd, kinds[KindClaude])
+}
+
+// settleKind is SettleAgent for an agent of kind `k`.
+func settleKind(h *herdr.Herdr, name, paneID, cwd string, k agentKind) error {
 	if _, err := h.CallOK("pane", "rename", paneID, name); err != nil {
 		return err
 	}
-	return settle(h, name, cwd)
+	return settle(h, name, cwd, k)
 }
 
-// settle gets the agent `name` to its input box through reachInputBox;
-// exit 3 names the agent.
-func settle(h *herdr.Herdr, name, cwd string) error {
+// settle gets the agent `name`, of kind `k`, to its input box through
+// reachInputBox; exit 3 names the agent.
+func settle(h *herdr.Herdr, name, cwd string, k agentKind) error {
 	err := reachInputBox(
 		func() (string, error) { return h.Screen(name) },
 		func() (string, error) {
@@ -257,6 +327,7 @@ func settle(h *herdr.Herdr, name, cwd string) error {
 			return err
 		},
 		cwd,
+		k,
 		10*time.Second,
 		250*time.Millisecond,
 	)
@@ -271,20 +342,24 @@ func settle(h *herdr.Herdr, name, cwd string) error {
 // get through it, the rest allow for lost presses.
 const maxTrustKeys = 6
 
-// reachInputBox gets a started agent to its input box. Ready takes both
-// the input box on `screen` (herdr reports a ❯ menu as idle too) and
-// herdr's `status` idle or done (done: idle after a turn); herdr can still
-// say blocked after the redraw, and a prompt is then refused as
-// agent_blocked. The folder-trust dialog for `cwd` is answered one key at
-// a time through `key`, each chosen from where the cursor is on the screen
-// just read, and the screen read again after each (polling every `poll`
-// for at most `wait`); a dialog for any other directory is left alone.
-// Anything else is exit 3 with the screen.
+// reachInputBox gets a started agent of kind `k` to its input box. Ready
+// takes both the input box on `screen` (herdr reports a ❯ menu as idle
+// too, and Pi at any screen that is not working) and herdr's `status` idle
+// or done (done: idle after a turn); herdr can still say blocked after the
+// redraw, and a prompt is then refused as agent_blocked. The folder-trust
+// dialog for `cwd` is answered one key at a time through `key`, each
+// chosen from where the cursor is on the screen just read, and the screen
+// read again after each (polling every `poll` for at most `wait`); a
+// dialog for any other directory is left alone. A kind with no dialog to
+// answer gets no key: its screen is polled the same way until the input
+// box shows, as herdr may report it idle before its first frame. Anything
+// else is exit 3 with the screen.
 func reachInputBox(
 	screen func() (string, error),
 	status func() (string, error),
 	key func(string) error,
 	cwd string,
+	k agentKind,
 	wait time.Duration,
 	poll time.Duration,
 ) error {
@@ -293,8 +368,16 @@ func reachInputBox(
 	if err != nil {
 		return err
 	}
+	if k.trustKey == nil && !k.inputBox(text) {
+		if text, err = pollScreen(screen, status, k.inputBox, text, wait, poll); err != nil {
+			return err
+		}
+	}
 	for range maxTrustKeys {
-		next, err := TrustKey(text, cwd)
+		if k.trustKey == nil {
+			break
+		}
+		next, err := k.trustKey(text, cwd)
 		if err != nil {
 			return err
 		}
@@ -304,7 +387,7 @@ func reachInputBox(
 		if err := key(next); err != nil {
 			return err
 		}
-		if text, err = pollScreen(screen, status, text, wait, poll); err != nil {
+		if text, err = pollScreen(screen, status, k.inputBox, text, wait, poll); err != nil {
 			return err
 		}
 	}
@@ -312,7 +395,7 @@ func reachInputBox(
 	if err != nil {
 		return err
 	}
-	if IsInputBox(text) && settled(state) {
+	if k.inputBox(text) && settled(state) {
 		return nil
 	}
 	return exit.New(exit.Blocked,
@@ -320,10 +403,11 @@ func reachInputBox(
 }
 
 // pollScreen reads the screen every `poll` until it shows the input box
-// with herdr settled, or the folder-trust dialog redrawn (the cursor
-// moved), or `wait` has passed; the last screen is returned. A screen in
-// between (start-up after the dialog) is waited out.
-func pollScreen(screen, status func() (string, error), before string, wait, poll time.Duration) (string, error) {
+// (as `inputBox` reads it) with herdr settled, or the folder-trust dialog
+// redrawn (the cursor moved), or `wait` has passed; the last screen is
+// returned. A screen in between (start-up after the dialog) is waited out.
+func pollScreen(screen, status func() (string, error), inputBox func(string) bool, before string,
+	wait, poll time.Duration) (string, error) {
 	deadline := time.Now().Add(wait)
 	for {
 		time.Sleep(poll)
@@ -331,7 +415,7 @@ func pollScreen(screen, status func() (string, error), before string, wait, poll
 		if err != nil {
 			return "", err
 		}
-		if IsInputBox(text) {
+		if inputBox(text) {
 			state, err := status()
 			if err != nil {
 				return "", err
@@ -447,6 +531,44 @@ func IsInputBox(screen string) bool {
 		}
 	}
 	return false
+}
+
+// IsPiInputBox is whether `screen` shows Pi's editor. Pi draws the editor
+// between two borders, above its footer: the text typed so far, or one
+// empty line. Every dialog (project trust, a model picker, an extension's
+// confirmation or selection) takes the editor's place between the same
+// borders, but opens with an empty line and goes on; herdr reports Pi idle
+// at those too.
+func IsPiInputBox(screen string) bool {
+	_, ok := piEditorTop(lines(screen))
+	return ok
+}
+
+// piEditorTop is the index of the top border of Pi's editor in `all`, the
+// screen's lines; ok is false when the last frame on the screen is not the
+// editor, or there is none.
+func piEditorTop(all []string) (top int, ok bool) {
+	bottom := -1
+	for i := len(all) - 1; i >= 0; i-- {
+		if !piBorder(all[i]) {
+			continue
+		}
+		if bottom < 0 {
+			bottom = i
+			continue
+		}
+		body := all[i+1 : bottom]
+		return i, len(body) == 1 || len(body) > 1 && strings.TrimSpace(body[0]) != ""
+	}
+	return 0, false
+}
+
+// piBorder is a border of the frame Pi draws its editor in: a line of ─,
+// where the top one may carry the working status (`── ⠋ Working ───`) or a
+// scroll mark between them.
+func piBorder(line string) bool {
+	line = strings.TrimSpace(line)
+	return utf8.RuneCountInString(line) >= 10 && strings.HasPrefix(line, "──") && strings.HasSuffix(line, "─")
 }
 
 // lines splits at "\n" or "\r\n", with no empty line after a final
@@ -969,19 +1091,19 @@ func taskSection(url, task string) string {
 	return text + task
 }
 
-// startAndDeliver starts the agent in `place` (its directory `cwd`),
-// delivers `body` (its first message, after the header `sender` adds) and
+// startAndDeliver starts the agent of kind `kind` in `place` (its
+// directory `cwd`), delivers `body` (its first message, after the header `sender` adds) and
 // marks the row active.
 // Every step appends what it made to `created`. The row is marked active
 // only when herdr reported the message delivered, so a row still
 // `starting` means the agent may not have its task.
-func startAndDeliver(h *herdr.Herdr, conn *sql.DB, id *identity.Identity, place Place, cwd string, model, effort *string,
-	sender, body string, created *[]string) (exit.Code, error) {
+func startAndDeliver(h *herdr.Herdr, conn *sql.DB, id *identity.Identity, place Place, cwd, kind string,
+	model, effort *string, sender, body string, created *[]string) (exit.Code, error) {
 	if _, err := conn.Exec("UPDATE agents SET pane_id = ?1 WHERE name = ?2 AND state != 'ended'",
 		place.PaneID, id.Agent); err != nil {
 		return 0, exit.Database(err)
 	}
-	if err := StartAgent(h, id.Agent, place.PaneID, cwd, model, effort); err != nil {
+	if err := StartAgent(h, id.Agent, place.PaneID, cwd, kind, model, effort); err != nil {
 		return 0, err
 	}
 	*created = append(*created, fmt.Sprintf("agent %s in pane %s", id.Agent, place.PaneID))

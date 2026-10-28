@@ -53,12 +53,17 @@ const (
 		"row is ended, so the name is free and `job end` does not wait for it; an issue created " +
 		"but not claimed is listed, and the ended row keeps it.\n\n" +
 		"Then a tab is made in the job's workspace " +
-		"with the FLEET_* variables set, and Claude Code (the only supported agent) is started " +
-		"with `herdr agent start --kind claude` and fixed arguments (permission prompts " +
-		"skipped, AskUserQuestion disallowed, Remote Control off, plus --model and --effort " +
-		"when given or set in the scope's `models.worker`); the pane is renamed after the worker. " +
-		"Its folder-trust prompt is accepted; any other screen that is not the input box stops the spawn. Finally the task " +
-		"is delivered as `fleet send` would, and the row becomes active.\n\n" +
+		"with the FLEET_* variables set, and the agent --agent names is started; the pane is " +
+		"renamed after the worker. Claude Code, the default, is started with `herdr agent start " +
+		"--kind claude` and fixed arguments (permission prompts skipped, AskUserQuestion " +
+		"disallowed, Remote Control off, plus --model and --effort when given or set in the " +
+		"scope's `models.worker`), and its folder-trust prompt is accepted. Pi (`--agent pi`) is " +
+		"started with `herdr agent start --kind pi` and `--model <MODEL>`, `--thinking <EFFORT>` " +
+		"when --effort is given, and `--approve`, which trusts --cwd for this run, so no key is " +
+		"pressed; the scope's `models.worker` is not used, and --model is required (without it " +
+		"Pi would fall back to its own default model). Any screen that is not the input box stops " +
+		"the spawn. Finally the task is delivered as `fleet send` would, and the row becomes " +
+		"active.\n\n" +
 		"--light is for a worker that only reads and does I/O (research, a review that runs no " +
 		"build or test): the ledger marks it light, `fleet status` flags it, and its first message " +
 		"tells it not to compile, run test suites or start anything CPU-heavy, and to stop and say " +
@@ -67,7 +72,8 @@ const (
 		"delivery), the " +
 		"output lists what exists; the worker's row stays `starting`, and the cleanup is the " +
 		"lead's call (`fleet job end <job> --force` from outside ends every row of the job).\n\n" +
-		"Exit: 0 when the task was delivered; 1 when a check refuses; 2/3/4 as `send` for the " +
+		"Exit: 0 when the task was delivered; 1 when a check refuses (an --agent other than claude or " +
+		"pi, or pi without --model, among them); 2/3/4 as `send` for the " +
 		"delivery; 3 when the worker stops at a screen other than its input box (the screen is " +
 		"printed); 5 when atb, herdr or the database fails, including a failed start. A failed " +
 		"atb step is followed by atb's stderr with Linear credentials redacted."
@@ -82,11 +88,16 @@ type SpawnArgs struct {
 	TaskFile string
 	// Cwd is the directory the worker runs in; it must exist.
 	Cwd string
-	// Model is passed to the agent as --model. Default: the scope's
-	// `models.worker.model`, else the agent's own.
+	// Agent is the kind of agent started: "claude" (also when empty) or
+	// "pi".
+	Agent string
+	// Model is passed to the agent as --model. Default for Claude Code:
+	// the scope's `models.worker.model`, else the agent's own; required for
+	// Pi.
 	Model *string
-	// Effort is passed to the agent as --effort. Default: the scope's
-	// `models.worker.effort`, else the agent's own.
+	// Effort is passed to the agent as --effort (Pi: --thinking). Default
+	// for Claude Code: the scope's `models.worker.effort`, else the agent's
+	// own; for Pi, Pi's own.
 	Effort *string
 	// Light skips the load check; the worker is told to only read.
 	Light bool
@@ -105,6 +116,7 @@ type spawnChecked struct {
 	task      string
 	title     string
 	cwd       string
+	kind      string
 	workspace string
 	// panes is how many panes the job's workspace has; 0 until herdr is
 	// read.
@@ -130,11 +142,21 @@ func spawnChecks(h *herdr.Herdr, args SpawnArgs) (*spawnChecked, *sql.DB, error)
 	if err := CheckName(args.Name); err != nil {
 		return nil, nil, err
 	}
+	kind := args.Agent
+	if kind == "" {
+		kind = KindClaude
+	}
+	if err := CheckKind(kind); err != nil {
+		return nil, nil, err
+	}
+	if kind == KindPi && args.Model == nil {
+		return nil, nil, exit.Refusedf("--agent pi needs --model: without it Pi falls back to its own default model")
+	}
 	if me.Job == "" {
 		return nil, nil, exit.Refusedf("FLEET_JOB is not set")
 	}
 	c := &spawnChecked{me: me, id: &identity.Identity{Agent: me.Job + "-" + args.Name, Role: identity.Worker,
-		Parent: me.Agent, Scope: me.Scope, Job: me.Job}, light: args.Light}
+		Parent: me.Agent, Scope: me.Scope, Job: me.Job}, light: args.Light, kind: kind}
 	if err := CheckAgentName(c.id.Agent); err != nil {
 		return nil, nil, err
 	}
@@ -283,8 +305,11 @@ func Spawn(h *herdr.Herdr, args SpawnArgs) (exit.Code, error) {
 	body := c.prompt.fill(roleSlots(c.sc, c.id, c.cwd, c.job.Repo, c.job.LeadCwd, c.cfg.MaxAgentsPerJob, issue,
 		c.job.ParentIssue)) +
 		noteSection(c.statuteNote, lightNote(c.light)) + taskSection(issue.URL, c.body)
-	code, err := startAndDeliver(h, conn, c.id, place, c.cwd, orDefault(args.Model, c.sc.Models.Worker.Model),
-		orDefault(args.Effort, c.sc.Models.Worker.Effort), c.me.Agent, body, &created)
+	model, effort := args.Model, args.Effort
+	if c.kind == KindClaude {
+		model, effort = orDefault(model, c.sc.Models.Worker.Model), orDefault(effort, c.sc.Models.Worker.Effort)
+	}
+	code, err := startAndDeliver(h, conn, c.id, place, c.cwd, c.kind, model, effort, c.me.Agent, body, &created)
 	if err != nil || code != exit.Ok {
 		return startFailed(c.id.Agent, err, code, created, hint)
 	}

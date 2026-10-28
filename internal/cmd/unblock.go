@@ -22,6 +22,7 @@ import (
 	"github.com/Luolc/agent-fleet/internal/config"
 	"github.com/Luolc/agent-fleet/internal/exit"
 	"github.com/Luolc/agent-fleet/internal/fednet"
+	"github.com/Luolc/agent-fleet/internal/herdr"
 	"github.com/Luolc/agent-fleet/internal/identity"
 )
 
@@ -297,7 +298,7 @@ func (u *workers) stopped(row stopRow) (screen string, ok bool, err error) {
 	if screen, err = u.h.Screen(row.Name); err != nil {
 		return "", false, err
 	}
-	if row.State == "starting" && IsInputBox(screen) {
+	if row.State == "starting" && kindOf(agent.Kind).inputBox(screen) {
 		return "", false, nil
 	}
 	return screen, true, nil
@@ -364,9 +365,14 @@ func (u *workers) handle(e config.Entry, due bool, row stopRow, screen string) e
 	return u.startHelper(e, row, screen)
 }
 
-// settleStopped is how the folder-trust rule answers the dialog; a
-// variable so the tests can make it fail.
-var settleStopped = settle
+// settleStopped is how the folder-trust rule answers the dialog, which
+// only Claude Code shows; a variable so the tests can make it fail.
+var settleStopped = settleClaude
+
+// settleClaude is settle for Claude Code.
+func settleClaude(h *herdr.Herdr, name, cwd string) error {
+	return settle(h, name, cwd, kinds[KindClaude])
+}
 
 // fenced is `text` in a Markdown code block.
 func fenced(text string) string {

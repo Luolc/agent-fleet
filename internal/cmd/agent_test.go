@@ -82,6 +82,7 @@ func scripted(screens, statuses []string, sent *[]string) error {
 			return nil
 		},
 		"/w/x",
+		kinds[KindClaude],
 		30*time.Millisecond,
 		time.Millisecond,
 	)
