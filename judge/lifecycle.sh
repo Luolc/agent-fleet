@@ -211,6 +211,37 @@ settled item-1-lead
 check "status: done workers are no longer listed" "item-1-lead:owes-work" "$(status_flags)"
 check "job list: done workers are no longer listed" "item-1	-	-	$R	item-1-lead	-" "$(thr job list)"
 
+# A Pi worker (`spawn --agent pi`): herdr starts a pi with Pi's own
+# arguments, fleet presses no key and delivers the task once the editor
+# shows. Pi at a dialog is still idle to herdr, so a send reads its screen
+# first and types nothing there (exit 3).
+pi_received() { cat "/home/agent/.fake-pi/received-$(agent_field "$1" pane_id)" 2>/dev/null; }
+settled item-1-lead
+out=$(lead spawn p --agent pi --model example/fake-model --effort high --cwd "$wt" \
+  --task-file "$(task p 'pi task 0xWORKP')" 2>&1); rc=$?
+check "spawn --agent pi: exit 0" 0 "$rc"
+[ "$rc" = 0 ] || printf '%s\n' "$out"
+check "spawn --agent pi: herdr runs a pi" pi "$(agent_field item-1-p agent)"
+check "spawn --agent pi: Pi's arguments, none of Claude's" "--model example/fake-model --thinking high --approve" \
+  "$(proc_args item-1-p)"
+settled item-1-p
+has "spawn --agent pi: the task reached Pi" "$(pi_received item-1-p)" "[FROM: item-1-lead]" "## Your task" "0xWORKP"
+check "spawn --agent pi: row active" "active " "$(ledger "SELECT state FROM agents WHERE name = 'item-1-p'")"
+lead send item-1-p --file "$(task confirm 'reply, then CONFIRM')" >/dev/null 2>&1; rc=$?
+check "send to Pi at its editor: exit 0" 0 "$rc"
+settled item-1-p
+has "send to Pi: the fake is at its dialog" "$("${S[@]}" agent read item-1-p --source visible)" "Delete build?"
+check "send to Pi: herdr does not see the dialog as blocked" yes \
+  "$(case $(agent_field item-1-p agent_status) in idle|done) echo yes ;; *) echo no ;; esac)"
+out=$(lead send item-1-p --file "$(task late 'late message 0xLATE')" 2>&1); rc=$?
+check "send to Pi at a dialog: exit 3" 3 "$rc"
+has "send to Pi at a dialog: says so and prints the screen" "$out" "item-1-p (pi) is not at its input box" "Delete build?"
+sleep 2
+lacks "send to Pi at a dialog: nothing was typed into it" "$(pi_received item-1-p)" "AT-DIALOG"
+as item-1-p worker item-1-lead item-1 -- done --report-file /home/agent/tasks/p.md >/dev/null; rc=$?
+check "done item-1-p: exit 0" 0 "$rc"
+settled item-1-lead
+
 out=$(lead done 2>&1); rc=$?
 check "done: exit 1 from a lead" 1 "$rc"
 has "done: points the lead to job end" "$out" "a lead ends its job with \`$T job end\`"
@@ -528,6 +559,23 @@ check "job start: a slow claude is started once" 1 "$(starts item-11-lead)"
 lacks "job start: no second start beside a slow claude" "$out" "attempt 1 of 2"
 thr job end item-11 --force >/dev/null 2>&1; rc=$?
 check "job end --force: after a slow start, exit 0" 0 "$rc"
+
+# A Pi whose gateway entry refuses (exit 3 at once, the pane a shell
+# again) is a failed start, as for Claude: one more start, then exit 5
+# with the refusal.
+thr job start item-12 --task-file "$(task item-12 'lead 12')" >/dev/null 2>&1; rc=$?
+check "job start item-12: exit 0" 0 "$rc"
+settled item-12-lead
+touch /home/agent/.fake-pi/refuse
+out=$(as item-12-lead lead thread-1 item-12 -- spawn q --agent pi --model example/fake-model \
+  --cwd /home/agent/x-repo/general/item-12 --task-file "$(task q 'never delivered')" 2>&1); rc=$?
+rm /home/agent/.fake-pi/refuse
+check "spawn --agent pi: exit 5 when the gateway entry refuses" 5 "$rc"
+check "spawn --agent pi: a refused start is made twice, then given up" 2 \
+  "$(cat "/home/agent/.fake-pi/starts-$(ledger "SELECT pane_id FROM agents WHERE name = 'item-12-q'" | tr -d ' ')" | wc -l)"
+has "spawn --agent pi: the refusal printed" "$out" "the gateway refused the session" "did not start"
+thr job end item-12 --force >/dev/null 2>&1; rc=$?
+check "job end --force: after a refused Pi start, exit 0" 0 "$rc"
 
 # A gateway that refuses the session every time is a failed start: one
 # more start, then exit 5 with the refusal.

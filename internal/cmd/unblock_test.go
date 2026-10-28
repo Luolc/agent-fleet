@@ -130,7 +130,7 @@ func TestATrustDialogTheRuleDoesNotGetPastStartsNoHelper(t *testing.T) {
 		pressed++
 		return exit.New(exit.Blocked, name+" is not ready at its input box (herdr status \"blocked\")")
 	}
-	t.Cleanup(func() { settleStopped = settle })
+	t.Cleanup(func() { settleStopped = settleClaude })
 	u := testWorkers(conn, sc)
 	u.dir = t.TempDir()
 	row := stopRow{ID: 7, Name: "s-trust", Role: "worker", Job: "s", Parent: "s-lead", Cwd: "/w/x", State: "active"}

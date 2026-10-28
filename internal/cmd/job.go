@@ -612,7 +612,7 @@ func JobStart(h *herdr.Herdr, args JobStartArgs) (exit.Code, error) {
 	}
 	body := c.prompt.fill(roleSlots(c.sc, c.id, c.cwd, c.repo, c.cwd, c.cfg.MaxAgentsPerJob, issue, c.parent)) +
 		note + section + taskSection(issue.URL, c.body)
-	code, err := startAndDeliver(h, conn, c.id, place, c.cwd, orDefault(args.Model, c.sc.Models.Lead.Model),
+	code, err := startAndDeliver(h, conn, c.id, place, c.cwd, KindClaude, orDefault(args.Model, c.sc.Models.Lead.Model),
 		orDefault(args.Effort, c.sc.Models.Lead.Effort), c.me.Agent, body, &created)
 	if err != nil || code != exit.Ok {
 		return startFailed(c.id.Agent, err, code, created, hint)

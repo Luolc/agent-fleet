@@ -132,7 +132,7 @@ func TestWithTheUnblockWatchOffOnlyTheRulesAct(t *testing.T) {
 		pressed++
 		return nil
 	}
-	t.Cleanup(func() { settleStopped = settle })
+	t.Cleanup(func() { settleStopped = settleClaude })
 	row := stopRow{ID: 7, Name: "s-perm", Role: "worker", Job: "s", Parent: "s-lead", Cwd: "/w/x", State: "active"}
 	if err := w.handle(e, false, row, bashPrompt); err != nil {
 		t.Fatal(err)

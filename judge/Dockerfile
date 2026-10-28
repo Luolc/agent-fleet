@@ -1,6 +1,6 @@
 # Judge image: a real herdr 0.9.3 (the release binary, pinned by SHA-256) in
-# a minimal Ubuntu, plus a fake `claude` on PATH that draws the screens
-# herdr's Claude manifest recognizes. The binary under test is not baked in;
+# a minimal Ubuntu, plus a fake `claude` and a fake `pi` on PATH that draw
+# the screens herdr's Claude and Pi manifests recognize. The binary under test is not baked in;
 # `run.sh` mounts it, so the image is cached across changes to either binary.
 FROM ubuntu:24.04
 
@@ -16,6 +16,6 @@ RUN curl -fsSL -o /usr/local/bin/herdr \
     && chmod +x /usr/local/bin/herdr
 
 RUN useradd -m -s /bin/bash agent
-COPY --chmod=755 bin/claude /usr/local/bin/claude
+COPY --chmod=755 bin/claude bin/pi /usr/local/bin/
 USER agent
 WORKDIR /home/agent

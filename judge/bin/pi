@@ -1,0 +1,85 @@
+#!/bin/bash
+# Fake Pi for the judge. herdr detects Pi from the foreground process name
+# and reads its screen with manifest `pi`, which knows only working: a line
+# `── ⠋ Working ───` (a braille spinner frame) near the bottom. Anything
+# else is idle, a dialog included, so fleet must tell Pi's editor apart by
+# itself. The screens follow Pi 1.2.0:
+#   idle     the transcript, then the editor: a rule, one empty line, a
+#            rule; then the footer (directory, usage and model)
+#   working  the same, with the spinner and Working on the editor's top
+#            border
+#   dialog   an extension's confirmation in the editor's place: a rule, an
+#            empty line, the title, the options, the key hints, a rule
+# Each screen is redrawn in full, like a TUI.
+#
+# A message whose last line contains CONFIRM draws the dialog after its
+# turn; every line typed while it is up is appended to the received file
+# as `AT-DIALOG: <line>`, so a delivery that typed into it shows. Every
+# message received is appended in full to ~/.fake-pi/received-<pane id>
+# (HERDR_PANE_ID, as herdr sets it in the pane). While ~/.fake-pi/refuse
+# exists, it exits at once with status 3, as the gateway entry does when
+# the gateway refuses or is not set up. Every start appends a line to
+# ~/.fake-pi/starts-<pane id>.
+rule=$(printf '─%.0s' $(seq 1 60))
+transcript=()
+draw() {
+  local n=${#transcript[@]} start=0
+  [ "$n" -gt 20 ] && start=$((n - 20))
+  printf '\033[2J\033[H'
+  printf '%s\n' "${transcript[@]:$start}"
+}
+footer() {
+  printf '%s\n0.0%%/128k (auto)                    example-model \xe2\x80\xa2 high\n' "$(pwd)"
+}
+idle() {
+  draw
+  printf '\n%s\n\n%s\n' "$rule" "$rule"
+  footer
+}
+working() {
+  draw
+  printf '\n\xe2\x94\x80\xe2\x94\x80 \xe2\xa0\x8b Working %s\n\n%s\n' "$rule" "$rule"
+  footer
+}
+dialog() {
+  draw
+  printf '\n%s\n\n Delete build?\n Remove ./build for good\n\n \xe2\x86\x92 Yes\n   No\n\n' "$rule"
+  printf ' \xe2\x86\x91\xe2\x86\x93 navigate  enter select  esc cancel\n\n%s\n' "$rule"
+  footer
+}
+stty -echo 2>/dev/null
+fake=$HOME/.fake-pi
+mkdir -p "$fake"
+received=$fake/received-${HERDR_PANE_ID:-$$}
+echo start >> "$fake/starts-${HERDR_PANE_ID:-$$}"
+if [ -e "$fake/refuse" ]; then
+  echo "pi (example entry): the gateway refused the session; not starting pi" >&2
+  exit 3
+fi
+transcript+=(" Welcome to fake Pi ($(pwd))")
+[ "$#" -gt 0 ] && transcript+=(" args: $*")
+idle
+while IFS= read -r line; do
+  # As in the fake claude: herdr types the text, then presses Enter about
+  # 300 ms later, so what follows within 1 s is the same message.
+  [ -n "$line" ] || continue
+  transcript+=(" $line")
+  working
+  while IFS= read -r -t 1 more; do
+    line="$line"$'\n'"$more"
+    transcript+=(" $more")
+    working
+  done
+  printf '%s\n' "$line" >> "$received"
+  sleep 2
+  last=$line
+  while [ "${last%$'\n'}" != "$last" ]; do last=${last%$'\n'}; done
+  last=${last##*$'\n'}
+  transcript+=("" " fake reply to: $last")
+  case "$last" in
+    *CONFIRM*)
+      dialog
+      while IFS= read -r typed; do printf 'AT-DIALOG: %s\n' "$typed" >> "$received"; done ;;
+  esac
+  idle
+done

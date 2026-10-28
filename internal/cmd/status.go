@@ -73,6 +73,9 @@ type Live struct {
 type InHerdr struct {
 	Status string
 	Seq    int64
+	// Kind is the agent runtime herdr detected (`agent`), such as "claude"
+	// or "pi"; empty when herdr gives none.
+	Kind string
 }
 
 // line is one line of `status` output.
@@ -172,7 +175,8 @@ func HerdrAgents(h *herdr.Herdr) (map[string]InHerdr, error) {
 		if err != nil {
 			continue
 		}
-		agents[name] = InHerdr{Status: status, Seq: seq}
+		kind, _ := agent["agent"].(string)
+		agents[name] = InHerdr{Status: status, Seq: seq, Kind: kind}
 	}
 	return agents, nil
 }

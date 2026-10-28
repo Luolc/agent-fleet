@@ -34,6 +34,9 @@ const (
 		"itself or with the people; but not one a card of the thread agent's still asks the " +
 		"people for (`fleet ask-human --for`), which that card's answer settles. A ledger that " +
 		"cannot be updated is said on stderr; the exit code stays the delivery's.\n\n" +
+		"herdr reports no blocked state for a Pi agent, so a Pi target's screen is read first: " +
+		"unless it shows Pi's editor (idle, or working with the editor still open), nothing is " +
+		"typed and the send ends with exit 3.\n\n" +
 		"Exit: 0 when herdr reported agent_prompted; 1 for an empty body, a forged header or a " +
 		"missing FLEET_AGENT; 2 when herdr gave no clear signal (timeout, stalled); 3 when " +
 		"the target is blocked (its visible screen is printed so you can see what is in the " +
@@ -63,8 +66,14 @@ func WithHeader(sender, body string) (string, error) {
 }
 
 // Deliver delivers `text` (already carrying its header) to `to` and maps
-// the outcome to an exit code. Shared with `done`.
+// the outcome to an exit code. Shared with `done`. A target of a kind
+// herdr reports no blocked state for (Pi) is read first: a screen that is
+// not its input box is exit 3 with the screen, nothing typed, as herdr's
+// agent_blocked would be.
 func Deliver(h *herdr.Herdr, to, text string) (exit.Code, error) {
+	if code, err := readFirst(h, to); err != nil || code != exit.Ok {
+		return code, err
+	}
 	outcome, err := h.Prompt(to, text)
 	if err != nil {
 		return 0, err
@@ -85,6 +94,33 @@ func Deliver(h *herdr.Herdr, to, text string) (exit.Code, error) {
 		fmt.Fprintf(os.Stderr, "agent %s not found\n", to)
 	}
 	return outcome.Exit(), nil
+}
+
+// readFirst is Deliver's check before the prompt: exit 3 with the screen
+// printed when `to` is of a kind whose screen is read first and the screen
+// is not its input box. An agent herdr does not know, or gives no kind
+// for, is left to the prompt.
+func readFirst(h *herdr.Herdr, to string) (exit.Code, error) {
+	reply, err := h.Call("agent", "get", to)
+	if err != nil || reply.Error != nil {
+		return exit.Ok, nil
+	}
+	inner, _ := herdr.Lookup(reply.Result, "agent").(map[string]any)
+	kind, _ := inner["agent"].(string)
+	k := kindOf(kind)
+	if !k.readFirst {
+		return exit.Ok, nil
+	}
+	screen, err := h.Screen(to)
+	if err != nil {
+		return 0, err
+	}
+	if k.inputBox(screen) {
+		return exit.Ok, nil
+	}
+	fmt.Fprintf(os.Stderr, "%s (%s) is not at its input box, so nothing was typed; its screen:\n", to, kind)
+	fmt.Fprint(os.Stdout, screen)
+	return exit.Blocked, nil
 }
 
 // Send runs `send`.
