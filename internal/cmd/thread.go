@@ -326,6 +326,49 @@ type inboundMessage struct {
 	// the agent and its thread as the text's last line names them
 	// (relaySigned): labels, empty when the line is not there.
 	Relay, FromClient, RelayAgent, RelayThread string
+	// Files are the files the Slack message carries, and FileSocket the
+	// scope's fednet socket that fetches the ones without a path.
+	Files      []inboundFile
+	FileSocket string
+}
+
+// inboundFile is one entry of fednet's `payload.files`. Path is where
+// the hub already put the file on this machine, Error why it could not;
+// a file of the thread's history has neither.
+type inboundFile struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Mimetype string `json:"mimetype"`
+	Path     string `json:"path"`
+	Error    string `json:"error"`
+}
+
+// filesSection lists the message's files for the agent, empty when there
+// are none. The Slack url is left out on purpose: it needs a login.
+func (m inboundMessage) filesSection() string {
+	if len(m.Files) == 0 {
+		return ""
+	}
+	socket := m.FileSocket
+	if socket == "" {
+		socket = "<socket>"
+	}
+	var b strings.Builder
+	b.WriteString("\nFiles attached to the message (open a path with the Read tool to see an image or a PDF; " +
+		"a file without a path is fetched first with the command given; the Slack url needs a login, so do not use it):\n")
+	for _, f := range m.Files {
+		fmt.Fprintf(&b, "- %s (%s, id %s): ", f.Name, f.Mimetype, f.ID)
+		switch {
+		case f.Path != "":
+			b.WriteString("path " + f.Path)
+		case f.Error != "":
+			b.WriteString("not fetched, error: " + f.Error)
+		default:
+			fmt.Fprintf(&b, "no local path yet; run `fednet client fetch-file -socket %s %s`, which prints it", socket, f.ID)
+		}
+		b.WriteString("\n")
+	}
+	return b.String()
 }
 
 // The triggers of fednet's messages that an agent on another machine
@@ -394,6 +437,10 @@ const seePrompt = "The user-level skill `fleet` (`references/thread.md`) says wh
 
 // body is the message as the thread agent reads it.
 func (m inboundMessage) body() string {
+	return m.text() + m.filesSection()
+}
+
+func (m inboundMessage) text() string {
 	if m.Watch {
 		return m.Text
 	}
