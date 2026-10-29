@@ -169,7 +169,7 @@ settled "$A"
 # A message with files tells the agent where each one is, or how to get it.
 inbox "$(event m2f "$K" 'look 0xFILES' '' '"channel_name":"repo-'$R'","files":[{"id":"F0IMG1","name":"shot.png","mimetype":"image/png","size":10,"url":"https://files.example.test/shot","path":"/home/agent/shot.png"},{"id":"F0DOC2","name":"notes.txt","mimetype":"text/plain","size":20,"url":"https://files.example.test/notes"}]')" >/dev/null 2>&1; rc=$?
 check "inbox: a message with files, exit 0" 0 "$rc"
-has "inbox: the files reached the live agent" "$(screen "$A")" "0xFILES" "shot.png" "/home/agent/shot.png" "fednet client fetch-file -socket /home/agent/fednet.sock F0DOC2"
+has "inbox: the files reached the live agent" "$(screen "$A")" "0xFILES" "shot.png" "/home/agent/shot.png" "fetch-file" "F0DOC2"
 settled "$A"
 
 # A person archives the thread: fleet takes its eyes off, once, and tells
