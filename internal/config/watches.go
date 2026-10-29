@@ -55,15 +55,17 @@ const (
 	StaleAgents    = "stale-agents"
 	QuietThreads   = "quiet-threads"
 	BlockedScreens = "blocked-screens"
+	ModelChanges   = "model-changes"
 )
 
 // BuiltinSources maps each built-in source to its default entry.
 var BuiltinSources = map[string]string{StaleAgents: "stale-workers", QuietThreads: "quiet-threads",
-	BlockedScreens: "unblock"}
+	BlockedScreens: "unblock", ModelChanges: "model-changes"}
 
 // DefaultWatches are the watches of a scope without `watches`.
 func DefaultWatches() []Entry {
-	return []Entry{{Name: "quiet-threads", Source: QuietThreads, Do: "tell"},
+	return []Entry{{Name: "model-changes", Source: ModelChanges, Do: "tell"},
+		{Name: "quiet-threads", Source: QuietThreads, Do: "tell"},
 		{Name: "stale-workers", Source: StaleAgents, Do: "tell"},
 		{Name: "unblock", Source: BlockedScreens, Do: "worker"}}
 }
@@ -170,8 +172,8 @@ func (f *watchFile) source(key string, e *Entry) error {
 			return fmt.Errorf("%s.source: %s is the source of the default %s; change that entry instead", key, name,
 				BuiltinSources[name])
 		}
-		return fmt.Errorf("%s.source: unknown source %q; the built-in ones are stale-agents, quiet-threads and "+
-			"blocked-screens, or give {\"command\": [...]}", key, name)
+		return fmt.Errorf("%s.source: unknown source %q; the built-in ones are stale-agents, quiet-threads, "+
+			"blocked-screens and model-changes, or give {\"command\": [...]}", key, name)
 	}
 	if e.Source != "" {
 		return fmt.Errorf("%s.source: the default %s keeps its source %s", key, e.Name, e.Source)

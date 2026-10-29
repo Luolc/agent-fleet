@@ -1,0 +1,1 @@
+fleet only reports this: it switched no model and typed nothing into that agent, and the people in its thread were told when it has one. Do not switch the agent back to the model it was taken off, or ask it or anyone to: the fallback after a refusal is a safety control. Decide whether its work can go on as it is, and say what you found to whoever you report to.

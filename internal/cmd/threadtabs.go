@@ -5,7 +5,6 @@ package cmd
 
 import (
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -149,12 +148,7 @@ func shellAlone(h *herdr.Herdr, pane string) (pid int64, why string) {
 		return 0, fmt.Sprintf("its processes cannot be read: %v", err)
 	}
 	info, _ := herdr.Lookup(result, "process_info").(map[string]any)
-	number := func(value any) int64 {
-		n, _ := value.(json.Number)
-		i, _ := n.Int64()
-		return i
-	}
-	shell := number(info["shell_pid"])
+	shell := jsonInt(info["shell_pid"])
 	if shell <= 0 {
 		return 0, "herdr names no shell in its pane"
 	}
@@ -163,7 +157,7 @@ func shellAlone(h *herdr.Herdr, pane string) (pid int64, why string) {
 	if len(foreground) == 1 {
 		only, _ = foreground[0].(map[string]any)
 	}
-	if number(info["foreground_process_group_id"]) != shell || number(only["pid"]) != shell {
+	if jsonInt(info["foreground_process_group_id"]) != shell || jsonInt(only["pid"]) != shell {
 		return 0, "a process other than its shell is in its foreground"
 	}
 	children, err := childProcesses(shell)

@@ -17,7 +17,7 @@ import (
 	"github.com/Luolc/agent-fleet/internal/exit"
 )
 
-const schemaVersion = 20
+const schemaVersion = 21
 
 // Version 1: the `agents` table. Ended rows are kept as history, so `name`
 // is unique only among rows that have not ended.
@@ -329,8 +329,43 @@ CREATE TABLE orphan_tabs (
 );
 `
 
+// Version 21: what the watch `model-changes` of `fleet watch` read of
+// each agent's Claude Code transcript (`transcripts`, one row per agent
+// row and session: the file, how far it was read, and the model of the
+// session's first and latest assistant message) and the model events it
+// found there (`model_events`, one per agent row and event key, with no
+// text of the conversation), each reported once to the agent's parent
+// (`told_at`) and to its thread (`posted_at`), null until reported or
+// found to have nowhere to go.
+const schemaV21 = `
+CREATE TABLE transcripts (
+    agent       INTEGER NOT NULL,
+    session     TEXT    NOT NULL,
+    path        TEXT    NOT NULL,
+    read_to     INTEGER NOT NULL DEFAULT 0,
+    start_model TEXT    NOT NULL DEFAULT '',
+    last_model  TEXT    NOT NULL DEFAULT '',
+    PRIMARY KEY (agent, session)
+);
+CREATE TABLE model_events (
+    id          INTEGER PRIMARY KEY,
+    agent       INTEGER NOT NULL,
+    key         TEXT    NOT NULL,
+    kind        TEXT    NOT NULL,
+    at          TEXT    NOT NULL,
+    from_model  TEXT    NOT NULL,
+    to_model    TEXT    NOT NULL,
+    start_model TEXT    NOT NULL,
+    uuid        TEXT    NOT NULL,
+    found_at    INTEGER NOT NULL,
+    told_at     INTEGER,
+    posted_at   INTEGER,
+    UNIQUE (agent, key)
+);
+`
+
 // migrations[v] upgrades a ledger at version v to v+1.
-var migrations = [schemaVersion]string{schema, schemaV2, schemaV3, schemaV4, schemaV5, schemaV6, schemaV7, schemaV8, schemaV9, schemaV10, schemaV11, schemaV12, schemaV13, schemaV14, schemaV15, schemaV16, schemaV17, schemaV18, schemaV19, schemaV20}
+var migrations = [schemaVersion]string{schema, schemaV2, schemaV3, schemaV4, schemaV5, schemaV6, schemaV7, schemaV8, schemaV9, schemaV10, schemaV11, schemaV12, schemaV13, schemaV14, schemaV15, schemaV16, schemaV17, schemaV18, schemaV19, schemaV20, schemaV21}
 
 // Path is where the ledger of `scope` lives:
 // `$XDG_STATE_HOME/fleet/<scope>.db`, with `~/.local/state` when

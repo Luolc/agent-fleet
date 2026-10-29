@@ -28,7 +28,8 @@ const rule = "──────────────────────
 // <dir>/closed, after which neither is found; `pane list` prints
 // <dir>/panes.json, or no pane without it; `workspace list` and `tab
 // list` print <dir>/workspaces.json and <dir>/tabs.json, or none without
-// them; `pane process-info --pane <pane>` prints <dir>/procinfo-<pane>.
+// them; `pane process-info --pane <pane>` prints <dir>/procinfo-<pane>,
+// or a pane with nothing in its foreground without it.
 func watchHerdr(dir, reply string) string {
 	return `#!/bin/sh
 if [ "$1" = --session ]; then shift 2; fi
@@ -89,7 +90,7 @@ REPLY
     cat "$dir/panes.json" 2>/dev/null || echo '{"result":{"panes":[]}}'
     ;;
   "pane process-info")
-    cat "$dir/procinfo-$4"
+    cat "$dir/procinfo-$4" 2>/dev/null || echo '{"result":{"process_info":{"foreground_processes":[]}}}'
     ;;
   *)
     echo "fake herdr: unexpected command: $*" >&2
