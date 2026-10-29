@@ -158,6 +158,8 @@ type event struct {
 		// Reaction is the emoji a person put on a thread's root message,
 		// in a payload of type `reaction`.
 		Reaction string `json:"reaction"`
+		// Files are what the message carries, as fednet lists them.
+		Files []inboundFile `json:"files"`
 	} `json:"payload"`
 }
 
@@ -274,7 +276,7 @@ func Inbox(args InboxArgs) (exit.Code, error) {
 		fmt.Fprintf(os.Stdout, "message %s was already %s\n", e.MsgID, state)
 		return exit.Ok, nil
 	}
-	msg := inboxMessage(e, mapping)
+	msg := inboxMessage(e, mapping, cfg.FednetSocket)
 	if err := answerByMessage(conn, msg); err != nil {
 		return 0, err
 	}
@@ -301,9 +303,9 @@ func Inbox(args InboxArgs) (exit.Code, error) {
 // inboxMessage is the event's message; one of trigger handoff or relay
 // carries the machine it came from and the agent and thread its signed
 // last line names.
-func inboxMessage(e *event, mapping string) inboundMessage {
+func inboxMessage(e *event, mapping, socket string) inboundMessage {
 	msg := inboundMessage{Thread: e.Payload.Thread, Text: e.Payload.Text, User: e.Payload.User, TS: e.Payload.TS,
-		Context: e.Payload.Context, Mapping: mapping}
+		Context: e.Payload.Context, Mapping: mapping, Files: e.Payload.Files, FileSocket: socket}
 	if t := e.Payload.Trigger; t == relayHandoff || t == relayPost {
 		msg.Relay, msg.FromClient = t, e.Payload.FromClient
 		msg.RelayAgent, msg.RelayThread = relaySigned(msg.Text)
