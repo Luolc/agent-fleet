@@ -57,7 +57,8 @@ func TestBuiltinIsTheEmbeddedTextByteForByte(t *testing.T) {
 		}
 	}
 	for name, want := range map[string]string{"watch:stale-workers": staleWorkersPrompt,
-		"watch:quiet-threads": quietThreadsPrompt, "watch:unblock": unblockPrompt + "\n" + screenGuidance} {
+		"watch:quiet-threads": quietThreadsPrompt, "watch:unblock": unblockPrompt + "\n" + screenGuidance,
+		"watch:model-changes": modelChangesPrompt} {
 		got := show(PromptShowArgs{Name: &name, Builtin: true})
 		if got.err != nil || got.stdout != want || got.stderr != "" {
 			t.Errorf("%s --builtin: err %v, stderr %q, stdout equal: %v", name, got.err, got.stderr, got.stdout == want)
@@ -65,7 +66,7 @@ func TestBuiltinIsTheEmbeddedTextByteForByte(t *testing.T) {
 	}
 	ci := "watch:ci"
 	if got := show(PromptShowArgs{Name: &ci, Builtin: true}); exitCode(got.err) != 1 || got.stdout != "" ||
-		!strings.Contains(got.err.Error(), "the default watches' are watch:quiet-threads, watch:stale-workers, watch:unblock") {
+		!strings.Contains(got.err.Error(), "the default watches' are watch:model-changes, watch:quiet-threads, watch:stale-workers, watch:unblock") {
 		t.Errorf("watch:ci --builtin: err %v, stdout %q", got.err, got.stdout)
 	}
 }
@@ -191,6 +192,7 @@ func TestTheOverviewSaysWhereEachWatchsPromptComesFrom(t *testing.T) {
 	}
 	want := "worker: built-in + built-in common\n" +
 		"watch:ci: watches.ci.prompt (~/.config/fleet/watches/ci.md)\n" +
+		"watch:model-changes: built-in\n" +
 		"watch:quiet-threads: error: watches.quiet-threads.prompt (~/.config/fleet/watches/missing.md): cannot read the file: no such file or directory\n" +
 		"watch:stale-workers: watches.stale-workers.prompt (~/.config/fleet/watches/stale.md)\n" +
 		"watch:tick: no prompt\n" +
@@ -199,7 +201,7 @@ func TestTheOverviewSaysWhereEachWatchsPromptComesFrom(t *testing.T) {
 		t.Errorf("no\n%s\nin\n%s", want, got.stdout)
 	}
 	promptConfig(t, `{}`, map[string]string{})
-	want = "worker: built-in + built-in common\nwatch:quiet-threads: built-in\nwatch:stale-workers: built-in\nwatch:unblock: built-in\n"
+	want = "worker: built-in + built-in common\nwatch:model-changes: built-in\nwatch:quiet-threads: built-in\nwatch:stale-workers: built-in\nwatch:unblock: built-in\n"
 	if got := show(PromptShowArgs{}); got.err != nil || !strings.Contains(got.stdout, want) {
 		t.Errorf("defaults: err %v, no\n%s\nin\n%s", got.err, want, got.stdout)
 	}
@@ -219,7 +221,7 @@ func TestAWatchsPromptShowsUnderItsSourceWithItsSlotsAsWritten(t *testing.T) {
 	}
 	for name, refusal := range map[string]string{
 		"watch:quiet-threads": "watches.quiet-threads.prompt (~/.config/fleet/watches/missing.md): cannot read the file",
-		"watch:nope":          `no watch "nope" in the scope; its watches are watch:ci, watch:quiet-threads, watch:stale-workers, watch:tick, watch:unblock`,
+		"watch:nope":          `no watch "nope" in the scope; its watches are watch:ci, watch:model-changes, watch:quiet-threads, watch:stale-workers, watch:tick, watch:unblock`,
 		"watches":             `no prompt "watches"; the names are common, thread, lead, worker, and watch:<name> for a watch's`,
 	} {
 		got := show(PromptShowArgs{Name: &name})

@@ -115,10 +115,13 @@ and add it under `"prompts"`: `"lead": {"replace": "prompts/lead.md", "base":
 ## Watches
 
 `fleet watch`, run from a timer, checks on the scope's agents and acts
-through its watches. Three are there by default: `stale-workers` tells a lead
+through its watches. Four are there by default: `stale-workers` tells a lead
 when its workers look stuck, `quiet-threads` asks a thread's agent about a
-thread gone quiet, and `unblock` starts a worker for an agent stopped at a
-screen. Each can be given its own `prompt`, an `every`, or turned `off`.
+thread gone quiet, `unblock` starts a worker for an agent stopped at a
+screen, and `model-changes` reports a Claude Code session that a refusal
+stopped or moved to another model, to the agent's parent and its thread,
+without switching the model back. Each can be given its own `prompt`, an
+`every`, or turned `off`.
 
 Add your own under `watches.<name>`. Its source is a command that prints one
 JSON line per subject: a `key` of its own, a `text`, and the `agent`, `job`

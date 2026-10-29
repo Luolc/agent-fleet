@@ -599,3 +599,45 @@ func TestAVersion18LedgerKeepsItsWorktreesWithNoStatuteFailure(t *testing.T) {
 		t.Errorf("statute_failure %q, version %d", failure, version)
 	}
 }
+
+// A version-20 ledger gains the model watch's tables, empty, and an event
+// is recorded once per agent row and key.
+func TestAVersion20LedgerGainsTheModelWatchTables(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fleet.db")
+	conn, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range append(migrations[:20:20], "PRAGMA user_version = 20") {
+		if _, err := conn.Exec(step); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	conn, err = OpenAt(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	var transcripts, events, version int64
+	if err := conn.QueryRow("SELECT (SELECT count(*) FROM transcripts), (SELECT count(*) FROM model_events), "+
+		"(SELECT user_version FROM pragma_user_version)").Scan(&transcripts, &events, &version); err != nil {
+		t.Fatal(err)
+	}
+	if transcripts != 0 || events != 0 || version != schemaVersion {
+		t.Errorf("transcripts %d, model_events %d, version %d", transcripts, events, version)
+	}
+	insert := "INSERT OR IGNORE INTO model_events (agent, key, kind, at, from_model, to_model, start_model, uuid, found_at) " +
+		"VALUES (1, 'k', 'model_change', 't', 'a', 'b', 'a', 'u', 1)"
+	for i, want := range []int64{1, 0} {
+		res, err := conn.Exec(insert)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n, _ := res.RowsAffected(); n != want {
+			t.Errorf("insert %d: %d rows, want %d", i+1, n, want)
+		}
+	}
+}

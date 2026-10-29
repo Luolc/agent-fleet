@@ -30,6 +30,8 @@ var (
 	staleWorkersPrompt string
 	//go:embed watch_quiet_threads.md
 	quietThreadsPrompt string
+	//go:embed watch_model_changes.md
+	modelChangesPrompt string
 )
 
 // watchSlots are the slots of a watch's prompt; a `worker` watch's also
@@ -97,7 +99,7 @@ func (r *watchRun) ran(e config.Entry) error {
 // built-in source `source`; "" for a command source.
 func builtinWatchPrompt(source string) string {
 	return map[string]string{config.StaleAgents: staleWorkersPrompt, config.QuietThreads: quietThreadsPrompt,
-		config.BlockedScreens: unblockPrompt + "\n" + screenGuidance}[source]
+		config.BlockedScreens: unblockPrompt + "\n" + screenGuidance, config.ModelChanges: modelChangesPrompt}[source]
 }
 
 // watchPrompt is the prompt of the watch: the file its entry names, else

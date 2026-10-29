@@ -40,8 +40,8 @@ var runBudget = 45 * time.Second
 
 // WatchAbout and WatchLongAbout are the help texts of `watch`.
 const (
-	WatchAbout     = "Timer check of a scope: stuck workers, stopped agents, quiet threads, idle sessions, unanswered questions, configured watches"
-	WatchLongAbout = "Timer check of a scope: stuck workers, stopped agents, quiet threads, idle " +
+	WatchAbout     = "Timer check of a scope: stuck workers, stopped agents, model changes, quiet threads, idle sessions, unanswered questions, configured watches"
+	WatchLongAbout = "Timer check of a scope: stuck workers, stopped agents, model changes, quiet threads, idle " +
 		"sessions, unanswered questions, configured watches.\n\n" +
 		"Meant for a timer every 5 minutes, with --scope; one run at a time per scope (a lock " +
 		"file next to the ledger; a second run is refused). Each run first reads everything it " +
@@ -111,6 +111,14 @@ const (
 		"stop is asked about again, whether or not the people answered. A worker's lead " +
 		"is told when a worker starts for it or the people are asked, and so is the starter of a lead or " +
 		"worker whose start stopped at the screen.\n\n" +
+		"Models (the watch `model-changes`): then the Claude Code transcript of every live agent in herdr, Pi " +
+		"agents left out, is read from where the last run stopped, its session found from the processes in its " +
+		"pane and the session files Claude Code keeps (~/.claude, or CLAUDE_CONFIG_DIR). A fallback after a " +
+		"refusal (model_refusal_fallback), a stop with no fallback (model_refusal_no_fallback), a message stopped " +
+		"by a safety classifier (stop_reason refusal) and a change of the messages' model are each a line on " +
+		"stdout, and are reported once: to the agent's parent, as watch, and in Chinese to its thread (a thread " +
+		"agent's own, a job's home thread), with the time, the models and the record's uuid, never the " +
+		"conversation's text. fleet only reports them: it switches no model and types nothing into the agent.\n\n" +
 		"Threads (only with a fednet socket): a live thread agent gone from herdr has its session " +
 		"ended as abnormal (its ticket released without --done, a closing line saying the session " +
 		"broke off). A thread with no message for `thread_idle` (72h) has its live session " +
@@ -139,7 +147,7 @@ const (
 		"pending when its job ended otherwise (`job end`, or `job end --force`) is the thread's from " +
 		"then on: its thread agent reminded of it as before, counted from when it was asked; the live thread agent, if " +
 		"any, is told once; it is closed after `thread_question` without the session being reclaimed.\n\n" +
-		"Watches: the three rules named above are the defaults of `watches` in the scope's settings; an entry " +
+		"Watches: the four rules named above are the defaults of `watches` in the scope's settings; an entry " +
 		"of the same name sets only their `every` (the least time between two runs), `prompt` (a file in place " +
 		"of the instructions the notice or the worker's task ends with, slots {{key}} and {{text}}, and " +
 		"{{question_file}} for `unblock`) or `off`. Any other entry has a " +
@@ -280,13 +288,7 @@ func Watch(h *herdr.Herdr) (exit.Code, error) {
 		return 0, err
 	}
 	r.threadTabs(inHerdr)
-	if r.workers, err = r.newWorkers(inHerdr); err != nil {
-		return 0, err
-	}
-	if err := r.workers.close(); err != nil {
-		return 0, err
-	}
-	if err := r.workers.unblock(); err != nil {
+	if err := r.agentRules(inHerdr); err != nil {
 		return 0, err
 	}
 	if !on {
@@ -304,6 +306,22 @@ func Watch(h *herdr.Herdr) (exit.Code, error) {
 		}
 	}
 	return r.code, nil
+}
+
+// agentRules closes the watch workers that are done, then runs the rules
+// on the agents stopped at a screen and on the agents' transcripts.
+func (r *watchRun) agentRules(inHerdr map[string]InHerdr) error {
+	var err error
+	if r.workers, err = r.newWorkers(inHerdr); err != nil {
+		return err
+	}
+	if err := r.workers.close(); err != nil {
+		return err
+	}
+	if err := r.workers.unblock(); err != nil {
+		return err
+	}
+	return r.modelChanges(inHerdr)
 }
 
 // leadsAndWorkers saves this run's readings, ends the rows of those gone

@@ -257,13 +257,14 @@ func TestWatchesKeepTheDefaultsAndReadEachEntry(t *testing.T) {
 		"ci": {"source": {"command": ["/bin/ci-red", "--all"]}, "do": "tell", "env": ["EXAMPLE_TOKEN"], "per_run": 3,
 			"again": "2h", "max": 4},
 		"nightly": {"do": "worker", "every": "24h", "prompt": "nightly.md", "model": "example-small", "effort": "low"},
-		"unblock": {"every": "10m"}}}`), "/home/u")
+		"unblock": {"every": "10m"}, "model-changes": {"off": true}}}`), "/home/u")
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := []Entry{
 		{Name: "ci", Command: []string{"/bin/ci-red", "--all"}, Do: "tell", Env: []string{"EXAMPLE_TOKEN"}, PerRun: 3,
 			Again: 2 * time.Hour, Max: 4},
+		{Name: "model-changes", Source: ModelChanges, Do: "tell", Off: true},
 		{Name: "nightly", Every: 24 * time.Hour, Do: "worker", Prompt: "nightly.md", Model: "example-small", Effort: "low",
 			PerRun: 1},
 		{Name: "quiet-threads", Source: QuietThreads, Do: "tell", Off: true},
@@ -286,6 +287,7 @@ func TestWatchesKeepTheDefaultsAndReadEachEntry(t *testing.T) {
 		`{"watches": {"ci": {"source": {"cmd": ["c"]}, "do": "tell"}}}`:      `watches.ci.source: must be a built-in source's name or {"command": [...]}`,
 		`{"watches": {"ci": {"source": "stale-agents", "do": "tell"}}}`:      "watches.ci.source: stale-agents is the source of the default stale-workers",
 		`{"watches": {"ci": {"source": "blocked-screens", "do": "worker"}}}`: "watches.ci.source: blocked-screens is the source of the default unblock",
+		`{"watches": {"ci": {"source": "model-changes", "do": "tell"}}}`:     "watches.ci.source: model-changes is the source of the default model-changes",
 		`{"watches": {"ci": {"source": "lint", "do": "tell"}}}`:              `watches.ci.source: unknown source "lint"`,
 		`{"watches": {"ci": {"source": {"command": ["c"]}, "do": "ask"}}}`:   `watches.ci.do: unknown "ask"`,
 		`{"watches": {"ci": {` + command + `, "env": ["A-B"]}}}`:             `watches.ci.env: "A-B" is not a variable's name`,
