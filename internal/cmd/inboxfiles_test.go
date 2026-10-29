@@ -28,13 +28,18 @@ func eventOf(t *testing.T, raw string) *event {
 func TestAMessageWithFilesListsEachOne(t *testing.T) {
 	msg := inboxMessage(eventOf(t, filesEvent), "", "/run/example/fednet.sock")
 	want := "Message in thread C1/1.0 from U0ABC at 1.5:\n\nsee these\n\n" +
-		"Files attached to the message (open a path with the Read tool to see an image or a PDF; " +
-		"a file without a path is fetched first with the command given; the Slack url needs a login, so do not use it):\n" +
+		"Files attached to the message (open the path with the Read tool to see the file; a " +
+		"`file: <name> <link>` line in the text is a Slack link that needs a login, so do not use it, go by the path):\n" +
 		"- shot.png (image/png, id F0IMG1): path /var/cache/fednet/F0IMG1-shot.png\n" +
-		"- notes.txt (text/plain, id F0DOC2): no local path yet; run `fednet client fetch-file -socket /run/example/fednet.sock F0DOC2`, which prints it\n" +
+		"- notes.txt (text/plain, id F0DOC2): not fetched yet; to get a local path run `fednet client fetch-file -socket /run/example/fednet.sock F0DOC2`, which prints it, then Read that path\n" +
 		"- big.pdf (application/pdf, id F0BIG3): not fetched, error: file too large\n"
 	if got := msg.body(); got != want {
 		t.Errorf("body:\n%q\nwant\n%q", got, want)
+	}
+	for _, line := range strings.Split(msg.body(), "\n") {
+		if strings.Contains(line, "fetch-file") && !strings.Contains(line, "F0DOC2") {
+			t.Errorf("a file with a path or an error gets a fetch-file command: %q", line)
+		}
 	}
 }
 

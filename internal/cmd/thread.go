@@ -354,8 +354,8 @@ func (m inboundMessage) filesSection() string {
 		socket = "<socket>"
 	}
 	var b strings.Builder
-	b.WriteString("\nFiles attached to the message (open a path with the Read tool to see an image or a PDF; " +
-		"a file without a path is fetched first with the command given; the Slack url needs a login, so do not use it):\n")
+	b.WriteString("\nFiles attached to the message (open the path with the Read tool to see the file; a " +
+		"`file: <name> <link>` line in the text is a Slack link that needs a login, so do not use it, go by the path):\n")
 	for _, f := range m.Files {
 		fmt.Fprintf(&b, "- %s (%s, id %s): ", f.Name, f.Mimetype, f.ID)
 		switch {
@@ -364,7 +364,7 @@ func (m inboundMessage) filesSection() string {
 		case f.Error != "":
 			b.WriteString("not fetched, error: " + f.Error)
 		default:
-			fmt.Fprintf(&b, "no local path yet; run `fednet client fetch-file -socket %s %s`, which prints it", socket, f.ID)
+			fmt.Fprintf(&b, "not fetched yet; to get a local path run `fednet client fetch-file -socket %s %s`, which prints it, then Read that path", socket, f.ID)
 		}
 		b.WriteString("\n")
 	}
