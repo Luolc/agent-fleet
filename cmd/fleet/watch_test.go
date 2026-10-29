@@ -374,7 +374,8 @@ const t0 int64 = 1_800_000_000
 // code in <dir>/delete-exit, 0 without one; `ask` logs `card <its JSON>`
 // and prints card-<id>, <id> the ref's, or exits with the code in
 // <dir>/ask-exit, or 2 while <dir>/card-refused exists; while
-// <dir>/fednet-down exists it exits 4. The fake atb logs its argv to
+// <dir>/fednet-down exists it exits 4, and a `post` does while
+// <dir>/post-down exists. The fake atb logs its argv to
 // <dir>/atb.log, and fails while <dir>/atb-down exists; a release with
 // --restore exits with the code in <dir>/restore-exit, when there is one.
 func watchThreadWorld(t *testing.T) *watchWorld {
@@ -398,6 +399,7 @@ case "$2" in
       echo 'post: unknown command "check-mentions" (the hub runs an older fednet than this client; upgrade the hub)' >&2
       exit "$(cat "$dir/mention-exit")"
     fi ;; esac
+    [ -e "$dir/post-down" ] && { echo "post: hub unreachable" >&2; exit 4; }
     echo "msg-$(wc -l < "$dir/fednet.log" | tr -d ' ')" ;;
   delete)
     if [ -f "$dir/delete-exit" ]; then echo "delete: refused" >&2; exit "$(cat "$dir/delete-exit")"; fi ;;

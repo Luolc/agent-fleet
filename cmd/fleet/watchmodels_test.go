@@ -262,3 +262,31 @@ func TestTheModelWatchCanBeTurnedOff(t *testing.T) {
 		t.Errorf("%+v, posts %q", out, w.posts())
 	}
 }
+
+// A post that failed is tried again next run, without telling the parent
+// again.
+func TestTheModelWatchPostsAgainNextRunAfterAFailedPost(t *testing.T) {
+	w := modelWorld(t)
+	w.file("post-down", "x")
+	w.watchAt(time.Minute, 5)
+	told := func() int {
+		n := 0
+		for _, p := range w.prompts() {
+			if strings.Contains(p[1], "model-changes") {
+				n++
+			}
+		}
+		return n
+	}
+	tried, toldOnce := len(w.posts()), told()
+	if tried != 2 || toldOnce != 1 {
+		t.Fatalf("first run: %d posts tried, %d tells", tried, toldOnce)
+	}
+	w.file("post-down", "")
+	w.watchAt(2*time.Minute, 0)
+	posts := w.posts()[tried:]
+	if len(posts) != 2 || !strings.Contains(posts[0], "thread-c1 的 Claude Code 会话出现了 2 个模型事件") ||
+		!strings.Contains(posts[1], "j-w 的 Claude Code 会话出现了 3 个模型事件") || told() != toldOnce {
+		t.Errorf("second run: posts %q, %d tells", posts, told())
+	}
+}
