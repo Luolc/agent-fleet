@@ -358,16 +358,20 @@ func (m inboundMessage) filesSection() string {
 		"`file: <name> <link>` line in the text is a Slack link that needs a login, so do not use it, go by the path):\n")
 	for _, f := range m.Files {
 		fmt.Fprintf(&b, "- %s (%s, id %s): ", f.Name, f.Mimetype, f.ID)
+		cmd := fmt.Sprintf("`fednet client fetch-file -socket %s %s`", socket, f.ID)
 		switch {
 		case f.Path != "":
 			b.WriteString("path " + f.Path)
 		case f.Error != "":
-			b.WriteString("not fetched, error: " + f.Error)
+			fmt.Fprintf(&b, "not fetched, error: %s; to try again run %s, which prints the path, then Read it", f.Error, cmd)
 		default:
-			fmt.Fprintf(&b, "not fetched yet; to get a local path run `fednet client fetch-file -socket %s %s`, which prints it, then Read that path", socket, f.ID)
+			fmt.Fprintf(&b, "not fetched; to get a local path run %s, which prints it, then Read it", cmd)
 		}
 		b.WriteString("\n")
 	}
+	b.WriteString("Fetched files are kept on this machine for 7 days by default; when a path is gone, fetch the file again " +
+		"with `fednet client fetch-file -socket " + socket + " <id>`. A file over 200 MiB is refused: then tell the person " +
+		"to share it another way.\n")
 	return b.String()
 }
 
