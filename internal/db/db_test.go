@@ -721,3 +721,32 @@ func TestAVersion23LedgerKeepsItsInboxAndTakesTypedMessages(t *testing.T) {
 		t.Errorf("row %q (%v), want the version 23 row kept", row, err)
 	}
 }
+
+func TestAVersion24LedgerKeepsNoEventForItsMessages(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fleet.db")
+	conn, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	steps := append([]string{}, migrations[:24]...)
+	steps = append(steps, "INSERT INTO inbox (msg_id, thread, state, received_at) VALUES ('m1', 'C1/1.0', 'reserved', 7)",
+		"PRAGMA user_version = 24")
+	for _, step := range steps {
+		if _, err := conn.Exec(step); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	conn, err = OpenAt(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	var row string
+	if err := conn.QueryRow("SELECT msg_id || ' ' || state || ' ' || (event IS NULL) FROM inbox").Scan(&row); err != nil ||
+		row != "m1 reserved 1" {
+		t.Errorf("row %q (%v), want the version 24 row with no event", row, err)
+	}
+}

@@ -99,7 +99,13 @@ const (
 		"In the text, the link of each `file: <name> <link>` line fednet adds for one of the " +
 		"message's files is put in backquotes: it ends in the file's name, and Claude Code 2.1.296 " +
 		"drops the Enter that comes while it reads a pasted part ending in an image's extension (see " +
-		"`fleet send --help`). Then the route: " +
+		"`fleet send --help`). " +
+		"A thread's messages reach its " +
+		"agent in the order fleet first saw them, whatever order fednet's retries come in: the event of " +
+		"a message is kept in the ledger until it is delivered or dropped, for at most an hour (past " +
+		"fednet's retries), and a message first delivers the thread's earlier ones still only " +
+		"reserved; while one of them cannot go, it waits too, with that one's exit code. " +
+		"Then the route: " +
 		"a thread whose agent is live gets the message as `fleet send` would, headed `[FROM: " +
 		"inbox]`, also while the agent is at work (it queues the message); only a screen that waits " +
 		"for a person's answer is exit 3. Otherwise a thread agent is started: `thread-<slug>` (the slug is the key, " +
@@ -224,9 +230,11 @@ func reserveMessage(conn *sql.DB, msgID, thread string) (state string, err error
 	return state, err
 }
 
-// setMessage records the message's outcome.
+// setMessage records the message's outcome; a message delivered or
+// dropped keeps no event.
 func setMessage(conn *sql.DB, msgID, state string) error {
-	if _, err := conn.Exec("UPDATE inbox SET state = ?1 WHERE msg_id = ?2", state, msgID); err != nil {
+	if _, err := conn.Exec("UPDATE inbox SET state = ?1, event = CASE WHEN ?1 IN ('delivered', 'dropped') THEN NULL "+
+		"ELSE event END WHERE msg_id = ?2", state, msgID); err != nil {
 		return exit.Database(err)
 	}
 	return nil
@@ -295,7 +303,67 @@ func Inbox(args InboxArgs) (exit.Code, error) {
 		fmt.Fprintf(os.Stdout, "message %s was already %s\n", e.MsgID, state)
 		return exit.Ok, nil
 	}
+	if state == "reserved" {
+		if code, err := takeEarlier(h, conn, scope, cfg, e); err != nil || code != exit.Ok {
+			return code, err
+		}
+	}
 	return takeMessage(h, conn, scope, cfg, e.MsgID, state, inboxMessage(e, mapping, cfg.FednetSocket))
+}
+
+// keptFor is how long a message's event is kept for a later message of
+// its thread to deliver first: past fednet's retries, about forty minutes
+// by default, after which fednet gives the message up.
+const keptFor = time.Hour
+
+// takeEarlier keeps the message's event, then delivers first the thread's
+// messages that came before it (by when fleet first saw them) and are
+// still only reserved, their events kept: fednet retries each message on
+// its own schedule, so a later one may come first. One that is not
+// delivered stops the rest, `e` included, with its exit code, so the
+// thread's messages reach the agent in order. Events older than keptFor
+// are dropped.
+func takeEarlier(h *herdr.Herdr, conn *sql.DB, scope string, cfg *config.Scope, e *event) (exit.Code, error) {
+	data, err := json.Marshal(e)
+	if err != nil {
+		return 0, exit.Environmentf("cannot keep message %s: %v", e.MsgID, err)
+	}
+	since := db.Now() - int64(keptFor.Seconds())
+	if _, err := conn.Exec("UPDATE inbox SET event = NULL WHERE event IS NOT NULL AND received_at < ?1", since); err != nil {
+		return 0, exit.Database(err)
+	}
+	if _, err := conn.Exec("UPDATE inbox SET event = ?1 WHERE msg_id = ?2", string(data), e.MsgID); err != nil {
+		return 0, exit.Database(err)
+	}
+	var earlier []event
+	err = eachRow(conn, "SELECT event FROM inbox WHERE thread = ?1 AND state = 'reserved' AND event IS NOT NULL AND "+
+		"id < (SELECT id FROM inbox WHERE msg_id = ?2) ORDER BY id", func(rows *sql.Rows) error {
+		var text string
+		if err := rows.Scan(&text); err != nil {
+			return err
+		}
+		var before event
+		if json.Unmarshal([]byte(text), &before) == nil {
+			earlier = append(earlier, before)
+		}
+		return nil
+	}, e.Payload.Thread, e.MsgID)
+	if err != nil {
+		return 0, err
+	}
+	for i := range earlier {
+		before := &earlier[i]
+		fmt.Fprintf(os.Stdout, "message %s came before %s in thread %s and is not delivered yet: it goes first\n",
+			before.MsgID, e.MsgID, e.Payload.Thread)
+		mapping := ChannelMapping(cfg.Channels, before.Payload.ChannelName, before.Payload.Trigger == "dm")
+		code, err := takeMessage(h, conn, scope, cfg, before.MsgID, "reserved", inboxMessage(before, mapping, cfg.FednetSocket))
+		if err != nil || code != exit.Ok {
+			fmt.Fprintf(os.Stderr, "message %s waits behind %s, which came before it in thread %s\n", e.MsgID,
+				before.MsgID, e.Payload.Thread)
+			return code, err
+		}
+	}
+	return exit.Ok, nil
 }
 
 // takeMessage gets a message reserved for this run (`state` reserved, or

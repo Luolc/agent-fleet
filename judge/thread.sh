@@ -1113,3 +1113,30 @@ check "inbox, typed then gone: the retry starts a new session, exit 0, delivered
 has "inbox, typed then gone: says the session before is gone" "$out" "$AT is gone from herdr"
 has "inbox, typed then gone: the new session has the prompt and the message" "$(received "$AT")" "## The message" 0xFIRST3
 settled "$AT"
+
+# A thread's messages reach its agent in the order fleet first saw them:
+# a later one whose retry comes first delivers the earlier ones before it,
+# and waits behind one that still cannot go (2026-10-30: two messages a
+# minute apart arrived in reverse order).
+inbox "$(event o1 "$KI" 'please BLOCK 0xORD0')" >/dev/null 2>&1
+"${S[@]}" agent wait "$AI" --until blocked --timeout 20000 >/dev/null
+inbox "$(event o2 "$KI" 'first 0xORD1')" >/dev/null 2>&1; rc=$?
+check "inbox, order: the first message at a blocked agent, exit 3" 3 "$rc"
+out=$(inbox "$(event o3 "$KI" 'second 0xORD2')" 2>&1); rc=$?
+check "inbox, order: the second waits behind the first, exit 3, both reserved" "3 reserved reserved " \
+  "$rc $(tledger "SELECT state FROM inbox WHERE msg_id IN ('o2', 'o3') ORDER BY id")"
+has "inbox, order: says what it waits behind" "$out" "o3 waits behind o2"
+"${S[@]}" agent send-keys "$AI" enter >/dev/null
+settled "$AI"
+out=$(inbox /home/agent/events/o3.json 2>&1); rc=$?
+check "inbox, order: the second's retry delivers both, exit 0" "0 delivered delivered " \
+  "$rc $(tledger "SELECT state FROM inbox WHERE msg_id IN ('o2', 'o3') ORDER BY id")"
+has "inbox, order: says the first goes first" "$out" "o2 came before o3"
+for _ in $(seq 1 50); do received "$AI" | grep -q 0xORD2 && break; sleep 0.2; done
+check "inbox, order: the agent has them in order" "0xORD1 0xORD2 " "$(received "$AI" | grep -o '0xORD[12]' | tr '\n' ' ')"
+out=$(inbox /home/agent/events/o2.json 2>&1); rc=$?
+check "inbox, order: the first's retry, exit 0, nothing delivered again" "0 1" \
+  "$rc $(received "$AI" | grep -c 0xORD1)"
+check "inbox, order: no event kept once delivered" "0 " \
+  "$(tledger "SELECT count(*) FROM inbox WHERE thread = '$KI' AND event IS NOT NULL")"
+settled "$AI"
