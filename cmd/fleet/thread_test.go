@@ -303,6 +303,7 @@ func TestInboxStartsAThreadAgentForANewThreadWithItsTicket(t *testing.T) {
 		"herdr agent get",
 		"herdr agent get",
 		"herdr pane process-info",
+		"herdr agent read",
 		"herdr agent prompt",
 	}
 	got := strings.Split(strings.TrimSpace(w.calls()), "\n")
@@ -377,7 +378,7 @@ func TestInboxStartsAThreadAgentForANewThreadWithItsTicket(t *testing.T) {
 	if out.code != 0 {
 		t.Fatalf("%+v", out)
 	}
-	if got := strings.TrimSpace(w.calls()); got != "herdr status server\nherdr agent get\nherdr agent get\nherdr pane process-info\nherdr agent prompt" {
+	if got := strings.TrimSpace(w.calls()); got != "herdr status server\nherdr agent get\nherdr agent get\nherdr pane process-info\nherdr agent read\nherdr agent prompt" {
 		t.Errorf("calls = %q", got)
 	}
 	argv = w.file("argv")
@@ -424,6 +425,7 @@ func TestInboxReopensAKnownThreadWithItsSummariesWhenTheAgentIsGone(t *testing.T
 		"herdr agent get",
 		"herdr agent get",
 		"herdr pane process-info",
+		"herdr agent read",
 		"herdr agent prompt",
 	}
 	got := strings.Split(strings.TrimSpace(w.calls()), "\n")
@@ -1274,7 +1276,7 @@ func TestInboxFinishesAStartItsEarlierRunWasKilledIn(t *testing.T) {
 	}
 	want := "herdr status server\nherdr agent get\n" +
 		`atb linear query { issue(id: "TH-5") { comments { nodes { body createdAt } } } } key=set` + "\n" +
-		"herdr pane rename\nherdr agent read\nherdr agent get\nherdr agent get\nherdr pane process-info\nherdr agent prompt"
+		"herdr agent get\nherdr pane rename\nherdr agent read\nherdr agent get\nherdr agent get\nherdr pane process-info\nherdr agent read\nherdr agent prompt"
 	if got := strings.TrimSpace(w.calls()); got != want {
 		t.Errorf("retry calls = %q, want %q", got, want)
 	}
