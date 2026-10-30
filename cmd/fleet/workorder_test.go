@@ -230,6 +230,19 @@ func TestStartsPassTheScopesModelsWhenTheCommandGivesNone(t *testing.T) {
 	if got := claude(w.asThread("job", "start", "item-2", "--repo", "example-dataset", "--task-file", taskFile)); got != fixed+" --model example-large" {
 		t.Errorf("models.lead: %s", got)
 	}
+	// Each row records what its start passed, so the agent can be started
+	// the same way again; null for what was not passed.
+	conn := w.ledger()
+	defer conn.Close()
+	var recorded string
+	if err := conn.QueryRow("SELECT group_concat(name || ' ' || kind || ' ' || coalesce(model, '-') || ' ' || " +
+		"coalesce(effort, '-'), ', ') FROM (SELECT * FROM agents WHERE name IN ('item-1-a', 'item-1-c', 'item-2-lead') " +
+		"ORDER BY id)").Scan(&recorded); err != nil {
+		t.Fatal(err)
+	}
+	if recorded != "item-1-a claude - -, item-1-c claude example-small max, item-2-lead claude example-large -" {
+		t.Errorf("recorded: %s", recorded)
+	}
 }
 
 // `spawn --agent pi` starts Pi with its own arguments, not the scope's
@@ -477,6 +490,13 @@ func TestSpawnCreatesAndClaimsTheWorkOrderBeforeAnythingElse(t *testing.T) {
 	}
 	if got := row(w, "item-1-a"); got != "EX-12 EX-10 active "+cwd {
 		t.Errorf("row = %s", got)
+	}
+	conn := w.ledger()
+	defer conn.Close()
+	var url string
+	if err := conn.QueryRow("SELECT issue_url FROM agents WHERE name = 'item-1-a'").Scan(&url); err != nil ||
+		url != "https://linear.example.test/EX-12" {
+		t.Errorf("the row's work order URL: %q %v", url, err)
 	}
 	if !strings.Contains(out.stdout, "started item-1-a in job item-1 ("+cwd+")") {
 		t.Errorf("stdout = %q", out.stdout)
