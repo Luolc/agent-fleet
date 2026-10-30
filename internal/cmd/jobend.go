@@ -65,8 +65,9 @@ const (
 		"the steps not done are listed and the exit is 5. Parts already gone are skipped, so " +
 		"it can be run again, and a second run does only the Linear steps not yet done.\n\n" +
 		"Exit: 0 when the job ended; 1 when a check refuses (live workers, the caller, the " +
-		"report file, the flags, --close-parent on a job without a parent issue); 5 when atb, git, herdr or the database fails, the scope has " +
-		"no ledger, or something is left (listed)."
+		"report file, the flags, --close-parent on a job without a parent issue); 2/3/4/8 as `send` when the " +
+		"conclusion did not reach the home thread's agent (run `job end` again to deliver it); 5 when atb, git, " +
+		"herdr or the database fails, the scope has no ledger, or something is left (listed)."
 )
 
 // JobEndArgs are the arguments of `job end`.
