@@ -269,46 +269,53 @@ func (s *transcriptScan) read(line []byte) {
 	case rec.Type == "system" && rec.Subtype == "turn_duration", rec.Type == "user" && rec.Interrupted != "":
 		s.turnEnded()
 	case rec.Type == "assistant" && realModel(rec.Message.Model):
-		model := rec.Message.Model
-		switch {
-		case s.st.startModel == "":
-			s.st.startModel = model
-		case baseModel(model) != baseModel(s.st.lastModel):
-			s.events = append(s.events, event(eventChange, s.st.lastModel, model))
-			s.switched(model)
-		}
-		s.st.lastModel = model
-		switch rec.Message.StopReason {
-		case "refusal":
-			s.st.stopped, s.st.atPrompt = true, false
-		case "tool_use":
-			// The turn goes on, and a stop in it lasts: Claude Code retries
-			// a refused turn once, and at the turn's next refusal pauses on
-			// a dialog without recording it. A stop at the prompt ended its
-			// turn, so a reply after it is a new turn's.
-			if s.st.atPrompt {
-				s.st.stopped, s.st.atPrompt = false, false
-			}
-			return
-		default:
-			s.st.stopped, s.st.atPrompt = false, false
-			return
-		}
-		// Each content block of a message is a record of its own, so a
-		// refused message is one event, keyed by its id.
-		e := event(eventRefusal, model, "")
-		if rec.Message.ID != "" {
-			e.Key = "message:" + rec.Message.ID
-		}
-		if !s.seen[e.Key] {
-			s.seen[e.Key] = true
-			s.events = append(s.events, e)
-		}
+		s.replied(rec, event)
 	case rec.Type == "assistant" && rec.Message.StopReason != "refusal":
 		// A message Claude Code makes up itself, such as an API error,
 		// ends the turn; the one it adds to a stop with no fallback is
 		// refused.
 		s.turnEnded()
+	}
+}
+
+// replied reads the assistant message `rec` on a real model: the model it
+// is on, and whether it stops the session or ends a stop; `event` makes
+// its events.
+func (s *transcriptScan) replied(rec transcriptRecord, event func(kind, from, to string) modelEvent) {
+	model := rec.Message.Model
+	switch {
+	case s.st.startModel == "":
+		s.st.startModel = model
+	case baseModel(model) != baseModel(s.st.lastModel):
+		s.events = append(s.events, event(eventChange, s.st.lastModel, model))
+		s.switched(model)
+	}
+	s.st.lastModel = model
+	switch rec.Message.StopReason {
+	case "refusal":
+		s.st.stopped, s.st.atPrompt = true, false
+	case "tool_use":
+		// The turn goes on, and a stop in it lasts: Claude Code retries
+		// a refused turn once, and at the turn's next refusal pauses on
+		// a dialog without recording it. A stop at the prompt ended its
+		// turn, so a reply after it is a new turn's.
+		if s.st.atPrompt {
+			s.st.stopped, s.st.atPrompt = false, false
+		}
+		return
+	default:
+		s.st.stopped, s.st.atPrompt = false, false
+		return
+	}
+	// Each content block of a message is a record of its own, so a
+	// refused message is one event, keyed by its id.
+	e := event(eventRefusal, model, "")
+	if rec.Message.ID != "" {
+		e.Key = "message:" + rec.Message.ID
+	}
+	if !s.seen[e.Key] {
+		s.seen[e.Key] = true
+		s.events = append(s.events, e)
 	}
 }
 
