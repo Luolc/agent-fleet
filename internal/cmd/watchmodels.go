@@ -111,7 +111,8 @@ type transcriptRecord struct {
 // with no fallback, after which Claude Code ends the turn, while after a
 // refusal it waits on a dialog. A turn that ends with no such message, on
 // an API error, a person's interrupt or Claude Code's `turn_duration`,
-// ends a stop that is not at the prompt.
+// ends a stop that is not at the prompt; any reply after a stop at the
+// prompt is a new turn's and ends it.
 type transcriptState struct {
 	readTo     int64
 	startModel string
@@ -283,7 +284,11 @@ func (s *transcriptScan) read(line []byte) {
 		case "tool_use":
 			// The turn goes on, and a stop in it lasts: Claude Code retries
 			// a refused turn once, and at the turn's next refusal pauses on
-			// a dialog without recording it.
+			// a dialog without recording it. A stop at the prompt ended its
+			// turn, so a reply after it is a new turn's.
+			if s.st.atPrompt {
+				s.st.stopped, s.st.atPrompt = false, false
+			}
 			return
 		default:
 			s.st.stopped, s.st.atPrompt = false, false

@@ -130,7 +130,8 @@ func TestOnlyAFallbackMovesASession(t *testing.T) {
 // A session is stopped from a refused message, or a stop with no fallback,
 // until a reply on a real model ends its turn. Only after a stop with no
 // fallback does it wait at its prompt, and the end of that turn, with a
-// message Claude Code makes up itself, does not end the stop.
+// message Claude Code makes up itself, does not end the stop; any reply
+// after it, in a new turn, does.
 func TestASessionIsStoppedUntilItRepliesAgain(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "s.jsonl")
 	noFallback := `{"type":"system","subtype":"model_refusal_no_fallback","uuid":"n-1","originalModel":"claude-test-large"}`
@@ -149,6 +150,9 @@ func TestASessionIsStoppedUntilItRepliesAgain(t *testing.T) {
 			said("a-2", "m-2", "<synthetic>", "refusal"), turnDuration}, true, true},
 		{[]string{noFallback, said("a-1", "m-1", "claude-test-large", "tool_use"),
 			said("a-2", "m-2", "claude-test-large", "refusal")}, true, false},
+		{[]string{said("a-1", "m-1", "claude-test-large", "refusal"), noFallback,
+			said("a-2", "m-2", "<synthetic>", "refusal"), turnDuration, said("a-3", "m-3", "claude-test-large", "tool_use"),
+			said("a-4", "m-4", "<synthetic>", "stop_sequence")}, false, false},
 	} {
 		writeLines(t, path, c.lines...)
 		_, st, _, err := scanTranscript(path, transcriptState{}, never)
