@@ -25,7 +25,8 @@ import (
 // exists when <dir>/has-<name> exists, and lets a start run to the end,
 // with the agent in its pane (<dir>/agent-in-<pane>), or fails it while
 // <dir>/start-fails exists; `pane list` prints <dir>/panes.json, or no
-// pane without it.
+// pane without it; `pane process-info` finds nothing in a pane's
+// foreground.
 const threadHerdr = `#!/bin/sh
 dir="$(dirname "$0")/.."
 if [ "$1" = --session ]; then echo "$2" > "$dir/session"; shift 2; fi
@@ -60,6 +61,7 @@ case "$1 $2" in
     if [ -e "$dir/start-fails" ]; then echo '{"error":{"code":"timeout","message":"timed out waiting for agent startup"}}'; exit 1; fi
     : > "$dir/has-$3"; : > "$dir/agent-in-$7"; echo '{"result":{}}' ;;
   "pane list") cat "$dir/panes.json" 2>/dev/null || echo '{"result":{"panes":[]}}' ;;
+  "pane process-info") echo '{"result":{"process_info":{"foreground_processes":[]}}}' ;;
   "pane rename")
     if [ -e "$dir/kill-at-rename" ]; then rm "$dir/kill-at-rename"; kill -9 $PPID; sleep 1; fi
     echo '{"result":{}}' ;;
@@ -300,6 +302,7 @@ func TestInboxStartsAThreadAgentForANewThreadWithItsTicket(t *testing.T) {
 		"herdr agent read",
 		"herdr agent get",
 		"herdr agent get",
+		"herdr pane process-info",
 		"herdr agent prompt",
 	}
 	got := strings.Split(strings.TrimSpace(w.calls()), "\n")
@@ -374,7 +377,7 @@ func TestInboxStartsAThreadAgentForANewThreadWithItsTicket(t *testing.T) {
 	if out.code != 0 {
 		t.Fatalf("%+v", out)
 	}
-	if got := strings.TrimSpace(w.calls()); got != "herdr status server\nherdr agent get\nherdr agent get\nherdr agent prompt" {
+	if got := strings.TrimSpace(w.calls()); got != "herdr status server\nherdr agent get\nherdr agent get\nherdr pane process-info\nherdr agent prompt" {
 		t.Errorf("calls = %q", got)
 	}
 	argv = w.file("argv")
@@ -420,6 +423,7 @@ func TestInboxReopensAKnownThreadWithItsSummariesWhenTheAgentIsGone(t *testing.T
 		"herdr agent read",
 		"herdr agent get",
 		"herdr agent get",
+		"herdr pane process-info",
 		"herdr agent prompt",
 	}
 	got := strings.Split(strings.TrimSpace(w.calls()), "\n")
@@ -1270,7 +1274,7 @@ func TestInboxFinishesAStartItsEarlierRunWasKilledIn(t *testing.T) {
 	}
 	want := "herdr status server\nherdr agent get\n" +
 		`atb linear query { issue(id: "TH-5") { comments { nodes { body createdAt } } } } key=set` + "\n" +
-		"herdr pane rename\nherdr agent read\nherdr agent get\nherdr agent get\nherdr agent prompt"
+		"herdr pane rename\nherdr agent read\nherdr agent get\nherdr agent get\nherdr pane process-info\nherdr agent prompt"
 	if got := strings.TrimSpace(w.calls()); got != want {
 		t.Errorf("retry calls = %q, want %q", got, want)
 	}
