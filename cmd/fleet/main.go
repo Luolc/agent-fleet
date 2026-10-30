@@ -321,6 +321,7 @@ Arguments:
 Options:
       --report-file <PATH>  Written to the worker's work order before it is released as abandoned;
                             without it, a fixed line naming you
+      --issue <ISSUE>       Only release this work order of the worker's ended row, as abandoned
       --scope <NAME>        ` + scopeHelp + `
   -h, --help                Print help
 `
@@ -1124,6 +1125,8 @@ func runWorkerEnd(args []string, scope *cliargs.OptString) (exit.Code, error) {
 	fs := flagSet("worker end", scope)
 	reportFile := cliargs.OptString{Name: "report-file", Placeholder: "PATH"}
 	fs.Var(&reportFile, "report-file", "File with the report")
+	issue := cliargs.OptString{Name: "issue", Placeholder: "ISSUE"}
+	fs.Var(&issue, "issue", "The ended row's work order to release")
 	got, helped, err := parse(fs, args, workerEndHelp, workerEndUsage, []string{"NAME"})
 	if err != nil || helped {
 		return exit.Ok, err
@@ -1132,7 +1135,7 @@ func runWorkerEnd(args []string, scope *cliargs.OptString) (exit.Code, error) {
 	if err != nil {
 		return 0, err
 	}
-	return cmd.WorkerEnd(h, cmd.WorkerEndArgs{Name: got[0], ReportFile: reportFile.Ptr()})
+	return cmd.WorkerEnd(h, cmd.WorkerEndArgs{Name: got[0], ReportFile: reportFile.Ptr(), Issue: issue.Ptr()})
 }
 
 func runWorktree(args []string, scope *cliargs.OptString) (exit.Code, error) {

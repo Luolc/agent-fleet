@@ -92,13 +92,20 @@ esac
 // `query` prints the comments of a ticket, two of them session summaries;
 // the subcommand named by failOn exits 1, then 4. While
 // <dir>/atb-fails-<subcommand> holds `<n> <code>`, that subcommand exits
-// <code> the next n times, printing the key on stderr.
+// <code> the next n times, printing the key on stderr. Before that, while
+// <dir>/atb-codes-<subcommand> has lines, each call takes the first one as
+// its exit code (0 goes on as usual).
 func threadAtb(failOn string) string {
 	return `#!/bin/sh
 dir="$(dirname "$0")/.."
 key=unset
 [ -n "$LINEAR_API_KEY" ] && key=set
 echo "atb $* key=$key" >> "$dir/calls"
+if [ -s "$dir/atb-codes-$2" ]; then
+  code=$(head -n 1 "$dir/atb-codes-$2")
+  tail -n +2 "$dir/atb-codes-$2" > "$dir/atb-codes-$2.rest" && mv "$dir/atb-codes-$2.rest" "$dir/atb-codes-$2"
+  [ "$code" != 0 ] && { echo "error: Linear unreachable" >&2; exit "$code"; }
+fi
 if [ -e "$dir/atb-fails-$2" ]; then
   read -r n code < "$dir/atb-fails-$2"
   if [ "$n" -gt 0 ]; then
@@ -722,6 +729,64 @@ func TestInboxStartsWithoutTheTicketAnotherAgentHolds(t *testing.T) {
 	}
 	if log := linearLog(w); len(log) != 1 || log[0]["outcome"] != "held" || log[0]["exit"] != 3.0 {
 		t.Errorf("log = %v", log)
+	}
+}
+
+// A claim atb wrote without finishing its conflict check (exit 5) is
+// tried again like any failed step; when the last try is the same, the
+// claim is on the ticket, so the session keeps it and `thread end` will
+// release it. The log calls that last try `unchecked`.
+func TestInboxKeepsTheTicketWhoseClaimCheckDidNotFinish(t *testing.T) {
+	w := threadWorld(t, "")
+	failAtb(w, "claim", 99, 5)
+	out := w.inbox(w.event("m1", "hello", ""))
+	if out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	calls := w.calls()
+	if n := strings.Count(calls, "atb linear claim TH-5"); n != 3 || strings.Contains(calls, "fednet client post") {
+		t.Errorf("claim tried %d times, want 3, and nothing posted: %q", n, calls)
+	}
+	if !strings.Contains(w.file("argv"), "## Note from fleet\n\natb wrote your claim on the thread ticket TH-5 but did "+
+		"not finish its conflict check (exit 5; its last try: atb linear claim TH-5: exit 5), so fleet takes the ticket as yours") {
+		t.Errorf("prompt = %q", w.file("argv"))
+	}
+	if got := threadAgentRow(w); got != "TH-5 active" {
+		t.Errorf("row = %q, want the agent keeping the ticket", got)
+	}
+	if log := linearLog(w); len(log) != 3 || log[1]["outcome"] != "retried" || log[2]["outcome"] != "unchecked" {
+		t.Errorf("log = %v", log)
+	}
+}
+
+// A claim an earlier try wrote (exit 5) stays on the ticket when a later
+// try fails another way, so the session keeps the ticket; a later try that
+// loses to an earlier claim (exit 3) released it, so the session runs
+// without the ticket.
+func TestInboxKeepsTheTicketAnEarlierTryClaimedUnlessALaterOneLost(t *testing.T) {
+	for _, c := range []struct {
+		codes, row string
+		kept       bool
+	}{
+		{"5\n1\n1\n", "TH-5 active", true},
+		{"5\n3\n", " active", false},
+	} {
+		w := threadWorld(t, "")
+		w.write(filepath.Join(w.dir, "atb-codes-claim"), c.codes)
+		if out := w.inbox(w.event("m1", "hello", "")); out.code != 0 {
+			t.Fatalf("%q: %+v", c.codes, out)
+		}
+		if got := threadAgentRow(w); got != c.row {
+			t.Errorf("%q: row = %q, want %q", c.codes, got, c.row)
+		}
+		note := "## Note from fleet\n\natb wrote your claim on the thread ticket TH-5 but did not finish its " +
+			"conflict check (exit 5; its last try: atb linear claim TH-5: exit 1)"
+		if c.kept != strings.Contains(w.file("argv"), note) {
+			t.Errorf("%q: kept %v, prompt = %q", c.codes, c.kept, w.file("argv"))
+		}
+		if !c.kept && !strings.Contains(w.file("argv"), "Another agent holds the claim on the thread ticket TH-5") {
+			t.Errorf("%q: prompt = %q", c.codes, w.file("argv"))
+		}
 	}
 }
 
