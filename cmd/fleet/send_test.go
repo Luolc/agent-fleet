@@ -40,8 +40,8 @@ func TestSendTypesNothingIntoASessionPausedOnItsDialog(t *testing.T) {
 		if out.code != 8 || len(w.prompts()) != 0 || out.stdout != "" {
 			t.Fatalf("%s: %+v, prompts %q", status, out, w.prompts())
 		}
-		hasAll(t, "stderr", out.stderr, "x-lead is paused on Claude Code's `Session paused` dialog",
-			"nothing was typed", "Press no key", "`fleet worker end`")
+		hasAll(t, "stderr", out.stderr, "x-lead is taken to be paused on Claude Code's `Session paused` dialog",
+			"Nothing was typed", "Press no key", "`fleet worker end`")
 		if strings.Contains(out.stderr, refusedText) {
 			t.Errorf("the conversation's text was passed on: %s", out.stderr)
 		}

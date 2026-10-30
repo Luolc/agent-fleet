@@ -122,9 +122,10 @@ func beforePrompt(h *herdr.Herdr, to string) (exit.Code, error) {
 		return exit.Ok, nil
 	}
 	if pausedOnDialog(h, to, agent) {
-		fmt.Fprintf(os.Stderr, "%s is paused on Claude Code's `Session paused` dialog (a message of its turn was "+
-			"stopped by a safety classifier again after Claude Code retried it), so nothing was typed. Press no key "+
-			"on its screen: a key there can pick `Switch to <fallback>` and move the session to another model. "+
+		fmt.Fprintf(os.Stderr, "%s is taken to be paused on Claude Code's `Session paused` dialog: its transcript "+
+			"shows a message of its present turn stopped by a safety classifier, and herdr does not find it working. "+
+			"Nothing was typed. Press no key on its screen: a key there can pick `Switch to <fallback>` and move the "+
+			"session to another model. "+
 			"`fleet watch` replaces such a session with a new one; send again once it has. A worker's lead may "+
 			"instead end it with `fleet worker end` and start another to take over.\n", to)
 		return exit.Paused, nil
