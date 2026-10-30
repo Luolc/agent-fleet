@@ -539,7 +539,8 @@ func TestSpawnStopsWhenAnAtbStepFails(t *testing.T) {
 		// Nothing was started, so the reserved row is ended, keeping the work
 		// order once that was created.
 		want := " EX-10 ended " + dir(w, "wt")
-		hint := "find out why from the error above first; no work order was created\n"
+		hint := "find out why from the error above first; atb linear create reported no work order; if it made one " +
+			"under EX-10 anyway, nobody holds it: cancel it in Linear\n"
 		if step == "claim" {
 			want = "EX-12" + want
 			hint = "find out why from the error above first; atb did not confirm the claim of item-1-a on the work " +

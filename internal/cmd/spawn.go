@@ -55,9 +55,10 @@ const (
 		"not finish, its exit 5, counts as claimed, with a note on stderr: the work order was just " +
 		"created and no other agent can have claimed it. If an atb step fails, nothing else is " +
 		"created and the row is ended, so the name is free and `job end` does not wait for it; " +
-		"an issue created is listed, and the ended row keeps it. The last line says what is left " +
-		"on it: claimed by nobody (cancel it in Linear), or a claim atb did not confirm (timed " +
-		"out, an exit other than 5), which `fleet worker end <name> --issue <ISSUE>` releases.\n\n" +
+		"an issue created is listed, and the ended row keeps it. The last line says what is left: " +
+		"no work order fleet heard of (a create that failed may still have made one, held by " +
+		"nobody), one claimed by nobody (cancel it in Linear), or a claim atb did not confirm " +
+		"(timed out, an exit other than 5), which `fleet worker end <name> --issue <ISSUE>` releases.\n\n" +
 		"Then a tab is made in the job's workspace " +
 		"with the FLEET_* variables set, and the agent --agent names is started; the pane is " +
 		"renamed after the worker. Claude Code, the default, is started with `herdr agent start " +
@@ -279,18 +280,16 @@ func (c *spawnChecked) linearFailed(conn *sql.DB, err error, issue string, creat
 }
 
 // orderLeft says what a spawn stopped by `err` left of the worker's work
-// order `issue`: none created; created and not claimed, held by nobody;
-// or a claim atb did not confirm, which may be on it.
+// order `issue`: none fleet heard of, though a create that failed may
+// have made one; created and not claimed, held by nobody; or a claim atb
+// did not confirm, which may be on it.
 func (c *spawnChecked) orderLeft(err error, issue string) string {
 	var failure *atb.Failure
-	atbFailed := errors.As(err, &failure)
 	switch {
-	case issue == "" && atbFailed && failure.ExitCode < 0:
-		return fmt.Sprintf("atb linear create did not finish (%s), so it may have made a work order under %s that "+
-			"fleet did not hear of; nobody holds such an order, cancel it in Linear", failure.Class, c.job.ParentIssue)
 	case issue == "":
-		return "no work order was created"
-	case !atbFailed || !strings.HasPrefix(failure.Op, "atb linear claim "):
+		return fmt.Sprintf("atb linear create reported no work order; if it made one under %s anyway, nobody "+
+			"holds it: cancel it in Linear", c.job.ParentIssue)
+	case !errors.As(err, &failure) || !strings.HasPrefix(failure.Op, "atb linear claim "):
 		return fmt.Sprintf("the work order %s is claimed by nobody, cancel it in Linear", issue)
 	}
 	return fmt.Sprintf("atb did not confirm the claim of %[1]s on the work order %[2]s, so it may be there: "+

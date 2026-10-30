@@ -658,9 +658,10 @@ func (s *threadStart) ticketDescription() string {
 // comment, and its earlier summaries read for the prompt. Each step is
 // tried as linearLog.try does; the first that still fails ends them, and
 // the caller starts the agent without the rest (withoutLinear). A claim
-// whose conflict check did not finish on its last try (atb.Unchecked) is
-// on the ticket, so the session keeps the ticket, for `thread end` to
-// release, and the agent is told.
+// whose conflict check did not finish on a try (atb.Unchecked) is on the
+// ticket even when a later try fails another way, so the session keeps
+// the ticket, for `thread end` to release, and the agent is told; but not
+// after a try lost to an earlier claim, which released it.
 func (s *threadStart) linearSteps() error {
 	if s.cfg.LinearTeam == "" {
 		return nil
@@ -694,14 +695,20 @@ func (s *threadStart) linearSteps() error {
 	if err := setIssue(s.conn, s.id.Agent, s.ticket.Identifier, s.ticket.URL); err != nil {
 		return err
 	}
+	// A try that exits 5 leaves the claim on the ticket, whatever a later
+	// try does, unless a later one loses to an earlier claim (exit 3),
+	// which writes `release: <agent> lost`.
+	var wrote bool
 	err := log.try(func() error {
-		return atb.Claim(s.ticket.Identifier, s.id.Agent, s.msg.Thread, s.mapping+": thread "+s.msg.Thread)
+		err := atb.Claim(s.ticket.Identifier, s.id.Agent, s.msg.Thread, s.mapping+": thread "+s.msg.Thread)
+		wrote = wrote && !atb.Held(err) || atb.Unchecked(err)
+		return err
 	})
-	if atb.Unchecked(err) {
+	if err != nil && wrote {
 		s.claimNote = fmt.Sprintf("atb wrote your claim on the thread ticket %s but did not finish its conflict check "+
-			"(%s), so fleet takes the ticket as yours and `fleet thread end` releases it. If its comments show an earlier "+
-			"`claim:` by another agent with no `release:` by that agent after it, tell the thread; do not claim or "+
-			"release the ticket yourself.", s.ticket.Identifier, linearClass(err))
+			"(exit 5; its last try: %s), so fleet takes the ticket as yours and `fleet thread end` releases it. If its "+
+			"comments show an earlier `claim:` by another agent with no `release:` by that agent after it, tell the "+
+			"thread; do not claim or release the ticket yourself.", s.ticket.Identifier, linearClass(err))
 		err = nil
 	}
 	if err != nil {

@@ -11,8 +11,8 @@ import (
 )
 
 // What a stopped spawn says is left of the work order follows how far its
-// Linear steps got: none created, one whose create did not finish, one
-// never claimed, one whose claim atb did not confirm.
+// Linear steps got: none fleet heard of, one never claimed, one whose
+// claim atb did not confirm.
 func TestOrderLeftSaysWhatIsLeftOfTheWorkOrder(t *testing.T) {
 	c := &spawnChecked{id: &identity.Identity{Agent: "item-1-a"}, job: &jobRow{ParentIssue: "EX-10"}}
 	failed := func(op string, code int, class string) error {
@@ -23,9 +23,10 @@ func TestOrderLeftSaysWhatIsLeftOfTheWorkOrder(t *testing.T) {
 		err         error
 		want        string
 	}{
-		{"create refused", "", failed("atb linear create", 1, "exit 1"), "no work order was created"},
+		{"create refused", "", failed("atb linear create", 1, "exit 1"),
+			"atb linear create reported no work order; if it made one under EX-10 anyway, nobody holds it"},
 		{"create timed out", "", failed("atb linear create", -1, "timed out"),
-			"atb linear create did not finish (timed out), so it may have made a work order under EX-10"},
+			"atb linear create reported no work order; if it made one under EX-10 anyway, nobody holds it"},
 		{"ledger refused", "EX-12", exit.Database(errors.New("made-up")), "the work order EX-12 is claimed by nobody"},
 		{"claim timed out", "EX-12", failed("atb linear claim EX-12", -1, "timed out"),
 			"atb did not confirm the claim of item-1-a on the work order EX-12, so it may be there: " +
