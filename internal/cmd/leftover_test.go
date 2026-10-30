@@ -47,7 +47,7 @@ func TestTheFilesSectionHasNoPartClaudeCodeTakesForAnImage(t *testing.T) {
 }
 
 func boxScreen(transcript, box string) string {
-	return transcript + "\n\n" + rule + "\n❯ " + box + "\n" + rule + "\n  ~/x-repo/general · Opus\n"
+	return transcript + "\n\n" + rule + "\n❯ " + box + "\n" + rule + "\n  ~/dev/example\n"
 }
 
 func TestInputBoxTextReadsTheLastBox(t *testing.T) {
