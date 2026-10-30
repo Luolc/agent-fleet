@@ -87,9 +87,22 @@ const (
 		"prefixes, so change `channels` only while no thread is recorded. --scope does not " +
 		"apply.\n\n" +
 		"First the msg_id is reserved in the scope's ledger (table `inbox`): a message already " +
-		"delivered or dropped is exit 0 at once, so a retry does nothing twice. Then the route: " +
+		"delivered or dropped is exit 0 at once, so a retry does nothing twice. A message whose " +
+		"delivery gave no clear signal (exit 2) is recorded `typed`, with what the agent's input box " +
+		"held right after: its text is in the agent, submitted or waiting in the input box, and the " +
+		"retry never types it again. While the thread's agent is in herdr, the retry reads its " +
+		"screen: a box that still holds what it held then gets Enter pressed once (exit 0 once the " +
+		"turn starts); an empty box, or one holding anything else, is taken to mean the message was " +
+		"submitted (exit 0, nothing pressed); a blocked agent is exit 3 and a paused one exit 8, " +
+		"nothing pressed; a screen with no input box, or a box not read after typing that is not empty " +
+		"now, is exit 2 again. An agent gone from herdr went with the message, which is routed again. " +
+		"In the text, the link of each `file: <name> <link>` line fednet adds for one of the " +
+		"message's files is put in backquotes: it ends in the file's name, and Claude Code 2.1.296 " +
+		"drops the Enter that comes while it reads a pasted part ending in an image's extension (see " +
+		"`fleet send --help`). Then the route: " +
 		"a thread whose agent is live gets the message as `fleet send` would, headed `[FROM: " +
-		"inbox]`. Otherwise a thread agent is started: `thread-<slug>` (the slug is the key, " +
+		"inbox]`, also while the agent is at work (it queues the message); only a screen that waits " +
+		"for a person's answer is exit 3. Otherwise a thread agent is started: `thread-<slug>` (the slug is the key, " +
 		"lower-cased, [a-z0-9-]) in a tab of the herdr workspace `threads`, in the thread's " +
 		"directory, with FLEET_ROLE=thread, FLEET_THREAD, FLEET_SCOPE, FLEET_ISSUE and FLEET_SCRATCH. Its row is reserved first (one live agent " +
 		"per thread), so a rerun after a kill cannot start a second one. With a Linear team, a " +
@@ -115,7 +128,10 @@ const (
 		"The agent's first " +
 		"message is the thread prompt and `common` (as `fleet prompt show thread` shows them), the channel context, the summaries, fleet's " +
 		"notes and the message. A run killed after the agent started leaves its row `starting`: the retry " +
-		"finds the agent, gets it to its input box and delivers that first message in full. " +
+		"finds the agent, gets it to its input box (unless it is at work, when the message waits in its " +
+		"queue) and delivers that first message in full. A first message that gave no clear signal " +
+		"(exit 2) is typed in, so the row turns `active`, the message is recorded `typed`, and the " +
+		"thread's next messages reach the agent without the prompt. " +
 		"A live row whose agent is gone from herdr is ended (the session ended abnormally) " +
 		"and a new agent started.\n\n" +
 		"Exit: 0 when the message is delivered, ignored or dropped (fednet marks it delivered); " +
@@ -124,8 +140,7 @@ const (
 		"blocked, does not find it, or finds it paused on Claude Code's `Session paused` dialog; " +
 		"3 when a new agent stops at an unknown screen; 5 when " +
 		"herdr or the database fails. A non-zero exit makes fednet run the hook again later, " +
-		"with the reservation kept: a message that was delivered with no clear signal (exit 2) " +
-		"may then be delivered twice."
+		"with the reservation kept."
 )
 
 // InboxArgs are the arguments of `inbox`.
@@ -276,17 +291,41 @@ func Inbox(args InboxArgs) (exit.Code, error) {
 	if err != nil {
 		return 0, err
 	}
-	if state != "reserved" {
+	if state != "reserved" && state != "typed" {
 		fmt.Fprintf(os.Stdout, "message %s was already %s\n", e.MsgID, state)
 		return exit.Ok, nil
 	}
-	msg := inboxMessage(e, mapping, cfg.FednetSocket)
-	if err := answerByMessage(conn, msg); err != nil {
-		return 0, err
+	return takeMessage(h, conn, scope, cfg, e.MsgID, state, inboxMessage(e, mapping, cfg.FednetSocket))
+}
+
+// takeMessage gets a message reserved for this run (`state` reserved, or
+// typed by an earlier one) to the thread's agent and records the outcome.
+func takeMessage(h *herdr.Herdr, conn *sql.DB, scope string, cfg *config.Scope, msgID, state string,
+	msg inboundMessage) (exit.Code, error) {
+	code, dropped, typed := exit.Ok, false, false
+	var err error
+	if state == "typed" {
+		if code, typed, err = submitTyped(h, conn, scope, msgID, msg); err != nil {
+			return 0, err
+		}
 	}
-	code, dropped, err := route(h, conn, scope, cfg, msg)
-	if err != nil || code != exit.Ok {
-		return code, err
+	if !typed {
+		if err := answerByMessage(conn, msg); err != nil {
+			return 0, err
+		}
+		if code, dropped, err = route(h, conn, scope, cfg, msg); err != nil {
+			return 0, err
+		}
+	}
+	if code == exit.Unknown && !typed {
+		// The text is in the agent: the retry fednet runs submits it, and
+		// never types it again.
+		if err := setTyped(h, conn, msgID, msg.Thread); err != nil {
+			return 0, err
+		}
+	}
+	if code != exit.Ok {
+		return code, nil
 	}
 	// A person's message makes the thread one to look at again, until
 	// they archive it.
@@ -301,7 +340,99 @@ func Inbox(args InboxArgs) (exit.Code, error) {
 	} else if err := recordLatest(conn, msg); err != nil {
 		return 0, err
 	}
-	return exit.Ok, setMessage(conn, e.MsgID, state)
+	return exit.Ok, setMessage(conn, msgID, state)
+}
+
+// setTyped records a message typed into the thread's agent with no clear
+// signal, with what the agent's input box holds right after (`box`, null
+// when it cannot be read): its retry presses Enter only while the box
+// still holds that.
+func setTyped(h *herdr.Herdr, conn *sql.DB, msgID, thread string) error {
+	var box any
+	if name, _, err := liveThreadAgent(conn, thread); err == nil && name != "" {
+		if screen, err := h.Screen(name); err == nil {
+			if text, ok := InputBoxText(screen); ok {
+				box = text
+			}
+		}
+	}
+	if _, err := conn.Exec("UPDATE inbox SET state = 'typed', box = ?1 WHERE msg_id = ?2", box, msgID); err != nil {
+		return exit.Database(err)
+	}
+	return nil
+}
+
+// submitTyped finishes a message an earlier run typed into the thread's
+// agent with no clear signal: it is not typed again. When the agent is
+// still in herdr (`typed` true), its input box is read. A box that still
+// holds what it held right after the message was typed (setTyped) gets
+// Enter pressed once (exit 0 once the turn starts, else 2); one that is
+// empty, or holds something else, is taken to mean the message was
+// submitted (exit 0), with a line on stderr for the latter. Exit 3 while
+// herdr finds the agent blocked and 8 while it is paused on Claude Code's
+// dialog, nothing pressed; 2 when the screen shows no input box, or the
+// box after typing was not read and this one is not empty. An agent gone
+// from herdr (`typed` false) went with the message, and the message is
+// routed again, which starts a new session.
+func submitTyped(h *herdr.Herdr, conn *sql.DB, scope, msgID string, msg inboundMessage) (code exit.Code, typed bool, err error) {
+	name, _, err := liveThreadAgent(conn, msg.Thread)
+	if err != nil || name == "" {
+		return 0, false, err
+	}
+	if err := ensureSession(h, scope); err != nil {
+		return 0, false, err
+	}
+	agent := herdrAgent(h, name)
+	if agent == nil {
+		return 0, false, nil
+	}
+	status, _ := agent["agent_status"].(string)
+	switch {
+	case status == "blocked":
+		fmt.Fprintf(os.Stderr, "%s is blocked by an interactive prompt; the message typed into it before is not "+
+			"submitted until that screen is answered\n", name)
+		return exit.Blocked, true, nil
+	case pausedOnDialog(h, name, agent):
+		fmt.Fprintf(os.Stderr, "%s is taken to be paused on Claude Code's `Session paused` dialog; nothing was pressed "+
+			"(see `fleet send --help`)\n", name)
+		return exit.Paused, true, nil
+	}
+	var left sql.NullString
+	if err := conn.QueryRow("SELECT box FROM inbox WHERE msg_id = ?1", msgID).Scan(&left); err != nil {
+		return 0, true, exit.Database(err)
+	}
+	screen, err := h.Screen(name)
+	if err != nil {
+		return 0, true, err
+	}
+	box, ok := InputBoxText(screen)
+	switch {
+	case !ok:
+		fmt.Fprintf(os.Stderr, "no clear signal from %s: the message typed into it before is not seen submitted, and its "+
+			"screen shows no input box; not typed again\n", name)
+		return exit.Unknown, true, nil
+	case box == "":
+		fmt.Fprintf(os.Stdout, "the message was typed into %s before and its input box is empty: taken as submitted, "+
+			"not typed again\n", name)
+		return exit.Ok, true, nil
+	case left.Valid && left.String != "" && strings.Contains(box, left.String):
+		if !pressEnter(h, name) {
+			fmt.Fprintf(os.Stderr, "no clear signal from %s: Enter pressed in its input box, which still held the message "+
+				"typed into it before, but no turn started\n", name)
+			return exit.Unknown, true, nil
+		}
+		fmt.Fprintf(os.Stderr, "note: the input box of %s still held what it held right after the message was typed into "+
+			"it before, so fleet pressed Enter once; %s then started its turn\n", name, name)
+		fmt.Fprintf(os.Stdout, "delivered to %s\n", name)
+		return exit.Ok, true, nil
+	case left.Valid:
+		fmt.Fprintf(os.Stderr, "note: the input box of %s holds something other than what it held right after the message "+
+			"was typed into it before: the message is taken as submitted, and nothing is pressed\n", name)
+		return exit.Ok, true, nil
+	}
+	fmt.Fprintf(os.Stderr, "no clear signal from %s: its input box was not read after the message was typed into it before, "+
+		"and it is not empty now; nothing is pressed, not typed again\n", name)
+	return exit.Unknown, true, nil
 }
 
 // inboxMessage is the event's message; one of trigger handoff or relay

@@ -460,6 +460,7 @@ func TestSpawnCreatesAndClaimsTheWorkOrderBeforeAnythingElse(t *testing.T) {
 		"herdr agent read",
 		"herdr agent get",
 		"herdr agent get",
+		"herdr agent read",
 		"herdr agent prompt",
 	}
 	if got := strings.Split(strings.TrimSpace(w.calls()), "\n"); strings.Join(got, "\n") != strings.Join(want, "\n") {
@@ -781,6 +782,7 @@ func TestJobStartCreatesTheParentClaimsItAndMakesTheWorkOrderFirst(t *testing.T)
 		"herdr agent read",
 		"herdr agent get",
 		"herdr agent get",
+		"herdr agent read",
 		"herdr agent prompt",
 	}
 	if got := strings.Split(strings.TrimSpace(w.calls()), "\n"); strings.Join(got, "\n") != strings.Join(want, "\n") {
@@ -941,6 +943,7 @@ func TestJobStartOfACrossRepoJobReadsTheParentsTeamAndProject(t *testing.T) {
 		"herdr agent read",
 		"herdr agent get",
 		"herdr agent get",
+		"herdr agent read",
 		"herdr agent prompt",
 	}
 	if got := strings.Split(strings.TrimSpace(w.calls()), "\n"); strings.Join(got, "\n") != strings.Join(want, "\n") {

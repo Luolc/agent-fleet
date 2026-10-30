@@ -17,7 +17,7 @@ import (
 	"github.com/Luolc/agent-fleet/internal/exit"
 )
 
-const schemaVersion = 23
+const schemaVersion = 24
 
 // Version 1: the `agents` table. Ended rows are kept as history, so `name`
 // is unique only among rows that have not ended.
@@ -415,8 +415,28 @@ const schemaV23 = `
 ALTER TABLE transcripts ADD COLUMN at_prompt INTEGER NOT NULL DEFAULT 0;
 `
 
+// Version 24: an `inbox` message can be `typed`: its delivery gave no
+// clear signal (exit 2), so its text is in the agent, submitted or still
+// in the input box, and a retry submits what is left there instead of
+// typing it again; `box` is what the agent's input box held right after
+// (null when it could not be read). SQLite changes no CHECK in place, so
+// the table is copied.
+const schemaV24 = `
+CREATE TABLE inbox_v24 (
+    id          INTEGER PRIMARY KEY,
+    msg_id      TEXT    NOT NULL UNIQUE,
+    thread      TEXT    NOT NULL DEFAULT '',
+    state       TEXT    NOT NULL CHECK (state IN ('reserved', 'typed', 'delivered', 'dropped')),
+    received_at INTEGER NOT NULL,
+    box         TEXT
+);
+INSERT INTO inbox_v24 (id, msg_id, thread, state, received_at) SELECT id, msg_id, thread, state, received_at FROM inbox;
+DROP TABLE inbox;
+ALTER TABLE inbox_v24 RENAME TO inbox;
+`
+
 // migrations[v] upgrades a ledger at version v to v+1.
-var migrations = [schemaVersion]string{schema, schemaV2, schemaV3, schemaV4, schemaV5, schemaV6, schemaV7, schemaV8, schemaV9, schemaV10, schemaV11, schemaV12, schemaV13, schemaV14, schemaV15, schemaV16, schemaV17, schemaV18, schemaV19, schemaV20, schemaV21, schemaV22, schemaV23}
+var migrations = [schemaVersion]string{schema, schemaV2, schemaV3, schemaV4, schemaV5, schemaV6, schemaV7, schemaV8, schemaV9, schemaV10, schemaV11, schemaV12, schemaV13, schemaV14, schemaV15, schemaV16, schemaV17, schemaV18, schemaV19, schemaV20, schemaV21, schemaV22, schemaV23, schemaV24}
 
 // Path is where the ledger of `scope` lives:
 // `$XDG_STATE_HOME/fleet/<scope>.db`, with `~/.local/state` when

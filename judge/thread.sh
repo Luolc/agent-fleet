@@ -1004,3 +1004,112 @@ check "inbox, start failed: the retry starts afresh, exit 0" "0 active 1" \
   "$rc $(tledger "SELECT state FROM agents WHERE name = '$AF' AND state != 'ended'")$(tabs_labelled c0666-1700000666-000)"
 lacks "inbox, start failed: the retry finds nothing gone" "$out" "gone from herdr"
 settled "$AF"
+
+# A message Claude Code would read an image path in waits in its input box:
+# Claude Code 2.1.296 drops the Enter herdr presses while it reads the
+# image, and fake Claude does the same under image-paste (2026-10-30). fleet
+# puts in backquotes the path of an attached file and the link of the
+# `file: <name> <link>` line fednet adds to the text (a Slack permalink,
+# ending in the file's name), so such a message goes in with herdr's own
+# Enter, also to an agent at work. A person's own path is left as it is:
+# that message waits after herdr's stall, and fleet presses Enter once.
+KI=C0777/1700000777.000
+AI=thread-c0777-1700000777-000
+inbox "$(event i1 "$KI" 'first 0xIMG0')" >/dev/null 2>&1; rc=$?
+check "inbox, image: the thread's agent started" "0 $AI" "$rc $(agent_field "$AI" name)"
+settled "$AI"
+touch "$fake/image-paste"
+link='https://files.example.test/files/U0ABC/F0IMG1/shot.png'
+out=$(inbox "$(event i2 "$KI" "what is this 0xIMG1\\nfile: shot.png $link" '' '"channel_name":"repo-'$R'","files":[{"id":"F0IMG1","name":"shot.png","mimetype":"image/png","size":10,"url":"'$link'","path":"/home/agent/shot.png"}]')" 2>&1); rc=$?
+check "inbox, image: a message with an image file and fednet's file line, exit 0" 0 "$rc"
+lacks "inbox, image: submitted with herdr's own Enter" "$out" "pressed Enter"
+check "inbox, image: the agent has the message once" 1 "$(received "$AI" | grep -c 0xIMG1)"
+settled "$AI"
+out=$(inbox "$(event i3 "$KI" 'is 0xIMG2 like /home/agent/shot.png')" 2>&1); rc=$?
+check "inbox, image: a person's text ending in an image's path, exit 0" 0 "$rc"
+has "inbox, image: fleet pressed Enter once, saying why" "$out" "pressed Enter once" "an [Image #…] placeholder"
+check "inbox, image: the agent has it once, delivered" "1 delivered " \
+  "$(received "$AI" | grep -c 0xIMG2) $(tledger "SELECT state FROM inbox WHERE msg_id = 'i3'")"
+settled "$AI"
+echo 6 > "$fake/work-secs"
+inbox "$(event i3b "$KI" 'work on this 0xIMG3')" >/dev/null 2>&1
+check "inbox, image: the agent is at work" working "$(agent_field "$AI" agent_status)"
+out=$(inbox "$(event i3c "$KI" "and this 0xIMG4\\nfile: shot.png $link" '' '"channel_name":"repo-'$R'","files":[{"id":"F0IMG1","name":"shot.png","mimetype":"image/png","size":10,"url":"'$link'","path":"/home/agent/shot.png"}]')" 2>&1); rc=$?
+rm "$fake/work-secs"
+check "inbox, image: fednet's file line to an agent at work, exit 0" 0 "$rc"
+for _ in $(seq 1 75); do received "$AI" | grep -q 0xIMG4 && break; sleep 0.2; done
+has "inbox, image: the agent at work took it from its queue" "$(received "$AI")" 0xIMG4
+settled "$AI"
+rm "$fake/image-paste"
+
+# A message herdr gives no clear signal for is typed into the agent: it is
+# recorded `typed`, and fednet's retry submits what waits in the input box
+# or, with the box empty, takes it as submitted; it never types it again.
+touch "$fake/stall"
+out=$(inbox "$(event i4 "$KI" 'stalled 0xSTALL1')" 2>&1); rc=$?
+rm "$fake/stall"
+check "inbox, typed: no clear signal, exit 2, recorded typed" "2 typed " \
+  "$rc $(tledger "SELECT state FROM inbox WHERE msg_id = 'i4'")"
+out=$(inbox /home/agent/events/i4.json 2>&1); rc=$?
+check "inbox, typed: the retry, exit 0, delivered" "0 delivered " "$rc $(tledger "SELECT state FROM inbox WHERE msg_id = 'i4'")"
+has "inbox, typed: the retry says why it typed nothing" "$out" "taken as submitted, not typed again"
+check "inbox, typed: the agent has the message once" 1 "$(received "$AI" | grep -c 0xSTALL1)"
+settled "$AI"
+
+# An agent at work gets the message all the same (Claude Code queues it),
+# also when its row is still `starting`; only a screen waiting for a
+# person's answer is exit 3, nothing typed.
+inbox "$(event i5 "$KI" 'work on this 0xBUSY1')" >/dev/null 2>&1
+check "inbox, busy: the agent is working" working "$(agent_field "$AI" agent_status)"
+out=$(inbox "$(event i6 "$KI" 'and this 0xBUSY2')" 2>&1); rc=$?
+check "inbox, busy: a message to a working agent, exit 0" 0 "$rc"
+settled "$AI"
+# A gather window past the next delivery keeps the agent working through it.
+echo 6 > "$fake/gather-secs"
+inbox "$(event i7 "$KI" 'and then 0xBUSY3')" >/dev/null 2>&1
+sqlite3 "$TDB" "UPDATE agents SET state = 'starting' WHERE name = '$AI' AND state != 'ended'"
+check "inbox, busy: the agent with a starting row is working" working "$(agent_field "$AI" agent_status)"
+out=$(inbox "$(event i8 "$KI" 'a starting one 0xBUSY4')" 2>&1); rc=$?
+rm "$fake/gather-secs"
+check "inbox, busy: a working agent whose row is starting gets it, exit 0, row active" "0 active " \
+  "$rc $(tledger "SELECT state FROM agents WHERE name = '$AI' AND state != 'ended'")"
+for _ in $(seq 1 50); do received "$AI" | grep -q 0xBUSY4 && break; sleep 0.2; done
+has "inbox, busy: all of them reached the agent" "$(received "$AI")" 0xBUSY1 0xBUSY2 0xBUSY3 0xBUSY4
+settled "$AI"
+inbox "$(event i9 "$KI" 'please BLOCK 0xBUSY5')" >/dev/null 2>&1
+"${S[@]}" agent wait "$AI" --until blocked --timeout 20000 >/dev/null
+out=$(inbox "$(event i10 "$KI" 'at the screen 0xBUSY6')" 2>&1); rc=$?
+check "inbox, blocked: exit 3, the message reserved" "3 reserved " "$rc $(tledger "SELECT state FROM inbox WHERE msg_id = 'i10'")"
+lacks "inbox, blocked: nothing typed" "$(received "$AI")" 0xBUSY6
+"${S[@]}" agent send-keys "$AI" enter >/dev/null
+settled "$AI"
+
+# A new thread agent whose first message gets no clear signal has it typed
+# in: its row is active, so the thread's next message reaches it without
+# the prompt. When the agent did not come up after all, the retry finds it
+# gone from herdr and starts a new session with the whole first message.
+KT=C0888/1700000888.000
+AT=thread-c0888-1700000888-000
+touch "$fake/stall"
+out=$(inbox "$(event t1 "$KT" 'first 0xFIRST1')" 2>&1); rc=$?
+rm "$fake/stall"
+check "inbox, first typed: exit 2, the row active, the message typed" "2 active typed " \
+  "$rc $(tledger "SELECT state FROM agents WHERE name = '$AT' AND state != 'ended'")$(tledger "SELECT state FROM inbox WHERE msg_id = 't1'")"
+out=$(inbox "$(event t2 "$KT" 'hello 0xFIRST2')" 2>&1); rc=$?
+check "inbox, first typed: the next message, exit 0" 0 "$rc"
+lacks "inbox, first typed: the next message is not finishing a start" "$out" "still starting"
+check "inbox, first typed: the prompt reached the agent once" 1 "$(received "$AT" | grep -c '^## The message')"
+settled "$AT"
+touch "$fake/stall"
+out=$(inbox "$(event t3 "$KT" 'once more 0xFIRST3')" 2>&1); rc=$?
+rm "$fake/stall"
+check "inbox, typed then gone: exit 2" 2 "$rc"
+tpane=$(agent_field "$AT" pane_id)
+"${S[@]}" pane send-keys "$tpane" ctrl+d >/dev/null
+for _ in $(seq 1 50); do [ "$(agent_field "$AT" name)" = agent_not_found ] && break; sleep 0.2; done
+out=$(inbox /home/agent/events/t3.json 2>&1); rc=$?
+check "inbox, typed then gone: the retry starts a new session, exit 0, delivered" "0 $AT delivered " \
+  "$rc $(agent_field "$AT" name) $(tledger "SELECT state FROM inbox WHERE msg_id = 't3'")"
+has "inbox, typed then gone: says the session before is gone" "$out" "$AT is gone from herdr"
+has "inbox, typed then gone: the new session has the prompt and the message" "$(received "$AT")" "## The message" 0xFIRST3
+settled "$AT"

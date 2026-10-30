@@ -27,6 +27,19 @@ const (
 		"--timeout 20000` and the result is mapped to the exit codes.\n\n" +
 		"There is no automatic resend: exit 2 means the outcome is unknown, not that the " +
 		"message was lost.\n\n" +
+		"A target at work gets the message all the same (Claude Code queues it); only one " +
+		"herdr finds blocked, at a screen that waits for a person's answer (a permission or other " +
+		"confirmation), is exit 3, with nothing typed.\n\n" +
+		"Claude Code 2.1.296 drops an Enter that comes while it reads an image whose path a paste " +
+		"carries (a line, or a part after a space before `/`, ending in .png, .jpg, .jpeg, .gif or " +
+		".webp), and herdr presses Enter 300 ms after the paste: such a message waits in the input " +
+		"box, and herdr gives no clear signal. So when herdr gives none for a Claude Code target it " +
+		"finds neither working nor blocked, and that is not paused on the dialog below, its screen is " +
+		"read: when its input box holds the message (the `[Image #…]` or `[Pasted text #…]` " +
+		"placeholder Claude Code puts for a paste, or the message's first line) and did not hold the " +
+		"same before it was typed, Enter is pressed once; a turn that starts within 5 s (working or " +
+		"blocked) is exit 0, with one line on stderr naming what showed the message there. Anything " +
+		"less certain presses nothing and stays exit 2.\n\n" +
 		"<to> is an agent's name, or a thread key `CHANNEL/TS` (as the THREAD column of `fleet status` " +
 		"shows it): then the message goes to that thread's live thread agent, and exit 4 says so when " +
 		"the thread has none, with the route to take.\n\n" +
@@ -57,7 +70,7 @@ const (
 		"(a session it holds is reported there, one herdr reads as blocked is asked about on a card " +
 		"there). A target fleet cannot tell about (no session or transcript found, a read that " +
 		"fails or takes over 5 s) gets the message as before.\n\n" +
-		"Exit: 0 when herdr reported agent_prompted; 1 for an empty body, a forged header or a " +
+		"Exit: 0 when herdr reported agent_prompted, or the turn started after that Enter; 1 for an empty body, a forged header or a " +
 		"missing FLEET_AGENT; 2 when herdr gave no clear signal (timeout, stalled); 3 when " +
 		"the target is blocked (its visible screen is printed so you can see what is in the " +
 		"way); 4 when the target is not found; 5 when herdr itself fails; 8 when the target is " +
@@ -93,12 +106,22 @@ func WithHeader(sender, body string) (string, error) {
 // agent_blocked would be. A Claude Code target paused on its `Session
 // paused` dialog is exit 8, nothing typed and its screen not printed.
 func Deliver(h *herdr.Herdr, to, text string) (exit.Code, error) {
-	if code, err := beforePrompt(h, to); err != nil || code != exit.Ok {
+	agent := herdrAgent(h, to)
+	if code, err := beforePrompt(h, to, agent); err != nil || code != exit.Ok {
 		return code, err
 	}
+	before, boxRead := claudeInputBox(h, to, agent)
 	outcome, err := h.Prompt(to, text)
 	if err != nil {
 		return 0, err
+	}
+	if outcome.Kind == herdr.Unknown && boxRead {
+		if trace := SubmitLeftover(h, to, text, &before); trace != "" {
+			fmt.Fprintf(os.Stderr, "note: herdr saw no turn start in %s (%s), and its input box still held the message "+
+				"(%s, not there before it was typed), so fleet pressed Enter once; %s then started its turn\n",
+				to, outcome.Reason, trace, to)
+			outcome = herdr.PromptOutcome{Kind: herdr.Prompted}
+		}
 	}
 	switch outcome.Kind {
 	case herdr.Prompted:
@@ -118,13 +141,12 @@ func Deliver(h *herdr.Herdr, to, text string) (exit.Code, error) {
 	return outcome.Exit(), nil
 }
 
-// beforePrompt is Deliver's check before the prompt: exit 3 with the
-// screen printed when `to` is of a kind whose screen is read first and
-// the screen is not its input box, and exit 8 when it is a Claude Code
-// session paused on its dialog. An agent herdr does not know is left to
-// the prompt.
-func beforePrompt(h *herdr.Herdr, to string) (exit.Code, error) {
-	agent := herdrAgent(h, to)
+// beforePrompt is Deliver's check before the prompt, `agent` herdr's
+// `agent get` of `to`: exit 3 with the screen printed when `to` is of a
+// kind whose screen is read first and the screen is not its input box,
+// and exit 8 when it is a Claude Code session paused on its dialog. An
+// agent herdr does not know is left to the prompt.
+func beforePrompt(h *herdr.Herdr, to string, agent map[string]any) (exit.Code, error) {
 	if agent == nil {
 		return exit.Ok, nil
 	}
@@ -214,6 +236,113 @@ func pausedOnDialog(h *herdr.Herdr, name string, agent map[string]any) bool {
 		return false
 	}
 	return st.stopped && !st.atPrompt
+}
+
+// claudeInputBox is what the input box of `to`, a Claude Code agent herdr
+// does not find working (`agent`, its `agent get`), holds before a
+// delivery, for SubmitLeftover to compare; ok is false for any other
+// agent, or a screen read that fails or shows no input box.
+func claudeInputBox(h *herdr.Herdr, to string, agent map[string]any) (box string, ok bool) {
+	kind, _ := agent["agent"].(string)
+	status, _ := agent["agent_status"].(string)
+	if agent == nil || kind != "" && kind != KindClaude || status == "working" {
+		return "", false
+	}
+	screen, err := h.Screen(to)
+	if err != nil {
+		return "", false
+	}
+	return InputBoxText(screen)
+}
+
+// SubmitLeftover presses Enter once in the input box of `to`, a Claude
+// Code agent a delivery of `text` gave no clear signal for, when the
+// message was left there unsubmitted: Claude Code 2.1.296 drops an Enter
+// that comes while it reads an image whose path a paste carries (a line,
+// or a part after a space before `/`, ending in .png, .jpg, .jpeg, .gif
+// or .webp), and herdr presses Enter 300 ms after the paste. It presses
+// only when herdr finds `to` neither working nor blocked, it is not paused
+// on Claude Code's dialog, its screen shows the input box, the box holds a
+// trace of the message (LeftoverTrace) and, with `before` (the box before
+// the message was typed), differs from it. It returns the trace when it
+// pressed and herdr then found `to` working or blocked within 5 s; "" when
+// it did not press, or the turn did not start. A herdr call that fails is
+// one note on stderr, and "".
+func SubmitLeftover(h *herdr.Herdr, to, text string, before *string) string {
+	agent := herdrAgent(h, to)
+	kind, _ := agent["agent"].(string)
+	status, _ := agent["agent_status"].(string)
+	if agent == nil || kind != "" && kind != KindClaude || status == "working" || status == "blocked" ||
+		pausedOnDialog(h, to, agent) {
+		return ""
+	}
+	screen, err := h.Screen(to)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "note: cannot read the screen of %s to look for the message in its input box: %v\n", to, err)
+		return ""
+	}
+	box, ok := InputBoxText(screen)
+	trace := LeftoverTrace(box, text)
+	if !ok || trace == "" || before != nil && box == *before {
+		return ""
+	}
+	if !pressEnter(h, to) {
+		return ""
+	}
+	return trace
+}
+
+// pressEnter presses Enter once in the input box of `to` and is whether
+// herdr then finds it working or blocked within 5 s; a press herdr fails
+// is one note on stderr.
+func pressEnter(h *herdr.Herdr, to string) bool {
+	if _, err := h.CallOK("agent", "send-keys", to, "enter"); err != nil {
+		fmt.Fprintf(os.Stderr, "note: cannot press Enter in the input box of %s: %v\n", to, err)
+		return false
+	}
+	reply, err := h.Call("agent", "wait", to, "--until", "working", "--until", "blocked", "--timeout", "5000")
+	return err == nil && reply.Error == nil
+}
+
+// LeftoverTrace is what shows that `box`, the text of a Claude Code input
+// box, holds `text` as a paste leaves it there: the placeholder Claude
+// Code puts for an image or for a long paste, or the text's first line;
+// "" when it shows none of them.
+func LeftoverTrace(box, text string) string {
+	first, _, _ := strings.Cut(strings.TrimSpace(text), "\n")
+	switch {
+	case strings.Contains(box, "[Image #"):
+		return "an [Image #…] placeholder"
+	case strings.Contains(box, "[Pasted text #"):
+		return "a [Pasted text #…] placeholder"
+	case first != "" && strings.Contains(box, first):
+		return "the message's first line"
+	}
+	return ""
+}
+
+// InputBoxText is what Claude Code's input box on `screen` holds: the
+// text after the ❯ prompt and on the lines under it, up to the rule line
+// that closes the box, trimmed; of the last box on the screen, since the
+// transcript above draws the messages sent with a ❯ too, though with no
+// rule line above them. ok is false when the screen shows no input box.
+func InputBoxText(screen string) (box string, ok bool) {
+	all := lines(screen)
+	for i := len(all) - 2; i >= 0; i-- {
+		rest, isPrompt := strings.CutPrefix(strings.TrimLeftFunc(all[i+1], unicode.IsSpace), "❯")
+		if !isRule(all[i]) || !isPrompt {
+			continue
+		}
+		held := []string{strings.TrimSpace(rest)}
+		for _, line := range all[i+2:] {
+			if isRule(line) {
+				return strings.TrimSpace(strings.Join(held, "\n")), true
+			}
+			held = append(held, strings.TrimSpace(line))
+		}
+		return "", false
+	}
+	return "", false
 }
 
 // Send runs `send`.

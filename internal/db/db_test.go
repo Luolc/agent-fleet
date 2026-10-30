@@ -683,3 +683,41 @@ func TestAVersion21LedgerCountsItsSessionsDecided(t *testing.T) {
 			decided, stopped, atPrompt, kind, model, takeovers, actions, version)
 	}
 }
+
+func TestAVersion23LedgerKeepsItsInboxAndTakesTypedMessages(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fleet.db")
+	conn, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	steps := append([]string{}, migrations[:23]...)
+	steps = append(steps, "INSERT INTO inbox (msg_id, thread, state, received_at) VALUES ('m1', 'C1/1.0', 'delivered', 7)",
+		"PRAGMA user_version = 23")
+	for _, step := range steps {
+		if _, err := conn.Exec(step); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := conn.Exec("INSERT INTO inbox (msg_id, state, received_at) VALUES ('m2', 'typed', 8)"); err == nil {
+		t.Fatal("a version 23 ledger took a typed message")
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	conn, err = OpenAt(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, err := conn.Exec("INSERT INTO inbox (msg_id, state, received_at) VALUES ('m2', 'typed', 8)"); err != nil {
+		t.Fatalf("typed: %v", err)
+	}
+	if _, err := conn.Exec("INSERT INTO inbox (msg_id, state, received_at) VALUES ('m3', 'lost', 9)"); err == nil {
+		t.Error("the state is no longer checked")
+	}
+	var row string
+	if err := conn.QueryRow("SELECT msg_id || ' ' || thread || ' ' || state || ' ' || received_at FROM inbox WHERE id = 1").
+		Scan(&row); err != nil || row != "m1 C1/1.0 delivered 7" {
+		t.Errorf("row %q (%v), want the version 23 row kept", row, err)
+	}
+}
