@@ -641,3 +641,45 @@ func TestAVersion20LedgerGainsTheModelWatchTables(t *testing.T) {
 		}
 	}
 }
+
+// A version-21 ledger keeps its rows: a session read before counts as
+// decided, so what was reported before is not acted on, and a row as
+// started with nothing recorded of its runtime.
+func TestAVersion21LedgerCountsItsSessionsDecided(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fleet.db")
+	conn, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range append(migrations[:21:21],
+		"INSERT INTO agents (name, role, state, started_at) VALUES ('j-w', 'worker', 'active', 1)",
+		"INSERT INTO transcripts (agent, session, path, read_to, start_model, last_model) VALUES (1, 's', 'p', 9, 'a', 'b')",
+		"PRAGMA user_version = 21") {
+		if _, err := conn.Exec(step); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	conn, err = OpenAt(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	var kind string
+	var decided sql.NullInt64
+	var stopped, takeovers, actions, version int64
+	var model sql.NullString
+	if err := conn.QueryRow("SELECT t.decided_at, t.stopped, a.kind, a.model, a.takeovers, "+
+		"(SELECT count(*) FROM model_actions), (SELECT user_version FROM pragma_user_version) "+
+		"FROM transcripts t JOIN agents a ON a.id = t.agent").Scan(
+		&decided, &stopped, &kind, &model, &takeovers, &actions, &version); err != nil {
+		t.Fatal(err)
+	}
+	if !decided.Valid || decided.Int64 != 0 || stopped != 0 || kind != "" || model.Valid || takeovers != 0 ||
+		actions != 0 || version != schemaVersion {
+		t.Errorf("decided %v, stopped %d, kind %q, model %v, takeovers %d, actions %d, version %d", decided, stopped,
+			kind, model, takeovers, actions, version)
+	}
+}

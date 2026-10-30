@@ -29,7 +29,11 @@ const rule = "──────────────────────
 // <dir>/panes.json, or no pane without it; `workspace list` and `tab
 // list` print <dir>/workspaces.json and <dir>/tabs.json, or none without
 // them; `pane process-info --pane <pane>` prints <dir>/procinfo-<pane>,
-// or a pane with nothing in its foreground without it.
+// or a pane with nothing in its foreground without it. `tab create`
+// appends its argv to <dir>/tab-argv and makes the pane pn<n>, the n-th
+// it made (in the tab tab-pn<n>), or fails while <dir>/tab-down exists;
+// `agent start` appends its argv to <dir>/starts; `pane rename` does
+// nothing; `agent get` reports an agent idle.
 func watchHerdr(dir, reply string) string {
 	return `#!/bin/sh
 if [ "$1" = --session ]; then shift 2; fi
@@ -57,7 +61,7 @@ REPLY
     ;;
   "agent get")
     if grep -q "\"name\":\"$3\"" "$dir/list.json"; then
-      echo '{"result":{"agent":{"name":"'"$3"'"}}}'
+      echo '{"result":{"agent":{"name":"'"$3"'","agent_status":"idle"}}}'
     else
       echo '{"error":{"code":"agent_not_found","message":"no such agent"}}'
     fi
@@ -79,6 +83,20 @@ REPLY
     else
       echo '{"result":{}}'
     fi
+    ;;
+  "tab create")
+    echo "$*" >> "$dir/tab-argv"
+    [ -e "$dir/tab-down" ] && { echo '{"error":{"code":"server_error","message":"no tab"}}'; exit 1; }
+    n=$(( $(cat "$dir/tab-count" 2>/dev/null || echo 0) + 1 ))
+    echo "$n" > "$dir/tab-count"
+    echo '{"result":{"root_pane":{"workspace_id":"w-j","tab_id":"tab-pn'"$n"'","pane_id":"pn'"$n"'"}}}'
+    ;;
+  "agent start")
+    echo "$*" >> "$dir/starts"
+    echo '{"result":{}}'
+    ;;
+  "pane rename")
+    echo '{"result":{}}'
     ;;
   "workspace list")
     cat "$dir/workspaces.json" 2>/dev/null || echo '{"result":{"workspaces":[]}}'
