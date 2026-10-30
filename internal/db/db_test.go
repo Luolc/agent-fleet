@@ -643,8 +643,8 @@ func TestAVersion20LedgerGainsTheModelWatchTables(t *testing.T) {
 }
 
 // A version-21 ledger keeps its rows: a session read before counts as
-// decided, so what was reported before is not acted on, and a row as
-// started with nothing recorded of its runtime.
+// decided, so what was reported before is not acted on, and not at its
+// prompt, and a row as started with nothing recorded of its runtime.
 func TestAVersion21LedgerCountsItsSessionsDecided(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "fleet.db")
 	conn, err := sql.Open("sqlite", path)
@@ -669,17 +669,17 @@ func TestAVersion21LedgerCountsItsSessionsDecided(t *testing.T) {
 	defer conn.Close()
 	var kind string
 	var decided sql.NullInt64
-	var stopped, takeovers, actions, version int64
+	var stopped, atPrompt, takeovers, actions, version int64
 	var model sql.NullString
-	if err := conn.QueryRow("SELECT t.decided_at, t.stopped, a.kind, a.model, a.takeovers, "+
+	if err := conn.QueryRow("SELECT t.decided_at, t.stopped, t.at_prompt, a.kind, a.model, a.takeovers, "+
 		"(SELECT count(*) FROM model_actions), (SELECT user_version FROM pragma_user_version) "+
 		"FROM transcripts t JOIN agents a ON a.id = t.agent").Scan(
-		&decided, &stopped, &kind, &model, &takeovers, &actions, &version); err != nil {
+		&decided, &stopped, &atPrompt, &kind, &model, &takeovers, &actions, &version); err != nil {
 		t.Fatal(err)
 	}
-	if !decided.Valid || decided.Int64 != 0 || stopped != 0 || kind != "" || model.Valid || takeovers != 0 ||
-		actions != 0 || version != schemaVersion {
-		t.Errorf("decided %v, stopped %d, kind %q, model %v, takeovers %d, actions %d, version %d", decided, stopped,
-			kind, model, takeovers, actions, version)
+	if !decided.Valid || decided.Int64 != 0 || stopped != 0 || atPrompt != 0 || kind != "" || model.Valid ||
+		takeovers != 0 || actions != 0 || version != schemaVersion {
+		t.Errorf("decided %v, stopped %d, at_prompt %d, kind %q, model %v, takeovers %d, actions %d, version %d",
+			decided, stopped, atPrompt, kind, model, takeovers, actions, version)
 	}
 }
