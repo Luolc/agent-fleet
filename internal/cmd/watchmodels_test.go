@@ -127,25 +127,76 @@ func TestOnlyAFallbackMovesASession(t *testing.T) {
 	}
 }
 
-// A session is stopped while its latest assistant message is refused, or
-// a stop with no fallback came after it, until a reply on a real model;
-// a message Claude Code makes up itself changes nothing.
+// A session is stopped from a refused message, or a stop with no fallback,
+// until a reply on a real model ends its turn. Only after a stop with no
+// fallback does it wait at its prompt, and the end of that turn, with a
+// message Claude Code makes up itself, does not end the stop; any reply
+// after it, in a new turn, does.
 func TestASessionIsStoppedUntilItRepliesAgain(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "s.jsonl")
+	noFallback := `{"type":"system","subtype":"model_refusal_no_fallback","uuid":"n-1","originalModel":"claude-test-large"}`
+	turnDuration := `{"type":"system","subtype":"turn_duration","uuid":"d-1"}`
 	for _, c := range []struct {
-		lines   []string
-		stopped bool
+		lines             []string
+		stopped, atPrompt bool
 	}{
-		{[]string{said("a-1", "m-1", "claude-test-large", "end_turn"), said("a-2", "m-2", "claude-test-large", "refusal")}, true},
-		{[]string{said("a-1", "m-1", "claude-test-large", "refusal"), said("a-2", "m-2", "claude-test-large", "end_turn")}, false},
-		{[]string{said("a-1", "m-1", "claude-test-large", "end_turn"),
-			`{"type":"system","subtype":"model_refusal_no_fallback","uuid":"n-1","originalModel":"claude-test-large"}`,
-			said("a-2", "m-2", "<synthetic>", "stop_sequence")}, true},
+		{[]string{said("a-1", "m-1", "claude-test-large", "end_turn"), said("a-2", "m-2", "claude-test-large", "refusal")},
+			true, false},
+		{[]string{said("a-1", "m-1", "claude-test-large", "refusal"), said("a-2", "m-2", "claude-test-large", "end_turn")},
+			false, false},
+		{[]string{said("a-1", "m-1", "claude-test-large", "end_turn"), noFallback,
+			said("a-2", "m-2", "<synthetic>", "stop_sequence")}, true, true},
+		{[]string{said("a-1", "m-1", "claude-test-large", "refusal"), noFallback,
+			said("a-2", "m-2", "<synthetic>", "refusal"), turnDuration}, true, true},
+		{[]string{noFallback, said("a-1", "m-1", "claude-test-large", "tool_use"),
+			said("a-2", "m-2", "claude-test-large", "refusal")}, true, false},
+		{[]string{said("a-1", "m-1", "claude-test-large", "refusal"), noFallback,
+			said("a-2", "m-2", "<synthetic>", "refusal"), turnDuration, said("a-3", "m-3", "claude-test-large", "tool_use"),
+			said("a-4", "m-4", "<synthetic>", "stop_sequence")}, false, false},
 	} {
 		writeLines(t, path, c.lines...)
 		_, st, _, err := scanTranscript(path, transcriptState{}, never)
-		if err != nil || st.stopped != c.stopped {
-			t.Errorf("%q: stopped %v, want %v (%v)", c.lines, st.stopped, c.stopped, err)
+		if err != nil || st.stopped != c.stopped || st.atPrompt != c.atPrompt {
+			t.Errorf("%q: stopped %v, at its prompt %v; want %v, %v (%v)", c.lines, st.stopped, st.atPrompt, c.stopped,
+				c.atPrompt, err)
+		}
+	}
+}
+
+// Regression: Claude Code retries a refused turn once; the retry went on
+// with a tool, and the turn's next refusal paused the session on a dialog
+// with nothing recorded. A reply that asked for a tool does not end the
+// turn, so the session is still stopped, read in one go or in two, and
+// waits on the dialog, not at its prompt. Refused once and gone on to the
+// end of its turn, with a reply, an API error, an interrupt or Claude
+// Code's `turn_duration`, it is not stopped.
+func TestASessionRefusedAgainLaterInItsTurnIsStillStopped(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.jsonl")
+	refused := said("a-1", "m-1", "claude-test-large", "refusal")
+	retried := said("a-2", "m-2", "claude-test-large", "tool_use")
+	result := `{"type":"user","uuid":"u-1","message":{"content":[{"type":"tool_result","tool_use_id":"t-1"}]}}`
+	writeLines(t, path, refused, retried, result)
+	_, st, _, err := scanTranscript(path, transcriptState{}, never)
+	if err != nil || !st.stopped || st.atPrompt || st.recovered {
+		t.Fatalf("in one go: %+v %v", st, err)
+	}
+	writeLines(t, path, refused)
+	_, st, _, err = scanTranscript(path, transcriptState{}, never)
+	if err != nil || !st.stopped {
+		t.Fatalf("refused: %+v %v", st, err)
+	}
+	writeLines(t, path, refused, retried, result)
+	_, st, _, err = scanTranscript(path, st, never)
+	if err != nil || !st.stopped || st.atPrompt || st.recovered {
+		t.Fatalf("in two: %+v %v", st, err)
+	}
+	for _, end := range []string{said("a-3", "m-3", "claude-test-large", "end_turn"),
+		said("a-3", "m-3", "<synthetic>", "stop_sequence"), `{"type":"system","subtype":"turn_duration","uuid":"d-1"}`,
+		`{"type":"user","uuid":"u-2","interruptedMessageId":"m-2","message":{"content":[{"type":"text"}]}}`} {
+		writeLines(t, path, refused, retried, result, end)
+		_, st, _, err = scanTranscript(path, transcriptState{}, never)
+		if err != nil || st.stopped || !st.recovered {
+			t.Errorf("gone on, then %s: %+v %v", end, st, err)
 		}
 	}
 }

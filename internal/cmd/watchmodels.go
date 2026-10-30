@@ -92,6 +92,7 @@ type transcriptRecord struct {
 	IsSidechain   bool   `json:"isSidechain"`
 	OriginalModel string `json:"originalModel"`
 	FallbackModel string `json:"fallbackModel"`
+	Interrupted   string `json:"interruptedMessageId"`
 	Message       struct {
 		ID         string `json:"id"`
 		Model      string `json:"model"`
@@ -103,15 +104,22 @@ type transcriptRecord struct {
 // its session's first and latest assistant message (the first taken from
 // a fallback's original model when the fallback comes first), the model
 // its latest fallback after a refusal moved it to (none once its messages
-// changed to another model), and whether the latest
-// message is stopped: refused by a safety classifier, or followed by a
-// stop with no fallback, with no assistant message after it.
+// changed to another model), and whether the session is stopped: a message
+// refused by a safety classifier, or a stop with no fallback, with no
+// assistant message after it that ended its turn (one that asked for a
+// tool did not), and whether it then waits at its prompt: its stop is one
+// with no fallback, after which Claude Code ends the turn, while after a
+// refusal it waits on a dialog. A turn that ends with no such message, on
+// an API error, a person's interrupt or Claude Code's `turn_duration`,
+// ends a stop that is not at the prompt; any reply after a stop at the
+// prompt is a new turn's and ends it.
 type transcriptState struct {
 	readTo     int64
 	startModel string
 	lastModel  string
 	fellTo     string
 	stopped    bool
+	atPrompt   bool
 	// recovered is whether, at a line of this read, the session was
 	// neither stopped nor moved; not recorded.
 	recovered bool
@@ -227,11 +235,16 @@ func (s *transcriptScan) switched(model string) {
 	}
 }
 
+// decodedNames are what a line of the transcript names when it is a
+// record the watch reads; no other line is decoded.
+var decodedNames = [][]byte{[]byte(`"assistant"`), []byte(`"model_refusal_`), []byte(`"turn_duration"`),
+	[]byte(`"interruptedMessageId"`)}
+
 // read reads one complete line of the transcript.
 func (s *transcriptScan) read(line []byte) {
 	at := s.st.readTo
 	s.st.readTo += int64(len(line))
-	if !bytes.Contains(line, []byte(`"assistant"`)) && !bytes.Contains(line, []byte(`"model_refusal_`)) {
+	if !slices.ContainsFunc(decodedNames, func(name []byte) bool { return bytes.Contains(line, name) }) {
 		return
 	}
 	var rec transcriptRecord
@@ -252,30 +265,65 @@ func (s *transcriptScan) read(line []byte) {
 		s.fellBack(rec)
 	case rec.Type == "system" && rec.Subtype == eventNoFallback:
 		s.events = append(s.events, event(eventNoFallback, rec.OriginalModel, ""))
-		s.st.stopped = true
+		s.st.stopped, s.st.atPrompt = true, true
+	case rec.Type == "system" && rec.Subtype == "turn_duration", rec.Type == "user" && rec.Interrupted != "":
+		s.turnEnded()
 	case rec.Type == "assistant" && realModel(rec.Message.Model):
-		model := rec.Message.Model
-		switch {
-		case s.st.startModel == "":
-			s.st.startModel = model
-		case baseModel(model) != baseModel(s.st.lastModel):
-			s.events = append(s.events, event(eventChange, s.st.lastModel, model))
-			s.switched(model)
+		s.replied(rec, event)
+	case rec.Type == "assistant" && rec.Message.StopReason != "refusal":
+		// A message Claude Code makes up itself, such as an API error,
+		// ends the turn; the one it adds to a stop with no fallback is
+		// refused.
+		s.turnEnded()
+	}
+}
+
+// replied reads the assistant message `rec` on a real model: the model it
+// is on, and whether it stops the session or ends a stop; `event` makes
+// its events.
+func (s *transcriptScan) replied(rec transcriptRecord, event func(kind, from, to string) modelEvent) {
+	model := rec.Message.Model
+	switch {
+	case s.st.startModel == "":
+		s.st.startModel = model
+	case baseModel(model) != baseModel(s.st.lastModel):
+		s.events = append(s.events, event(eventChange, s.st.lastModel, model))
+		s.switched(model)
+	}
+	s.st.lastModel = model
+	switch rec.Message.StopReason {
+	case "refusal":
+		s.st.stopped, s.st.atPrompt = true, false
+	case "tool_use":
+		// The turn goes on, and a stop in it lasts: Claude Code retries
+		// a refused turn once, and at the turn's next refusal pauses on
+		// a dialog without recording it. A stop at the prompt ended its
+		// turn, so a reply after it is a new turn's.
+		if s.st.atPrompt {
+			s.st.stopped, s.st.atPrompt = false, false
 		}
-		s.st.lastModel = model
-		if s.st.stopped = rec.Message.StopReason == "refusal"; !s.st.stopped {
-			return
-		}
-		// Each content block of a message is a record of its own, so a
-		// refused message is one event, keyed by its id.
-		e := event(eventRefusal, model, "")
-		if rec.Message.ID != "" {
-			e.Key = "message:" + rec.Message.ID
-		}
-		if !s.seen[e.Key] {
-			s.seen[e.Key] = true
-			s.events = append(s.events, e)
-		}
+		return
+	default:
+		s.st.stopped, s.st.atPrompt = false, false
+		return
+	}
+	// Each content block of a message is a record of its own, so a
+	// refused message is one event, keyed by its id.
+	e := event(eventRefusal, model, "")
+	if rec.Message.ID != "" {
+		e.Key = "message:" + rec.Message.ID
+	}
+	if !s.seen[e.Key] {
+		s.seen[e.Key] = true
+		s.events = append(s.events, e)
+	}
+}
+
+// turnEnded notes a turn that ended with no reply on a real model: a stop
+// in it ends, unless the session waits at its prompt after it.
+func (s *transcriptScan) turnEnded() {
+	if !s.st.atPrompt {
+		s.st.stopped = false
 	}
 }
 
@@ -423,9 +471,9 @@ func (r *watchRun) readTranscript(dir string, live Live) (*sessionRead, error) {
 	var path string
 	var st transcriptState
 	var decided sql.NullInt64
-	err = r.conn.QueryRow("SELECT path, read_to, start_model, last_model, fell_to, stopped, decided_at FROM "+
-		"transcripts WHERE agent = ?1 AND session = ?2", live.ID, session).Scan(&path, &st.readTo, &st.startModel,
-		&st.lastModel, &st.fellTo, &st.stopped, &decided)
+	err = r.conn.QueryRow("SELECT path, read_to, start_model, last_model, fell_to, stopped, at_prompt, decided_at "+
+		"FROM transcripts WHERE agent = ?1 AND session = ?2", live.ID, session).Scan(&path, &st.readTo, &st.startModel,
+		&st.lastModel, &st.fellTo, &st.stopped, &st.atPrompt, &decided)
 	if errors.Is(err, sql.ErrNoRows) {
 		if path, err = findTranscript(dir, session); err != nil || path == "" {
 			return nil, err
@@ -452,10 +500,11 @@ func (r *watchRun) readTranscript(dir string, live Live) (*sessionRead, error) {
 	}
 	defer func() { _ = tx.Rollback() }()
 	if _, err := tx.Exec("INSERT INTO transcripts (agent, session, path, read_to, start_model, last_model, fell_to, "+
-		"stopped) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) ON CONFLICT (agent, session) DO UPDATE SET read_to = "+
-		"excluded.read_to, start_model = excluded.start_model, last_model = excluded.last_model, fell_to = "+
-		"excluded.fell_to, stopped = excluded.stopped",
-		live.ID, session, path, next.readTo, next.startModel, next.lastModel, next.fellTo, next.stopped); err != nil {
+		"stopped, at_prompt) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) ON CONFLICT (agent, session) DO UPDATE SET "+
+		"read_to = excluded.read_to, start_model = excluded.start_model, last_model = excluded.last_model, fell_to = "+
+		"excluded.fell_to, stopped = excluded.stopped, at_prompt = excluded.at_prompt",
+		live.ID, session, path, next.readTo, next.startModel, next.lastModel, next.fellTo, next.stopped,
+		next.atPrompt); err != nil {
 		return nil, exit.Database(err)
 	}
 	var found []modelEvent
@@ -868,10 +917,10 @@ func (x modelAction) whyLine(zh bool) string {
 	case x.why == "moved":
 		return fmt.Sprintf("a fallback after a refusal moved the session to %s; it started on %s", x.to, x.from)
 	case zh:
-		return fmt.Sprintf("会话被拦停住了 (最后一条回复被 safety classifier 拦下，之后没有新的回复)，模型 `%s`", x.to)
+		return fmt.Sprintf("会话被拦停住了 (有一条回复被 safety classifier 拦下，之后没有回复把那一轮做完)，模型 `%s`", x.to)
 	}
-	return fmt.Sprintf("the session is stopped: its latest message, on %s, was stopped by a safety classifier, with "+
-		"no reply after it", x.to)
+	return fmt.Sprintf("the session is stopped: one of its messages, on %s, was stopped by a safety classifier, and "+
+		"no reply after it ended its turn", x.to)
 }
 
 // line is the action about the lead or worker `name` as its parent reads

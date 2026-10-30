@@ -14,6 +14,11 @@
 #             fallback: told once to go on, its own thread posted to
 #   KN's agent a thread agent moved to another model: its session ended,
 #             the thread's next one started in the `threads` workspace
+#   m-q       a worker refused, retried, gone on with a tool and paused
+#             on Claude Code's dialog with nothing more recorded: a new
+#             session of the same name, as m-w gets
+#   TQ's agent a thread agent paused on that dialog: nothing typed into
+#             it, its session ended, the thread's next one started
 #   m-ok      a worker that stayed on its model: nobody told
 #   m-p       a worker moved to another model with no fallback, as a
 #             person's /model moves it: only reported, its session kept
@@ -48,7 +53,9 @@ KM=C0MOD/1700000000.000
 
 KN=C0MOD/1700000001.000
 TN=thread-c0mod-1700000001-000
-for name in thread-m m-ok m-p "$TN"; do
+KQ=C0MOD/1700000002.000
+TQ=thread-c0mod-1700000002-000
+for name in thread-m m-ok m-p "$TN" "$TQ"; do
   check "models: $name starts idle" idle "$(start_fake "$name")"
 done
 # The job's workspace m: its lead, and m-w in a tab of its own.
@@ -62,6 +69,12 @@ wpane=$("${S[@]}" tab create --workspace "$(printf '%s' "$mws" | jq -r .result.r
 sleep 1
 check "models: m-w starts idle" idle "$("${S[@]}" agent start m-w --kind claude --pane "$wpane" --timeout 20000 |
   jq -r '.result.agent.agent_status // .error.code')"
+qpane=$("${S[@]}" tab create --workspace "$(printf '%s' "$mws" | jq -r .result.root_pane.workspace_id)" --label q \
+  --cwd /home/agent/mwork --no-focus | jq -r .result.root_pane.pane_id)
+sleep 1
+check "models: m-q starts idle" idle "$("${S[@]}" agent start m-q --kind claude --pane "$qpane" --timeout 20000 |
+  jq -r '.result.agent.agent_status // .error.code')"
+tqpane=$(agent_field "$TQ" pane_id)
 mtask=$(task m-w '# Fix the example parser
 
 Make the parser accept empty input.')
@@ -69,15 +82,19 @@ now=$(date +%s)
 sqlite3 "$DB" >/dev/null <<SQL
 INSERT INTO jobs (job, lead_cwd, home_thread, state, started_at) VALUES ('m', '/home/agent', '$KM', 'open', $now);
 INSERT INTO threads (thread, slug, channel, mapping, cwd, sessions, created_at) VALUES
-    ('$KN', 'c0mod-1700000001-000', 'C0MOD', 'repo-models', '/home/agent', 1, $now);
+    ('$KN', 'c0mod-1700000001-000', 'C0MOD', 'repo-models', '/home/agent', 1, $now),
+    ('$KQ', 'c0mod-1700000002-000', 'C0MOD', 'repo-models', '/home/agent', 1, $now);
 INSERT INTO agents (name, role, job, parent, cwd, thread, state, started_at, pane_id, kind) VALUES
     ('thread-m', 'thread', '', '', '/home/agent', '$KM', 'active', $now, '$(agent_field thread-m pane_id)', 'claude'),
     ('$TN', 'thread', '', '', '/home/agent', '$KN', 'active', $now, '$(agent_field "$TN" pane_id)', 'claude'),
+    ('$TQ', 'thread', '', '', '/home/agent', '$KQ', 'active', $now, '$tqpane', 'claude'),
     ('m-ok', 'worker', 'm', 'm-lead', '/home/agent', '', 'active', $now, '$(agent_field m-ok pane_id)', 'claude');
 INSERT INTO agents (name, role, job, parent, cwd, thread, state, started_at, pane_id, kind, model, effort, task) VALUES
     ('m-lead', 'lead', 'm', 'thread-m', '/home/agent', '', 'active', $now, '$(agent_field m-lead pane_id)', 'claude',
      'claude-test-configured', 'high', ''),
     ('m-w', 'worker', 'm', 'm-lead', '/home/agent/mwork', '', 'active', $now, '$wpane', 'claude',
+     'claude-test-configured', 'high', '$mtask'),
+    ('m-q', 'worker', 'm', 'm-lead', '/home/agent/mwork', '', 'active', $now, '$qpane', 'claude',
      'claude-test-configured', 'high', '$mtask'),
     ('m-p', 'worker', 'm', 'm-lead', '/home/agent', '', 'active', $now, '$(agent_field m-p pane_id)', 'claude',
      'claude-test-configured', 'high', '$mtask');
@@ -106,6 +123,17 @@ session m-w "$SW" "$(said a-1 msg-1 claude-test-large tool_use)" "$(said a-2 msg
   "$(said a-3 msg-3 claude-test-small tool_use)"
 session thread-m "$ST" "$(said t-1 msg-t1 claude-test-large end_turn)" "$(said t-2 msg-t2 claude-test-large refusal)" \
   '{"type":"system","subtype":"model_refusal_no_fallback","uuid":"t-3","timestamp":"2030-01-02T03:00:05.000Z","originalModel":"claude-test-large","content":"0xREFUSEDTEXT"}'
+# Claude Code's records around a retried refusal: the tool's result, its
+# notice, the nudge it sends, the retry's reply asking for a tool and that
+# tool's result; the turn's next refusal is not recorded.
+paused=("$(said q-1 msg-q1 claude-test-large refusal)"
+  '{"type":"user","uuid":"q-2","message":{"content":[{"type":"tool_result","tool_use_id":"t-q1","content":"0xREFUSEDTEXT"}]}}'
+  '{"type":"system","subtype":"informational","level":"notice","uuid":"q-3","content":"0xREFUSEDTEXT"}'
+  '{"type":"user","uuid":"q-4","isMeta":true,"message":{"content":"0xREFUSEDTEXT"}}'
+  "$(said q-5 msg-q5 claude-test-large tool_use)"
+  '{"type":"user","uuid":"q-6","message":{"content":[{"type":"tool_result","tool_use_id":"t-q5","content":"0xREFUSEDTEXT"}]}}')
+session m-q 00000000-0000-4000-8000-0000000000a7 "${paused[@]}"
+session "$TQ" 00000000-0000-4000-8000-0000000000a8 "$(said u-1 msg-u1 claude-test-large end_turn)" "${paused[@]}"
 session m-ok "$SO" "$(said o-1 msg-o1 claude-test-large tool_use)" "$(said o-2 msg-o2 claude-test-large end_turn)"
 ppane=$(agent_field m-p pane_id)
 session m-p 00000000-0000-4000-8000-0000000000a6 "$(said p-1 msg-p1 claude-test-large end_turn)" \
@@ -140,6 +168,21 @@ has "models: m-w's new session gets its task and the takeover note" "$w_got" "[F
   "This session takes over from an earlier session of m-w" "Do not redo the step that was stopped" \
   "# Fix the example parser"
 lacks "models: no /model is typed into m-w" "$w_got" "/model"
+has "models: the lead is told m-q, paused after a retried refusal, was replaced" "$lead_got" \
+  "fleet replaced the session of m-q (pane $qpane closed, the new session in pane" "the session is stopped"
+check "models: m-q's row now records a new pane, live" "active 1 1" \
+  "$(ledger "SELECT state, takeovers, pane_id != '$qpane' FROM agents WHERE name = 'm-q'" | tr '|' ' ' | xargs)"
+q_got=$(received m-q)
+has "models: m-q's new session gets the takeover note" "$q_got" "This session takes over from an earlier session of m-q"
+lacks "models: nothing is typed into the paused thread agent's old session" \
+  "$(cat "$fake/received-$tqpane" 2>/dev/null)" "[FROM: watch]"
+check "models: the paused thread agent's session ended, the next one live" "ended active" \
+  "$(ledger "SELECT state FROM agents WHERE name = '$TQ' ORDER BY id" | xargs)"
+check "models: the paused thread's session is counted on the thread" 1 \
+  "$(ledger "SELECT takeovers FROM threads WHERE thread = '$KQ'" | xargs)"
+tq_got=$(received "$TQ")
+has "models: the paused thread's next session starts with the takeover note" "$tq_got" \
+  "this session takes over from the session before it on this thread"
 has "models: m-p, moved with no fallback, is only reported" "$lead_got" \
   "the Claude Code session of m-p (worker, job m) has 1 model event(s)" "fleet did nothing about these events"
 check "models: m-p keeps its session" "$ppane 0" \
@@ -158,13 +201,14 @@ posts=$(cat /home/agent/models-fednet.log)
 has "models: the home thread is posted to about both agents" "$posts" \
   "-thread $KM -- fleet watch：m-w 的 Claude Code 会话出现了 3 个模型事件" \
   "-thread $KM -- fleet watch：thread-m 的 Claude Code 会话出现了 2 个模型事件"
-for text in "$(cat /home/agent/models1.out)" "$lead_got" "$posts" "$w_got" "$(received thread-m)" "$(received "$TN")"; do
+for text in "$(cat /home/agent/models1.out)" "$lead_got" "$posts" "$w_got" "$(received thread-m)" "$(received "$TN")" \
+  "$q_got" "$tq_got"; do
   lacks "models: nothing fleet writes carries the conversation's text" "$text" 0xREFUSEDTEXT
 done
 mwatch >/home/agent/models2.out 2>&1; rc=$?
 check "models: the next run exits 0" 0 "$rc"
 lacks "models: the next run reports nothing again" "$(cat /home/agent/models2.out)" "model event:"
-check "models: each agent's events are posted once" 4 "$(grep -c '的 Claude Code 会话出现了' /home/agent/models-fednet.log)"
+check "models: each agent's events are posted once" 6 "$(grep -c '的 Claude Code 会话出现了' /home/agent/models-fednet.log)"
 # m-w's new session is stopped too: left to the people, no third session.
 newpane=$(agent_field m-w pane_id)
 session m-w 00000000-0000-4000-8000-0000000000a5 "$(said r-1 msg-r1 claude-test-large refusal)"

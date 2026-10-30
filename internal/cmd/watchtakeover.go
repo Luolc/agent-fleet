@@ -2,9 +2,10 @@
 // last complete line, is now stopped by a safety classifier or on another
 // model than it started on (docs/design.md): a lead or worker gets a new
 // session of the same name, on the model and effort its start recorded; a
-// thread agent stopped on its model is told once to go on; a thread agent
-// moved to another model gets the thread's next session, as `inbox` starts
-// one. Each is done once (per row, or per thread for a thread's new
+// thread agent stopped at its prompt is told once to go on; a thread agent
+// moved to another model, or stopped on the dialog Claude Code pauses on
+// after a refusal, gets the thread's next session, as `inbox` starts one.
+// Each is done once (per row, or per thread for a thread's new
 // session); after that the people decide. fleet reads none of the
 // conversation for this, never switches a model and types into a session
 // only its own messages.
@@ -35,8 +36,9 @@ var (
 )
 
 // actOnSession decides what to do about the agent row `id` from its session as
-// this run read it to its last complete line: stopped (its latest
-// assistant message refused, with no reply after it) or moved (on
+// this run read it to its last complete line: stopped (a message refused,
+// with no reply after it that ended its turn; at its prompt only after a
+// stop with no fallback, else on a dialog) or moved (on
 // another model than it started on, a variant such as `[1m]` counting as
 // the same model); a session that is neither has nothing done, and the
 // events of its past are only reported. A stop or move is decided once:
@@ -69,11 +71,15 @@ func (r *watchRun) actOnSession(id int64, read *sessionRead, status InHerdr) err
 	if moved {
 		x.why = "moved"
 	}
-	// A thread's session is replaced once per thread, so each new session
-	// is not replaced again; a thread agent stopped on its model is told
-	// to go on once per session, its row.
+	// A message typed into a session on a dialog would answer the dialog,
+	// so a thread agent stopped anywhere but at its prompt is not told to
+	// go on: its session is replaced, as a moved one's is. A thread's
+	// session is replaced once per thread, so each new session is not
+	// replaced again; a thread agent stopped at its prompt is told to go on
+	// once per session, its row.
+	renew := a.role == "thread" && (moved || !read.st.atPrompt)
 	handled := a.takeovers
-	if a.role == "thread" && moved {
+	if renew {
 		if handled, err = threadTakeovers(r.conn, a.thread); err != nil {
 			return err
 		}
@@ -87,7 +93,7 @@ func (r *watchRun) actOnSession(id int64, read *sessionRead, status InHerdr) err
 		return err
 	case !r.ready(a, read, status):
 		return nil
-	case a.role == "thread" && moved:
+	case renew:
 		return r.replaceThread(a, read, x)
 	case a.role == "thread":
 		return r.nudge(a, read, x)
@@ -143,9 +149,9 @@ var notFinished = actionDetail{"the takeover did not finish: the watch run stopp
 
 // decide records the action `x` with `action` and `detail` about the
 // session of `a` read in `read`, marks its stop or move decided and, with
-// `count`, counts one more takeover (on the thread for a thread agent
-// moved to another model, else on the row), in one transaction; it
-// returns the action's id.
+// `count`, counts one more takeover (on the row for a lead or worker and
+// for a thread agent told to go on, else on the thread), in one
+// transaction; it returns the action's id.
 func (r *watchRun) decide(a *eventAgent, read *sessionRead, x modelAction, action string, detail actionDetail,
 	count bool) (int64, error) {
 	tx, err := r.conn.Begin()
@@ -167,7 +173,7 @@ func (r *watchRun) decide(a *eventAgent, read *sessionRead, x modelAction, actio
 		read.session); err != nil {
 		return 0, exit.Database(err)
 	}
-	if count && x.why == "moved" && a.role == "thread" {
+	if count && a.role == "thread" && action != actionNudged {
 		if _, err := tx.Exec("UPDATE threads SET takeovers = takeovers + 1 WHERE thread = ?1", a.thread); err != nil {
 			return 0, exit.Database(err)
 		}
@@ -199,7 +205,7 @@ func (r *watchRun) recentEvents(id int64) ([]string, error) {
 	return lines, err
 }
 
-// nudge tells the thread agent `a`, stopped on its model, to go on, as
+// nudge tells the thread agent `a`, stopped at its prompt, to go on, as
 // `send` would as `watch`: a message, never a command. Counted once it
 // landed (exit 0, or 2: it may have); a blocked or missing agent is told
 // next run.
@@ -245,7 +251,7 @@ func openJobsOf(r *watchRun, thread string) ([]string, error) {
 	return jobs, err
 }
 
-// nudgeMessage is what a thread agent stopped on its model is told.
+// nudgeMessage is what a thread agent stopped at its prompt is told.
 func nudgeMessage(x modelAction, events []string, jobs []string) string {
 	var text strings.Builder
 	fmt.Fprintf(&text, "fleet watch, watch `model-changes`: %s. The latest model events fleet recorded in your "+
@@ -494,7 +500,7 @@ func takeoverNote(a *eventAgent, x modelAction, events, files []string) string {
 const replacedLine = "fleet 结束了这次会话并另起了一个新会话"
 
 // replaceThread replaces the session of the thread agent `a`, moved to
-// another model: the session is ended as `watch` ends one it reclaims
+// another model or stopped on a dialog: the session is ended as `watch` ends one it reclaims
 // (`thread end`'s recorded steps: a summary of fleet's own from the
 // records' metadata, the ticket released, the closing line, the row, the
 // tab), then a new one is started for the thread as `inbox` starts one

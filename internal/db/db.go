@@ -17,7 +17,7 @@ import (
 	"github.com/Luolc/agent-fleet/internal/exit"
 )
 
-const schemaVersion = 22
+const schemaVersion = 23
 
 // Version 1: the `agents` table. Ended rows are kept as history, so `name`
 // is unique only among rows that have not ended.
@@ -406,8 +406,17 @@ CREATE TABLE model_actions (
 );
 `
 
+// Version 23: whether a stopped session waits at its prompt
+// (`transcripts.at_prompt`): its stop is one with no fallback, after which
+// Claude Code ends the turn; after any other stop it waits on a dialog,
+// which a message typed into the session would answer. 0 for the sessions
+// read before, so none of them is typed into.
+const schemaV23 = `
+ALTER TABLE transcripts ADD COLUMN at_prompt INTEGER NOT NULL DEFAULT 0;
+`
+
 // migrations[v] upgrades a ledger at version v to v+1.
-var migrations = [schemaVersion]string{schema, schemaV2, schemaV3, schemaV4, schemaV5, schemaV6, schemaV7, schemaV8, schemaV9, schemaV10, schemaV11, schemaV12, schemaV13, schemaV14, schemaV15, schemaV16, schemaV17, schemaV18, schemaV19, schemaV20, schemaV21, schemaV22}
+var migrations = [schemaVersion]string{schema, schemaV2, schemaV3, schemaV4, schemaV5, schemaV6, schemaV7, schemaV8, schemaV9, schemaV10, schemaV11, schemaV12, schemaV13, schemaV14, schemaV15, schemaV16, schemaV17, schemaV18, schemaV19, schemaV20, schemaV21, schemaV22, schemaV23}
 
 // Path is where the ledger of `scope` lives:
 // `$XDG_STATE_HOME/fleet/<scope>.db`, with `~/.local/state` when
