@@ -117,8 +117,9 @@ const (
 		"and a new agent started.\n\n" +
 		"Exit: 0 when the message is delivered, ignored or dropped (fednet marks it delivered); " +
 		"1 when the event file cannot be read or is not an event, or the scope is not a scope name, or --scope is given; " +
-		"2/3/4 as `send` when the delivery to a live agent gives no clear signal, finds it " +
-		"blocked, or does not find it; 3 when a new agent stops at an unknown screen; 5 when " +
+		"2/3/4/8 as `send` when the delivery to a live agent gives no clear signal, finds it " +
+		"blocked, does not find it, or finds it paused on Claude Code's `Session paused` dialog; " +
+		"3 when a new agent stops at an unknown screen; 5 when " +
 		"herdr or the database fails. A non-zero exit makes fednet run the hook again later, " +
 		"with the reservation kept: a message that was delivered with no clear signal (exit 2) " +
 		"may then be delivered twice."

@@ -91,7 +91,7 @@ const (
 		"file is unreadable or empty, the job is not open, a cross-repo job has no home thread (it " +
 		"was started by a caller without FLEET_THREAD), fleet knows neither channel to open " +
 		"a single-repo job's home thread in, or the scope has no fednet socket; " +
-		"2/3/4 as `send` for the delivery; 3 when a new thread agent stops at an unknown " +
+		"2/3/4/8 as `send` for the delivery; 3 when a new thread agent stops at an unknown " +
 		"screen; 5 when opening the thread fails, or herdr, atb or the database fails. A " +
 		"thread agent that has to be started while Linear is unavailable starts without its " +
 		"ticket, as `fleet inbox` starts one. After a failure " +

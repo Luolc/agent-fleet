@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/Luolc/agent-fleet/internal/db"
@@ -37,10 +38,23 @@ const (
 		"herdr reports no blocked state for a Pi agent, so a Pi target's screen is read first: " +
 		"unless it shows Pi's editor (idle, or working with the editor still open), nothing is " +
 		"typed and the send ends with exit 3.\n\n" +
+		"A Claude Code target whose message was stopped by a safety classifier again after Claude " +
+		"Code retried it waits on Claude Code's `Session paused` dialog, whose first option, " +
+		"`Switch to <fallback>`, moves the session to another model; herdr may read that dialog " +
+		"as idle, so text typed there would answer it. Unless herdr finds the target working, " +
+		"its transcript is read first, as `fleet watch` reads it (the records' shape, never the " +
+		"conversation's text): a session stopped by a refusal with no reply since that ended its " +
+		"turn, and not one waiting at its prompt after a stop with no fallback, gets nothing typed " +
+		"and no key, and the send ends with exit 8, its screen not printed. Press no key on that " +
+		"screen either: `fleet watch` replaces such a session with a new one (send again once it " +
+		"has), or, for a worker, its lead may end it with `fleet worker end` and start another to " +
+		"take over. A target fleet cannot tell about (no session or transcript found, a read that " +
+		"fails or takes over 5 s) gets the message as before.\n\n" +
 		"Exit: 0 when herdr reported agent_prompted; 1 for an empty body, a forged header or a " +
 		"missing FLEET_AGENT; 2 when herdr gave no clear signal (timeout, stalled); 3 when " +
 		"the target is blocked (its visible screen is printed so you can see what is in the " +
-		"way); 4 when the target is not found; 5 when herdr itself fails."
+		"way); 4 when the target is not found; 5 when herdr itself fails; 8 when the target is " +
+		"paused on Claude Code's `Session paused` dialog (nothing typed; press no key there)."
 )
 
 // SendArgs are the arguments of `send`.
@@ -69,9 +83,10 @@ func WithHeader(sender, body string) (string, error) {
 // the outcome to an exit code. Shared with `done`. A target of a kind
 // herdr reports no blocked state for (Pi) is read first: a screen that is
 // not its input box is exit 3 with the screen, nothing typed, as herdr's
-// agent_blocked would be.
+// agent_blocked would be. A Claude Code target paused on its `Session
+// paused` dialog is exit 8, nothing typed and its screen not printed.
 func Deliver(h *herdr.Herdr, to, text string) (exit.Code, error) {
-	if code, err := readFirst(h, to); err != nil || code != exit.Ok {
+	if code, err := beforePrompt(h, to); err != nil || code != exit.Ok {
 		return code, err
 	}
 	outcome, err := h.Prompt(to, text)
@@ -96,17 +111,25 @@ func Deliver(h *herdr.Herdr, to, text string) (exit.Code, error) {
 	return outcome.Exit(), nil
 }
 
-// readFirst is Deliver's check before the prompt: exit 3 with the screen
-// printed when `to` is of a kind whose screen is read first and the screen
-// is not its input box. An agent herdr does not know, or gives no kind
-// for, is left to the prompt.
-func readFirst(h *herdr.Herdr, to string) (exit.Code, error) {
-	reply, err := h.Call("agent", "get", to)
-	if err != nil || reply.Error != nil {
+// beforePrompt is Deliver's check before the prompt: exit 3 with the
+// screen printed when `to` is of a kind whose screen is read first and
+// the screen is not its input box, and exit 8 when it is a Claude Code
+// session paused on its dialog. An agent herdr does not know is left to
+// the prompt.
+func beforePrompt(h *herdr.Herdr, to string) (exit.Code, error) {
+	agent := herdrAgent(h, to)
+	if agent == nil {
 		return exit.Ok, nil
 	}
-	inner, _ := herdr.Lookup(reply.Result, "agent").(map[string]any)
-	kind, _ := inner["agent"].(string)
+	if pausedOnDialog(h, to, agent) {
+		fmt.Fprintf(os.Stderr, "%s is paused on Claude Code's `Session paused` dialog (a message of its turn was "+
+			"stopped by a safety classifier again after Claude Code retried it), so nothing was typed. Press no key "+
+			"on its screen: a key there can pick `Switch to <fallback>` and move the session to another model. "+
+			"`fleet watch` replaces such a session with a new one; send again once it has. A worker's lead may "+
+			"instead end it with `fleet worker end` and start another to take over.\n", to)
+		return exit.Paused, nil
+	}
+	kind, _ := agent["agent"].(string)
 	k := kindOf(kind)
 	if !k.readFirst {
 		return exit.Ok, nil
@@ -121,6 +144,65 @@ func readFirst(h *herdr.Herdr, to string) (exit.Code, error) {
 	fmt.Fprintf(os.Stderr, "%s (%s) is not at its input box, so nothing was typed; its screen:\n", to, kind)
 	fmt.Fprint(os.Stdout, screen)
 	return exit.Blocked, nil
+}
+
+// herdrAgent is the `agent` of herdr's `agent get` reply for `name`; nil
+// when herdr does not know it or gives no reply.
+func herdrAgent(h *herdr.Herdr, name string) map[string]any {
+	reply, err := h.Call("agent", "get", name)
+	if err != nil || reply.Error != nil {
+		return nil
+	}
+	agent, _ := herdr.Lookup(reply.Result, "agent").(map[string]any)
+	return agent
+}
+
+// pauseReadBudget is how long a delivery reads a transcript to tell
+// whether its session is paused; a read not done by then cannot tell.
+const pauseReadBudget = 5 * time.Second
+
+// pausedOnDialog is whether `agent` (herdr's `agent get` of `name`) is a
+// Claude Code session paused on its `Session paused` dialog, as far as
+// fleet can tell: herdr's kind is Claude Code's or none, herdr does not
+// find it working, and its transcript, read as the watch `model-changes`
+// reads it (the records' shape, never the conversation's text), has it
+// stopped, and not at its prompt. A session fleet cannot tell about (no
+// pane, session or transcript, a read that failed or did not end within
+// pauseReadBudget) is not, the failed or unfinished read said on stderr.
+func pausedOnDialog(h *herdr.Herdr, name string, agent map[string]any) bool {
+	kind, _ := agent["agent"].(string)
+	status, _ := agent["agent_status"].(string)
+	pane, _ := agent["pane_id"].(string)
+	if kind != "" && kind != KindClaude || status == "working" || pane == "" {
+		return false
+	}
+	dir := claudeDir()
+	session, err := sessionOf(h, dir, pane)
+	path := ""
+	if err == nil && session != "" {
+		path, err = findTranscript(dir, session)
+	}
+	if err == nil && path == "" {
+		return false
+	}
+	var st transcriptState
+	complete := false
+	if err == nil {
+		start := time.Now()
+		_, st, complete, err = scanTranscript(path, transcriptState{},
+			func() bool { return time.Since(start) > pauseReadBudget })
+	}
+	switch {
+	case err != nil:
+		fmt.Fprintf(os.Stderr, "note: cannot tell whether %s is paused on Claude Code's dialog (%v); typing as before\n",
+			name, err)
+		return false
+	case !complete:
+		fmt.Fprintf(os.Stderr, "note: cannot tell whether %s is paused on Claude Code's dialog (its transcript was "+
+			"not read to its end within %v); typing as before\n", name, pauseReadBudget)
+		return false
+	}
+	return st.stopped && !st.atPrompt
 }
 
 // Send runs `send`.

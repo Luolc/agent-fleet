@@ -99,22 +99,6 @@ INSERT INTO agents (name, role, job, parent, cwd, thread, state, started_at, pan
     ('m-p', 'worker', 'm', 'm-lead', '/home/agent', '', 'active', $now, '$(agent_field m-p pane_id)', 'claude',
      'claude-test-configured', 'high', '$mtask');
 SQL
-# <agent> <session> <records...>: the agent's session file and transcript.
-session() {
-  local pid sid=$2
-  pid=$("${S[@]}" pane process-info --pane "$(agent_field "$1" pane_id)" |
-    jq -r '.result.process_info.foreground_processes[0].pid')
-  mkdir -p /home/agent/.claude/sessions /home/agent/.claude/projects/-home-agent
-  printf '{"pid":%s,"sessionId":"%s","cwd":"/home/agent","startedAt":1}\n' "$pid" "$2" \
-    > "/home/agent/.claude/sessions/$pid.json"
-  shift 2
-  printf '%s\n' "$@" > "/home/agent/.claude/projects/-home-agent/$sid.jsonl"
-}
-# <uuid> <message id> <model> <stop_reason>
-said() {
-  printf '{"type":"assistant","uuid":"%s","timestamp":"2030-01-02T03:00:00.000Z","isSidechain":false,"message":{"id":"%s","model":"%s","stop_reason":"%s","content":[{"type":"text","text":"0xREFUSEDTEXT"}]}}' \
-    "$1" "$2" "$3" "$4"
-}
 SW=00000000-0000-4000-8000-0000000000a1
 ST=00000000-0000-4000-8000-0000000000a2
 SO=00000000-0000-4000-8000-0000000000a3

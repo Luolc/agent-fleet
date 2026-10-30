@@ -42,7 +42,8 @@ const (
 		"worker), the parent is told with a message headed `[FROM: <caller>]` (`a shell` without " +
 		"FLEET_AGENT): who ended which worker, the work order released as abandoned, the branches " +
 		"kept and the report file. Telling it is best effort: the worker is ended by then, so a " +
-		"parent that is gone, blocked or gives no clear signal leaves a warning on stderr and " +
+		"parent that is gone, blocked, paused on Claude Code's `Session paused` dialog (nothing is " +
+		"typed into it, as for `fleet send`'s exit 8) or gives no clear signal leaves a warning on stderr and " +
 		"the exit code unchanged.\n\n" +
 		"Exit: 0 when the row is ended; 1 when a check refuses (the caller, the row, the report " +
 		"file); 4 when no live row has the name; 5 when atb, git, herdr or the database fails, " +
@@ -202,6 +203,11 @@ func tellParent(h *herdr.Herdr, row *workerRow, name, report string, branches []
 	// The body is never empty and starts with the caller's name, so the
 	// header cannot fail.
 	text, _ := WithHeader(callerName(), body.String())
+	if agent := herdrAgent(h, row.parent); agent != nil && pausedOnDialog(h, row.parent, agent) {
+		fmt.Fprintf(os.Stderr, "warning: %s is ended, but its parent %s was not told: it is paused on Claude Code's "+
+			"`Session paused` dialog, so nothing was typed (press no key there)\n", name, row.parent)
+		return
+	}
 	outcome, err := h.Prompt(row.parent, text)
 	var reason string
 	switch {
