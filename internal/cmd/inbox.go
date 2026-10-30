@@ -287,8 +287,15 @@ func Inbox(args InboxArgs) (exit.Code, error) {
 		fmt.Fprintf(os.Stdout, "message %s was already %s\n", e.MsgID, state)
 		return exit.Ok, nil
 	}
-	msg := inboxMessage(e, mapping, cfg.FednetSocket)
+	return takeMessage(h, conn, scope, cfg, e.MsgID, state, inboxMessage(e, mapping, cfg.FednetSocket))
+}
+
+// takeMessage gets a message reserved for this run (`state` reserved, or
+// typed by an earlier one) to the thread's agent and records the outcome.
+func takeMessage(h *herdr.Herdr, conn *sql.DB, scope string, cfg *config.Scope, msgID, state string,
+	msg inboundMessage) (exit.Code, error) {
 	code, dropped, typed := exit.Ok, false, false
+	var err error
 	if state == "typed" {
 		if code, typed, err = submitTyped(h, conn, scope, msg); err != nil {
 			return 0, err
@@ -298,15 +305,14 @@ func Inbox(args InboxArgs) (exit.Code, error) {
 		if err := answerByMessage(conn, msg); err != nil {
 			return 0, err
 		}
-		code, dropped, err = route(h, conn, scope, cfg, msg)
-		if err != nil {
+		if code, dropped, err = route(h, conn, scope, cfg, msg); err != nil {
 			return 0, err
 		}
 	}
 	if code == exit.Unknown {
 		// The text is in the agent: the retry fednet runs submits it, and
 		// never types it again.
-		if err := setMessage(conn, e.MsgID, "typed"); err != nil {
+		if err := setMessage(conn, msgID, "typed"); err != nil {
 			return 0, err
 		}
 	}
@@ -326,7 +332,7 @@ func Inbox(args InboxArgs) (exit.Code, error) {
 	} else if err := recordLatest(conn, msg); err != nil {
 		return 0, err
 	}
-	return exit.Ok, setMessage(conn, e.MsgID, state)
+	return exit.Ok, setMessage(conn, msgID, state)
 }
 
 // submitTyped finishes a message an earlier run typed into the thread's
