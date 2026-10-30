@@ -95,8 +95,9 @@ func TestAVariantOfTheSameModelIsNoChange(t *testing.T) {
 
 // Only a fallback after a refusal moves a session: another model it runs
 // on with no fallback to it, such as one a person chose with `/model`, is
-// a change only; a fallback before the session's first reply gives the
-// model it started on.
+// a change only, also when that is the model a fallback moved it to before
+// it was switched back; a fallback before the session's first reply gives
+// the model it started on.
 func TestOnlyAFallbackMovesASession(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "s.jsonl")
 	for _, c := range []struct {
@@ -111,6 +112,11 @@ func TestOnlyAFallbackMovesASession(t *testing.T) {
 			"claude-test-large", false},
 		{[]string{fellBack("f-1", "claude-test-large", "claude-test-small"), said("a-1", "m-1", "claude-test-small", "end_turn")},
 			"claude-test-large", true},
+		{[]string{said("a-1", "m-1", "claude-test-large", "refusal"), fellBack("f-1", "claude-test-large", "claude-test-small"),
+			said("a-2", "m-2", "claude-test-small", "end_turn"), said("a-3", "m-3", "claude-test-large", "end_turn"),
+			said("a-4", "m-4", "claude-test-small", "end_turn")}, "claude-test-large", false},
+		{[]string{said("a-1", "m-1", "claude-test-large", "refusal"), fellBack("f-1", "claude-test-large", "claude-test-small"),
+			said("a-2", "m-2", "claude-test-small", "end_turn")}, "claude-test-large", true},
 	} {
 		writeLines(t, path, c.lines...)
 		_, st, _, err := scanTranscript(path, transcriptState{}, never)
