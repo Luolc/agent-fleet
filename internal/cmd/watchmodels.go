@@ -100,23 +100,28 @@ type transcriptRecord struct {
 }
 
 // transcriptState is how far a transcript was read, with the model of
-// its session's first and latest assistant message, and whether the
-// latest is stopped: refused by a safety classifier, or followed by a
+// its session's first and latest assistant message (the first taken from
+// a fallback's original model when the fallback comes first), the model
+// its latest fallback after a refusal moved it to, and whether the latest
+// message is stopped: refused by a safety classifier, or followed by a
 // stop with no fallback, with no assistant message after it.
 type transcriptState struct {
 	readTo     int64
 	startModel string
 	lastModel  string
+	fellTo     string
 	stopped    bool
 	// recovered is whether, at a line of this read, the session was
 	// neither stopped nor moved; not recorded.
 	recovered bool
 }
 
-// moved is whether the session now runs on another model than it started
-// on.
+// moved is whether a fallback after a refusal moved the session to the
+// model it now runs on, another than it started on; a change no fallback
+// made, such as a person's `/model`, is not.
 func (st transcriptState) moved() bool {
-	return realModel(st.startModel) && realModel(st.lastModel) && baseModel(st.startModel) != baseModel(st.lastModel)
+	return realModel(st.startModel) && realModel(st.lastModel) && baseModel(st.startModel) != baseModel(st.lastModel) &&
+		baseModel(st.fellTo) == baseModel(st.lastModel)
 }
 
 // variantSuffix is what a model's name may carry for a variant of the
@@ -202,6 +207,15 @@ func (s *transcriptScan) line(line []byte) {
 	}
 }
 
+// fellBack notes the fallback `rec`: the model it moved the session to,
+// and the one the session started on when no reply came before it.
+func (s *transcriptScan) fellBack(rec transcriptRecord) {
+	if s.st.startModel == "" && realModel(rec.OriginalModel) {
+		s.st.startModel, s.st.lastModel = rec.OriginalModel, rec.OriginalModel
+	}
+	s.st.fellTo = rec.FallbackModel
+}
+
 // read reads one complete line of the transcript.
 func (s *transcriptScan) read(line []byte) {
 	at := s.st.readTo
@@ -224,6 +238,7 @@ func (s *transcriptScan) read(line []byte) {
 	switch {
 	case rec.Type == "system" && rec.Subtype == eventFallback:
 		s.events = append(s.events, event(eventFallback, rec.OriginalModel, rec.FallbackModel))
+		s.fellBack(rec)
 	case rec.Type == "system" && rec.Subtype == eventNoFallback:
 		s.events = append(s.events, event(eventNoFallback, rec.OriginalModel, ""))
 		s.st.stopped = true
@@ -371,11 +386,14 @@ func (r *watchRun) readTranscripts(rows []Live, inHerdr map[string]InHerdr) map[
 }
 
 // sessionRead is what this run read of an agent's session: the session,
-// its transcript's state, whether this run read it to its last complete
-// line, and whether the watch already decided about its present stop or
-// move (`transcripts.decided_at`).
+// its transcript and that file's size before this run read it (-1 when
+// it could not tell), the transcript's state, whether this run read it to
+// its last complete line, and whether the watch already decided about its
+// present stop or move (`transcripts.decided_at`).
 type sessionRead struct {
 	session  string
+	path     string
+	size     int64
 	st       transcriptState
 	complete bool
 	decided  bool
@@ -393,9 +411,9 @@ func (r *watchRun) readTranscript(dir string, live Live) (*sessionRead, error) {
 	var path string
 	var st transcriptState
 	var decided sql.NullInt64
-	err = r.conn.QueryRow("SELECT path, read_to, start_model, last_model, stopped, decided_at FROM transcripts "+
-		"WHERE agent = ?1 AND session = ?2", live.ID, session).Scan(&path, &st.readTo, &st.startModel, &st.lastModel,
-		&st.stopped, &decided)
+	err = r.conn.QueryRow("SELECT path, read_to, start_model, last_model, fell_to, stopped, decided_at FROM "+
+		"transcripts WHERE agent = ?1 AND session = ?2", live.ID, session).Scan(&path, &st.readTo, &st.startModel,
+		&st.lastModel, &st.fellTo, &st.stopped, &decided)
 	if errors.Is(err, sql.ErrNoRows) {
 		if path, err = findTranscript(dir, session); err != nil || path == "" {
 			return nil, err
@@ -403,12 +421,16 @@ func (r *watchRun) readTranscript(dir string, live Live) (*sessionRead, error) {
 	} else if err != nil {
 		return nil, exit.Database(err)
 	}
+	size := int64(-1)
+	if info, err := os.Stat(path); err == nil {
+		size = info.Size()
+	}
 	events, next, complete, err := scanTranscript(path, st,
 		func() bool { return time.Since(r.start) > TranscriptBudget })
 	if err != nil {
 		return nil, err
 	}
-	read := &sessionRead{session: session, st: next, complete: complete, decided: decided.Valid}
+	read := &sessionRead{session: session, path: path, size: size, st: next, complete: complete, decided: decided.Valid}
 	if next == st {
 		return read, nil
 	}
@@ -417,10 +439,11 @@ func (r *watchRun) readTranscript(dir string, live Live) (*sessionRead, error) {
 		return nil, exit.Database(err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.Exec("INSERT INTO transcripts (agent, session, path, read_to, start_model, last_model, stopped) "+
-		"VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) ON CONFLICT (agent, session) DO UPDATE SET read_to = excluded.read_to, "+
-		"start_model = excluded.start_model, last_model = excluded.last_model, stopped = excluded.stopped",
-		live.ID, session, path, next.readTo, next.startModel, next.lastModel, next.stopped); err != nil {
+	if _, err := tx.Exec("INSERT INTO transcripts (agent, session, path, read_to, start_model, last_model, fell_to, "+
+		"stopped) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) ON CONFLICT (agent, session) DO UPDATE SET read_to = "+
+		"excluded.read_to, start_model = excluded.start_model, last_model = excluded.last_model, fell_to = "+
+		"excluded.fell_to, stopped = excluded.stopped",
+		live.ID, session, path, next.readTo, next.startModel, next.lastModel, next.fellTo, next.stopped); err != nil {
 		return nil, exit.Database(err)
 	}
 	var found []modelEvent
@@ -516,7 +539,7 @@ type modelAction struct {
 	why    string
 	from   string
 	to     string
-	detail string
+	detail actionDetail
 	at     int64
 	tell   bool
 	post   bool
@@ -657,13 +680,13 @@ func (r *watchRun) pendingReports() ([]*eventAgent, error) {
 	if err != nil {
 		return nil, err
 	}
-	err = eachRow(r.conn, "SELECT agent, id, action, why, from_model, to_model, detail, at, told_at IS NULL, "+
+	err = eachRow(r.conn, "SELECT agent, id, action, why, from_model, to_model, detail, detail_zh, at, told_at IS NULL, "+
 		"posted_at IS NULL FROM model_actions WHERE told_at IS NULL OR posted_at IS NULL ORDER BY agent, id",
 		func(rows *sql.Rows) error {
 			var id int64
 			var x modelAction
-			if err := rows.Scan(&id, &x.id, &x.action, &x.why, &x.from, &x.to, &x.detail, &x.at, &x.tell,
-				&x.post); err != nil {
+			if err := rows.Scan(&id, &x.id, &x.action, &x.why, &x.from, &x.to, &x.detail.en, &x.detail.zh, &x.at,
+				&x.tell, &x.post); err != nil {
 				return err
 			}
 			ids = append(ids, id)
@@ -789,8 +812,9 @@ func reportMessage(a *eventAgent, rep modelReport, partial bool) string {
 		fmt.Fprintf(&text, "\n%s\n", x.line(a.name))
 	}
 	if len(rep.actions) == 0 && !partial {
-		text.WriteString("\nfleet did nothing about these events: the session is neither stopped nor on another " +
-			"model now, or what fleet does about it is reported on its own.\n")
+		text.WriteString("\nfleet did nothing about these events: the session is not stopped now and no fallback moved " +
+			"it to the model it runs on (a model change no fallback made, such as a person's `/model`, is left to the " +
+			"people), or it is still busy and what fleet does about it is reported on its own.\n")
 	}
 	return text.String()
 }
@@ -814,19 +838,23 @@ func reportPost(a *eventAgent, rep modelReport, partial bool) string {
 		text.WriteString("\n这一轮没有把它的 transcript 读完 (未读完)，所以 fleet 还没有做任何处理，下一轮接着读。\n")
 	}
 	for _, x := range rep.actions {
-		fmt.Fprintf(&text, "\n%s\n", x.zhLine(a.name))
+		fmt.Fprintf(&text, "\n%s\n", x.zhLine(a.name, a.role))
+	}
+	if len(rep.actions) == 0 && !partial {
+		text.WriteString("\nfleet 没有处理这些事件：会话现在没有被拦停，现在用的模型也不是降级换来的 (没有降级记录的模型变化，" +
+			"比如有人用 `/model` 换的，交给人定)；或者它还在忙，之后怎么处理会另外报告。\n")
 	}
 	return text.String()
 }
 
-// whyLine says why the watch acted: the session is stopped, or runs on
-// another model.
+// whyLine says why the watch acted: the session is stopped, or a fallback
+// moved it to another model.
 func (x modelAction) whyLine(zh bool) string {
 	switch {
 	case x.why == "moved" && zh:
-		return fmt.Sprintf("会话现在用的是 `%s`，开始时是 `%s`", x.to, x.from)
+		return fmt.Sprintf("会话被拦下后降级，现在用的是 `%s`，开始时是 `%s`", x.to, x.from)
 	case x.why == "moved":
-		return fmt.Sprintf("the session now runs on %s; it started on %s", x.to, x.from)
+		return fmt.Sprintf("a fallback after a refusal moved the session to %s; it started on %s", x.to, x.from)
 	case zh:
 		return fmt.Sprintf("会话被拦停住了 (最后一条回复被 safety classifier 拦下，之后没有新的回复)，模型 `%s`", x.to)
 	}
@@ -834,7 +862,8 @@ func (x modelAction) whyLine(zh bool) string {
 		"no reply after it", x.to)
 }
 
-// line is the action as the agents read it.
+// line is the action about the lead or worker `name` as its parent reads
+// it; a thread agent has no parent to tell.
 func (x modelAction) line(name string) string {
 	at := time.Unix(x.at, 0).UTC().Format(time.RFC3339)
 	why := x.whyLine(false)
@@ -844,7 +873,7 @@ func (x modelAction) line(name string) string {
 			"started a new one of the same name in a new tab, on the model and effort recorded at its start, with the "+
 			"same directory, task, work order and parent, told to go on from where the work stands without redoing "+
 			"the step that was stopped, as it was or in other words. fleet does this once per agent.",
-			at, name, x.detail, why)
+			at, name, x.detail.en, why)
 	case actionNudged:
 		return fmt.Sprintf("At %s fleet told %s once, as watch, to go on without redoing the step that was stopped, "+
 			"as it was or in other words, because %s; it changed no session and switched no model. fleet does this "+
@@ -854,30 +883,35 @@ func (x modelAction) line(name string) string {
 			"message to go on), so a person decides what to do now.", at, why, name)
 	case actionFailed:
 		return fmt.Sprintf("At %s fleet could not take %s over (%s): %s. A person decides what to do now; fleet "+
-			"will not handle this agent again.", at, name, why, x.detail)
+			"will not handle this agent again.", at, name, why, x.detail.en)
 	}
 	return fmt.Sprintf("At %s fleet only reported that %s: it changed no session, switched no model and typed "+
 		"nothing into %s. A person decides what to do.", at, why, name)
 }
 
-// zhLine is the action as the people in a thread read it.
-func (x modelAction) zhLine(name string) string {
+// zhLine is the action about the agent `name`, of `role`, as the people
+// in a thread read it.
+func (x modelAction) zhLine(name, role string) string {
 	at := time.Unix(x.at, 0).UTC().Format(time.RFC3339)
 	why := x.whyLine(true)
-	switch x.action {
-	case actionReplaced:
+	switch {
+	case x.action == actionReplaced && role == "thread":
+		return fmt.Sprintf("%s fleet 就地换了 `%s` 的会话 (%s)，原因：%s。像回收会话那样结束了原会话 (在工单上留了一份 fleet "+
+			"自己按记录的元数据写的总结)，再像 `inbox` 那样给线程另起了新会话，还是同一张工单，并交代它从线程的现状接着做，"+
+			"不要原样或换个说法重做被拦的那一步。每个线程只自动换一次。", at, name, x.detail.zh, why)
+	case x.action == actionReplaced:
 		return fmt.Sprintf("%s fleet 就地换了 `%s` 的会话 (%s)，原因：%s。关掉原会话，在新 tab 里按原来记下的模型和 effort "+
 			"起了同名的新会话，目录、任务、work order 和派活的一方都不变，并交代它从现状接着做，不要原样或换个说法重做被拦的"+
-			"那一步。每个 agent 只自动换一次。", at, name, x.detail, why)
-	case actionNudged:
+			"那一步。每个 agent 只自动换一次。", at, name, x.detail.zh, why)
+	case x.action == actionNudged:
 		return fmt.Sprintf("%s fleet 以 watch 的名义给 `%s` 发了一次「接着干」，原因：%s。交代它不要原样或换个说法重做被拦"+
 			"的那一步；没有换会话，也没有切模型。每次会话只发一次。", at, name, why)
-	case actionHeld:
+	case x.action == actionHeld:
 		return fmt.Sprintf("%s fleet 这次没有处理 (%s)：`%s` 已经被自动处理过一次 (换过会话或收到过「接着干」)，"+
 			"需要人来定怎么办。", at, why, name)
-	case actionFailed:
+	case x.action == actionFailed:
 		return fmt.Sprintf("%s fleet 没能接手 `%s` (%s)：%s。需要人来定怎么办，fleet 不会再自动处理这个 agent。", at, name,
-			why, x.detail)
+			why, x.detail.zh)
 	}
 	return fmt.Sprintf("%s fleet 只报告 (%s)：没有换会话，没有切换模型，也没有往 `%s` 里输入任何东西。需要人来定怎么办。", at,
 		why, name)

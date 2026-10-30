@@ -65,13 +65,18 @@ func writeLines(t *testing.T, path string, lines ...string) {
 	}
 }
 
+func fellBack(uuid, from, to string) string {
+	return `{"type":"system","subtype":"model_refusal_fallback","uuid":"` + uuid + `","originalModel":"` + from +
+		`","fallbackModel":"` + to + `"}`
+}
+
 func said(uuid, id, model, stop string) string {
 	return `{"type":"assistant","uuid":"` + uuid + `","message":{"id":"` + id + `","model":"` + model +
 		`","stop_reason":"` + stop + `"}}`
 }
 
 // A variant suffix such as `[1m]` names the same model: no change, and
-// the session is not moved; another model is.
+// the session is not moved; another model a fallback moved it to is.
 func TestAVariantOfTheSameModelIsNoChange(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "s.jsonl")
 	writeLines(t, path, said("a-1", "m-1", "claude-test-large[1m]", "end_turn"),
@@ -80,11 +85,39 @@ func TestAVariantOfTheSameModelIsNoChange(t *testing.T) {
 	if err != nil || !complete || len(events) != 0 || st.moved() {
 		t.Fatalf("same model: %+v %+v %v %v", events, st, complete, err)
 	}
-	writeLines(t, path, said("a-1", "m-1", "claude-test-large[1m]", "end_turn"),
-		said("a-2", "m-2", "claude-test-small", "end_turn"))
+	writeLines(t, path, said("a-1", "m-1", "claude-test-large[1m]", "refusal"),
+		fellBack("f-1", "claude-test-large[1m]", "claude-test-small[1m]"), said("a-2", "m-2", "claude-test-small", "end_turn"))
 	events, st, _, err = scanTranscript(path, transcriptState{}, never)
-	if err != nil || len(events) != 1 || events[0].Kind != eventChange || !st.moved() {
+	if err != nil || len(events) != 3 || events[2].Kind != eventChange || !st.moved() {
 		t.Fatalf("another model: %+v %+v %v", events, st, err)
+	}
+}
+
+// Only a fallback after a refusal moves a session: another model it runs
+// on with no fallback to it, such as one a person chose with `/model`, is
+// a change only; a fallback before the session's first reply gives the
+// model it started on.
+func TestOnlyAFallbackMovesASession(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.jsonl")
+	for _, c := range []struct {
+		lines []string
+		start string
+		moved bool
+	}{
+		{[]string{said("a-1", "m-1", "claude-test-large", "end_turn"), said("a-2", "m-2", "claude-test-small", "end_turn")},
+			"claude-test-large", false},
+		{[]string{said("a-1", "m-1", "claude-test-large", "refusal"), fellBack("f-1", "claude-test-large", "claude-test-small"),
+			said("a-2", "m-2", "claude-test-small", "end_turn"), said("a-3", "m-3", "claude-test-medium", "end_turn")},
+			"claude-test-large", false},
+		{[]string{fellBack("f-1", "claude-test-large", "claude-test-small"), said("a-1", "m-1", "claude-test-small", "end_turn")},
+			"claude-test-large", true},
+	} {
+		writeLines(t, path, c.lines...)
+		_, st, _, err := scanTranscript(path, transcriptState{}, never)
+		if err != nil || st.startModel != c.start || st.moved() != c.moved {
+			t.Errorf("%q: started on %q, moved %v; want %q, %v (%v)", c.lines, st.startModel, st.moved(), c.start, c.moved,
+				err)
+		}
 	}
 }
 

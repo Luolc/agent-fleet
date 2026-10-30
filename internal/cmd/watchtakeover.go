@@ -23,6 +23,7 @@ import (
 	"github.com/Luolc/agent-fleet/internal/atb"
 	"github.com/Luolc/agent-fleet/internal/exit"
 	"github.com/Luolc/agent-fleet/internal/fednet"
+	"github.com/Luolc/agent-fleet/internal/herdr"
 	"github.com/Luolc/agent-fleet/internal/identity"
 )
 
@@ -42,8 +43,10 @@ var (
 // the session's `decided_at` is set, and cleared once the session is
 // neither again, as it is when this run read a line after which it was
 // neither. Nothing is decided while the agent is busy (herdr's
-// status not idle or done, the row not active): the next run looks
-// again. `status` is what herdr says of the agent.
+// status not idle or done, the row not active), or when it is no longer
+// as this run read it just before fleet acts (stillAsRead): the next run
+// looks again. `status` is what herdr said of the agent at the run's
+// start.
 func (r *watchRun) actOnSession(id int64, read *sessionRead, status InHerdr) error {
 	moved := read.st.moved()
 	// A stop or move after the session was neither, in what this run
@@ -77,12 +80,12 @@ func (r *watchRun) actOnSession(id int64, read *sessionRead, status InHerdr) err
 	}
 	switch {
 	case a.role != "thread" && a.job == "":
-		_, err := r.decide(a, read, x, actionReported, "", false)
+		_, err := r.decide(a, read, x, actionReported, actionDetail{}, false)
 		return err
 	case handled > 0:
-		_, err := r.decide(a, read, x, actionHeld, "", false)
+		_, err := r.decide(a, read, x, actionHeld, actionDetail{}, false)
 		return err
-	case a.state != "active" || status.Status != "idle" && status.Status != "done":
+	case !r.ready(a, read, status):
 		return nil
 	case a.role == "thread" && moved:
 		return r.replaceThread(a, read, x)
@@ -90,6 +93,30 @@ func (r *watchRun) actOnSession(id int64, read *sessionRead, status InHerdr) err
 		return r.nudge(a, read, x)
 	}
 	return r.takeOver(a, read, x)
+}
+
+// ready is whether the watch may act on `a` now: its row is active, and
+// herdr found it idle or done at the run's start (`status`) and finds it
+// as this run read it just before fleet acts (stillAsRead).
+func (r *watchRun) ready(a *eventAgent, read *sessionRead, status InHerdr) bool {
+	return a.state == "active" && (status.Status == "idle" || status.Status == "done") && r.stillAsRead(a.name, read)
+}
+
+// stillAsRead is whether the agent `name` is, just before the watch acts
+// on its session, as this run found it: herdr says it is idle or done
+// now, and its transcript has not grown since this run read it, so no
+// message reached it in the meantime, to be lost with its session.
+func (r *watchRun) stillAsRead(name string, read *sessionRead) bool {
+	agent, err := r.h.CallOK("agent", "get", name)
+	if err != nil {
+		return false
+	}
+	inner, _ := herdr.Lookup(agent, "agent").(map[string]any)
+	if status, _ := inner["agent_status"].(string); status != "idle" && status != "done" {
+		return false
+	}
+	info, err := os.Stat(read.path)
+	return err == nil && info.Size() == read.size
 }
 
 // threadTakeovers is how many times the watch replaced the session of
@@ -103,19 +130,32 @@ func threadTakeovers(conn *sql.DB, thread string) (int, error) {
 	return n, dbErr(err)
 }
 
+// actionDetail is what the watch adds to an action, such as the panes or
+// why it failed, for the agents (`en`) and for the people in a thread
+// (`zh`); an error quoted in it stays as the tool wrote it.
+type actionDetail struct {
+	en, zh string
+}
+
+// notFinished is a takeover's detail until it finishes.
+var notFinished = actionDetail{"the takeover did not finish: the watch run stopped before it did",
+	"接手没有做完：watch 这一轮在做完之前停了"}
+
 // decide records the action `x` with `action` and `detail` about the
 // session of `a` read in `read`, marks its stop or move decided and, with
 // `count`, counts one more takeover (on the thread for a thread agent
 // moved to another model, else on the row), in one transaction; it
 // returns the action's id.
-func (r *watchRun) decide(a *eventAgent, read *sessionRead, x modelAction, action, detail string, count bool) (int64, error) {
+func (r *watchRun) decide(a *eventAgent, read *sessionRead, x modelAction, action string, detail actionDetail,
+	count bool) (int64, error) {
 	tx, err := r.conn.Begin()
 	if err != nil {
 		return 0, exit.Database(err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	res, err := tx.Exec("INSERT INTO model_actions (agent, session, action, why, from_model, to_model, detail, at) "+
-		"VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)", a.id, read.session, action, x.why, x.from, x.to, detail, r.now)
+	res, err := tx.Exec("INSERT INTO model_actions (agent, session, action, why, from_model, to_model, detail, "+
+		"detail_zh, at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)", a.id, read.session, action, x.why, x.from, x.to,
+		detail.en, detail.zh, r.now)
 	if err != nil {
 		return 0, exit.Database(err)
 	}
@@ -185,7 +225,7 @@ func (r *watchRun) nudge(a *eventAgent, read *sessionRead, x modelAction) error 
 	if got != exit.Ok && got != exit.Unknown {
 		return nil
 	}
-	_, err = r.decide(a, read, x, actionNudged, "", true)
+	_, err = r.decide(a, read, x, actionNudged, actionDetail{}, true)
 	return err
 }
 
@@ -241,12 +281,11 @@ type takeover struct {
 // stops mid-way does not try it again, and the next run reports it.
 func (r *watchRun) takeOver(a *eventAgent, read *sessionRead, x modelAction) error {
 	t, reason := r.takeoverPlan(a, x)
-	if reason != "" {
+	if reason.en != "" {
 		_, err := r.decide(a, read, x, actionFailed, reason, true)
 		return err
 	}
-	id, err := r.decide(a, read, x, actionFailed, "the takeover did not finish: the watch run stopped before it did",
-		true)
+	id, err := r.decide(a, read, x, actionFailed, notFinished, true)
 	if err != nil {
 		return err
 	}
@@ -254,7 +293,13 @@ func (r *watchRun) takeOver(a *eventAgent, read *sessionRead, x modelAction) err
 	if err != nil {
 		return err
 	}
-	_, err = r.conn.Exec("UPDATE model_actions SET action = ?1, detail = ?2 WHERE id = ?3", action, detail, id)
+	return r.finish(id, action, detail)
+}
+
+// finish records how the action `id` ended.
+func (r *watchRun) finish(id int64, action string, detail actionDetail) error {
+	_, err := r.conn.Exec("UPDATE model_actions SET action = ?1, detail = ?2, detail_zh = ?3 WHERE id = ?4", action,
+		detail.en, detail.zh, id)
 	return dbErr(err)
 }
 
@@ -266,75 +311,92 @@ func (r *watchRun) takeOver(a *eventAgent, read *sessionRead, x modelAction) err
 // session goes on; after it, the row stays `starting` with the new pane,
 // as a failed `spawn` leaves it, for the rules on gone agents and stopped
 // screens.
-func (r *watchRun) replace(a *eventAgent, t *takeover) (action, detail string, err error) {
+func (r *watchRun) replace(a *eventAgent, t *takeover) (string, actionDetail, error) {
 	place, err := CreateTab(r.h, t.workspace, t.label, a.cwd, t.id)
 	if err != nil {
-		return actionFailed, "no tab could be opened for a new session, so the old one goes on: " + firstLine(err.Error()), nil
+		why := firstLine(err.Error())
+		return actionFailed, actionDetail{"no tab could be opened for a new session, so the old one goes on: " + why,
+			"开不出新会话的 tab，原会话照常运行：" + why}, nil
 	}
 	if err := closePaneTab(r.h, a.pane, a.name); err != nil {
-		detail = fmt.Sprintf("the old session's tab (pane %s) could not be closed, so it goes on: %s", a.pane,
-			firstLine(err.Error()))
+		why := firstLine(err.Error())
+		d := actionDetail{fmt.Sprintf("the old session's tab (pane %s) could not be closed, so it goes on: %s", a.pane,
+			why), fmt.Sprintf("关不掉原会话的 tab (pane %s)，原会话照常运行：%s", a.pane, why)}
 		if err := closeTab(r.h, place.TabID, a.name); err != nil {
-			detail += fmt.Sprintf("; the new tab %s is left open too: %s", place.TabID, firstLine(err.Error()))
+			why := firstLine(err.Error())
+			d.en += fmt.Sprintf("; the new tab %s is left open too: %s", place.TabID, why)
+			d.zh += fmt.Sprintf("；新开的 tab %s 也没关掉：%s", place.TabID, why)
 		}
-		return actionFailed, detail, nil
+		return actionFailed, d, nil
 	}
 	if _, err := r.conn.Exec("UPDATE agents SET state = 'starting' WHERE id = ?1", a.id); err != nil {
-		return "", "", exit.Database(err)
+		return "", actionDetail{}, exit.Database(err)
 	}
 	var created []string
 	code, err := startAndDeliver(r.h, r.conn, t.id, place, a.cwd, KindClaude, t.model, t.effort, watchSender, t.body,
 		&created)
 	switch {
 	case err != nil:
-		return actionFailed, fmt.Sprintf("the old session (pane %s) was closed, but the new one in pane %s did not "+
-			"start: %s; its row is left `starting`", a.pane, place.PaneID, firstLine(err.Error())), nil
+		why := firstLine(err.Error())
+		return actionFailed, actionDetail{fmt.Sprintf("the old session (pane %s) was closed, but the new one in pane %s "+
+			"did not start: %s; its row is left `starting`", a.pane, place.PaneID, why),
+			fmt.Sprintf("原会话 (pane %s) 已经关掉，但 pane %s 里的新会话没起来：%s；它的 row 停在 `starting`", a.pane,
+				place.PaneID, why)}, nil
 	case code != exit.Ok:
-		return actionFailed, fmt.Sprintf("the old session (pane %s) was closed and the new one started in pane %s, "+
-			"but its first message did not land (exit %d); its row is left `starting`", a.pane, place.PaneID, code), nil
+		return actionFailed, actionDetail{fmt.Sprintf("the old session (pane %s) was closed and the new one started in "+
+			"pane %s, but its first message did not land (exit %d); its row is left `starting`", a.pane, place.PaneID,
+			code), fmt.Sprintf("原会话 (pane %s) 已经关掉，新会话在 pane %s 起来了，但第一条消息没送到 (exit %d)；它的 row 停在 "+
+			"`starting`", a.pane, place.PaneID, code)}, nil
 	}
-	return actionReplaced, fmt.Sprintf("pane %s closed, the new session in pane %s", a.pane, place.PaneID), nil
+	return actionReplaced, actionDetail{fmt.Sprintf("pane %s closed, the new session in pane %s", a.pane, place.PaneID),
+		fmt.Sprintf("关掉了 pane %s，新会话在 pane %s", a.pane, place.PaneID)}, nil
 }
 
 // takeoverPlan is the new session of `a`, its first message rendered as
 // its start rendered it, from the ledger, the scope's config and the
 // task file, with a note on the takeover; or why there is none. It
 // changes nothing.
-func (r *watchRun) takeoverPlan(a *eventAgent, x modelAction) (*takeover, string) {
+func (r *watchRun) takeoverPlan(a *eventAgent, x modelAction) (*takeover, actionDetail) {
 	if a.kind != KindClaude {
-		return nil, "the ledger has no record of the model and effort it was started with (it started before fleet " +
-			"recorded them)"
+		return nil, actionDetail{"the ledger has no record of the model and effort it was started with (it started " +
+			"before fleet recorded them)", "ledger 里没有记它启动时用的模型和 effort (它在 fleet 开始记这两项之前就起了)"}
 	}
 	role, _ := identity.ParseRole(a.role)
 	job, err := openJob(r.conn, a.job)
 	if err != nil || job == nil {
-		return nil, "its job " + a.job + " is not open in the ledger"
+		return nil, actionDetail{"its job " + a.job + " is not open in the ledger",
+			"ledger 里它的 job " + a.job + " 不是 open"}
 	}
 	task, _, err := taskFile(a.task, watchSender)
 	if err != nil {
-		return nil, "its task file cannot be read again: " + firstLine(err.Error())
+		why := firstLine(err.Error())
+		return nil, actionDetail{"its task file cannot be read again: " + why, "读不了它的 task file：" + why}
 	}
 	if info, err := os.Stat(a.cwd); err != nil || !info.IsDir() {
-		return nil, "its directory " + a.cwd + " is gone"
+		return nil, actionDetail{"its directory " + a.cwd + " is gone", "它的目录 " + a.cwd + " 不在了"}
 	}
 	prompt, err := loadPrompt(r.cfg, a.role)
 	if err != nil {
-		return nil, "the " + a.role + " prompt cannot be used: " + firstLine(err.Error())
+		why := firstLine(err.Error())
+		return nil, actionDetail{"the " + a.role + " prompt cannot be used: " + why, a.role + " 的 prompt 用不了：" + why}
 	}
 	cfg, err := jobConfig(job.Repo, job.LeadCwd)
 	if err != nil {
-		return nil, "its job's config cannot be read: " + firstLine(err.Error())
+		why := firstLine(err.Error())
+		return nil, actionDetail{"its job's config cannot be read: " + why, "读不了它的 job 的配置：" + why}
 	}
 	workspaces, err := WorkspacesLabelled(r.h, a.job)
 	if err != nil || len(workspaces) != 1 {
-		return nil, fmt.Sprintf("herdr does not have one workspace labelled %s", a.job)
+		return nil, actionDetail{"herdr does not have one workspace labelled " + a.job,
+			"herdr 里 label 为 " + a.job + " 的 workspace 不是正好一个"}
 	}
 	t := &takeover{workspace: workspaces[0], label: "lead", model: nullable(a.model), effort: nullable(a.effort),
 		id: &identity.Identity{Agent: a.name, Role: role, Parent: a.parent, Scope: r.scope, Job: a.job, Issue: a.issue,
 			Scratch: jobScratch(r.cfg, job.Repo, job.LeadCwd)}}
 	events, err := r.recentEvents(a.id)
 	if err != nil {
-		return nil, "the ledger's events cannot be read: " + firstLine(err.Error())
+		why := firstLine(err.Error())
+		return nil, actionDetail{"the ledger's events cannot be read: " + why, "读不了 ledger 里的事件：" + why}
 	}
 	notes := []string{takeoverNote(a, x, events, agentFiles(t.id.Scratch, a.name, r.cfg.Tilde))}
 	var section string
@@ -342,7 +404,8 @@ func (r *watchRun) takeoverPlan(a *eventAgent, x modelAction) (*takeover, string
 		t.label = strings.TrimPrefix(a.name, a.job+"-")
 		statute, err := worktreeStatuteNote(r.conn, a.cwd)
 		if err != nil {
-			return nil, "the ledger's worktrees cannot be read: " + firstLine(err.Error())
+			why := firstLine(err.Error())
+			return nil, actionDetail{"the ledger's worktrees cannot be read: " + why, "读不了 ledger 里的 worktree：" + why}
 		}
 		notes = append(notes, statute)
 	} else if job.HomeThread == "" && a.parent == plainStarter {
@@ -353,13 +416,15 @@ func (r *watchRun) takeoverPlan(a *eventAgent, x modelAction) (*takeover, string
 			section, err = latestMessageSection(latest)
 		}
 		if err != nil {
-			return nil, "the home thread's latest message cannot be read: " + firstLine(err.Error())
+			why := firstLine(err.Error())
+			return nil, actionDetail{"the home thread's latest message cannot be read: " + why,
+				"读不了 home thread 最新的消息：" + why}
 		}
 	}
 	issue := atb.Issue{Identifier: a.issue, URL: a.issueURL}
 	t.body = prompt.fill(roleSlots(r.cfg, t.id, a.cwd, job.Repo, job.LeadCwd, cfg.MaxAgentsPerJob, issue,
 		job.ParentIssue)) + noteSection(append(notes, lightNote(a.light))...) + section + taskSection(issue.URL, task)
-	return t, ""
+	return t, actionDetail{}
 }
 
 // nullable is a recorded --model or --effort: nil when none was passed.
@@ -443,20 +508,23 @@ func (r *watchRun) replaceThread(a *eventAgent, read *sessionRead, x modelAction
 	if err != nil {
 		return err
 	}
-	reason := ""
+	var reason actionDetail
 	switch {
 	case a.kind != KindClaude:
-		reason = "the ledger has no record of how its session was started (it started before fleet recorded it)"
+		reason = actionDetail{"the ledger has no record of how its session was started (it started before fleet " +
+			"recorded it)", "ledger 里没有记它的会话是怎么起的 (它在 fleet 开始记之前就起了)"}
 	case a.model.Valid || a.effort.Valid:
-		reason = "its session was started with a model or effort a thread's new session would not get"
+		reason = actionDetail{"its session was started with a model or effort a thread's new session would not get",
+			"它的会话启动时指定了模型或 effort，线程的新会话不会用同样的"}
 	case r.cfg.FednetSocket == "":
-		reason = "the scope has no fednet socket, so no session can be ended or started for its thread"
+		reason = actionDetail{"the scope has no fednet socket, so no session can be ended or started for its thread",
+			"这个 scope 没有 fednet socket，没法给它的线程结束或另起会话"}
 	}
-	if reason != "" {
+	if reason.en != "" {
 		_, err := r.decide(a, read, x, actionFailed, reason, true)
 		return err
 	}
-	id, err := r.decide(a, read, x, actionFailed, "the takeover did not finish: the watch run stopped before it did", true)
+	id, err := r.decide(a, read, x, actionFailed, notFinished, true)
 	if err != nil {
 		return err
 	}
@@ -464,51 +532,57 @@ func (r *watchRun) replaceThread(a *eventAgent, read *sessionRead, x modelAction
 	if err != nil {
 		return err
 	}
-	_, err = r.conn.Exec("UPDATE model_actions SET action = ?1, detail = ?2 WHERE id = ?3", action, detail, id)
-	return dbErr(err)
+	return r.finish(id, action, detail)
 }
 
 // renewThread ends the session of `a` and starts the thread's next one; a
 // step that fails is the action's detail, the steps done recorded as
 // `thread end` records them.
-func (r *watchRun) renewThread(a *eventAgent, x modelAction, events []string) (action, detail string, err error) {
+func (r *watchRun) renewThread(a *eventAgent, x modelAction, events []string) (string, actionDetail, error) {
 	e, err := newThreadEnding(r.conn, a.name, false)
 	if err != nil {
-		return "", "", err
+		return "", actionDetail{}, err
 	}
 	me := &identity.Identity{Agent: a.name, Scope: r.scope, Issue: e.issue}
 	if err := e.linearSteps(me, "", threadSummary(x, events)); err != nil {
-		return actionFailed, "the old session's ending stopped at its Linear step, so it goes on: " +
-			firstLine(err.Error()), nil
+		why := firstLine(err.Error())
+		return actionFailed, actionDetail{"the old session's ending stopped at its Linear step, so it goes on: " + why,
+			"结束原会话时停在了 Linear 那一步，原会话照常运行：" + why}, nil
 	}
 	if err := runStep(r.conn, e.key, "footer", func() error {
 		return fednet.Footer(r.cfg.FednetSocket, e.thread, closingLine(replacedLine, e.ticket, e.ticketURL))
 	}); err != nil {
-		return actionFailed, "the old session's closing line could not be posted, so it goes on: " +
-			firstLine(err.Error()), nil
+		why := firstLine(err.Error())
+		return actionFailed, actionDetail{"the old session's closing line could not be posted, so it goes on: " + why,
+			"原会话的结束语发不出去，原会话照常运行：" + why}, nil
 	}
 	if err := runStep(r.conn, e.key, "end-row", func() error { return endRow(r.conn, a.name) }); err != nil {
-		return "", "", err
+		return "", actionDetail{}, err
 	}
-	detail = "the old session ended"
+	d := actionDetail{"the old session ended", "原会话已经结束"}
 	if err := closeOwnTab(r.h, r.conn, a.name); err != nil {
-		detail += fmt.Sprintf(" (its tab is left for watch to close: %s)", firstLine(err.Error()))
+		why := firstLine(err.Error())
+		d.en += fmt.Sprintf(" (its tab is left for watch to close: %s)", why)
+		d.zh += fmt.Sprintf(" (它的 tab 留给 watch 去关：%s)", why)
 	}
 	jobs, err := openJobsOf(r, a.thread)
 	if err != nil {
-		return "", "", err
+		return "", actionDetail{}, err
 	}
 	code, err := toThread(r.h, r.conn, r.scope, r.cfg,
 		inboundMessage{Thread: a.thread, Text: threadTakeoverNote(a, x, events, jobs), Watch: true})
 	switch {
 	case err != nil:
-		return actionFailed, detail + ", but the new one did not start: " + firstLine(err.Error()) +
-			"; the thread's next message starts one", nil
+		why := firstLine(err.Error())
+		return actionFailed, actionDetail{d.en + ", but the new one did not start: " + why +
+			"; the thread's next message starts one", d.zh + "，但新会话没起来：" + why + "；线程里的下一条消息会起一个"}, nil
 	case code != exit.Ok:
-		return actionFailed, fmt.Sprintf("%s, but the new one did not get its first message (exit %d); the thread's "+
-			"next message reaches it or starts one", detail, code), nil
+		return actionFailed, actionDetail{fmt.Sprintf("%s, but the new one did not get its first message (exit %d); "+
+			"the thread's next message reaches it or starts one", d.en, code),
+			fmt.Sprintf("%s，但新会话没收到第一条消息 (exit %d)；线程里的下一条消息会送到它那里，或者另起一个", d.zh, code)}, nil
 	}
-	return actionReplaced, detail + ", a new session started for the thread", nil
+	return actionReplaced, actionDetail{d.en + ", a new session started for the thread", d.zh + "，给线程另起了一个新会话"},
+		nil
 }
 
 // threadSummary is the summary of a thread's session the watch ended:

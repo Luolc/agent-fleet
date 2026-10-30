@@ -253,7 +253,7 @@ func TestTheModelWatchTakesOverWithoutTheConversation(t *testing.T) {
 	}
 	hasAll(t, "j-w's first message", first[0], "[FROM: watch]\nYou are a worker run by fleet: j-w",
 		"## Note from fleet\n\nThis session takes over from an earlier session of j-w, which fleet closed: in it, "+
-			"the session now runs on claude-test-small; it started on claude-test-large.",
+			"a fallback after a refusal moved the session to claude-test-small; it started on claude-test-large.",
 		"2030-01-02T03:00:03.000Z model_refusal_fallback: claude-test-large -> claude-test-small (record f-1)",
 		"the same name, task, work order (EX-9), directory and parent (j-lead)",
 		"your directory "+filepath.Join(w.dir, "work")+" (read its branch, HEAD and `git status` first)",
@@ -289,8 +289,8 @@ func TestTheModelWatchTakesOverWithoutTheConversation(t *testing.T) {
 		"2030-01-02T03:00:02.000Z stopped by a safety classifier (stop_reason refusal) on claude-test-large (record a-2)",
 		"2030-01-02T03:00:04.000Z model_change: claude-test-large -> claude-test-small, the session started on "+
 			"claude-test-large (record a-4)",
-		"fleet replaced the session of j-w (pane p3 closed, the new session in pane pn1) because the session now "+
-			"runs on claude-test-small",
+		"fleet replaced the session of j-w (pane p3 closed, the new session in pane pn1) because a fallback after a "+
+			"refusal moved the session to claude-test-small",
 		"What fleet did about it is said above.")
 	for _, name := range []string{"j-ok", "j-pi"} {
 		if got := w.promptsTo(name); len(got) != 0 || strings.Contains(out.stdout, "model event: "+name) {
@@ -306,7 +306,7 @@ func TestTheModelWatchTakesOverWithoutTheConversation(t *testing.T) {
 		"fleet 以 watch 的名义给 `thread-c1` 发了一次「接着干」")
 	hasAll(t, "the worker's post", posts[1], "C1/1.0 fleet watch：j-w 的 Claude Code 会话出现了 3 个模型事件",
 		"降级 (`model_refusal_fallback`)：`claude-test-large` → `claude-test-small`，记录 `f-1`",
-		"fleet 就地换了 `j-w` 的会话 (pane p3 closed, the new session in pane pn1)，原因：会话现在用的是 `claude-test-small`")
+		"fleet 就地换了 `j-w` 的会话 (关掉了 pane p3，新会话在 pane pn1)，原因：会话被拦下后降级，现在用的是 `claude-test-small`")
 
 	// The next run finds nothing new and does nothing.
 	before, logged := len(w.prompts()), len(w.posts())
@@ -351,6 +351,135 @@ func TestTheModelWatchLeavesASecondEventToThePeople(t *testing.T) {
 	}
 	hasAll(t, "the thread agent's post", posts[0], "记录 `t-6`", "`thread-c1` 已经被自动处理过一次", "需要人来定怎么办")
 	hasAll(t, "the worker's post", posts[1], "记录 `n-1`", "`j-w` 已经被自动处理过一次", "需要人来定怎么办")
+}
+
+// A lead and a worker stopped on their own models, with no fallback, get
+// new sessions too: the lead in a tab labelled `lead` with the home
+// thread's latest message, told to hand the stopped step to the people in
+// the home thread, the worker told to hand it to its lead.
+func TestTheModelWatchTakesOverAStoppedLeadAndWorker(t *testing.T) {
+	w := modelWorld(t)
+	lead := filepath.Join(w.dir, "lead")
+	if err := os.MkdirAll(lead, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	w.write(filepath.Join(w.dir, "tasks", "j-lead.md"), "# Run the parser job\n")
+	w.exec("UPDATE agents SET cwd = '"+lead+"', task = '"+filepath.Join(w.dir, "tasks", "j-lead.md")+"' WHERE name = 'j-lead'",
+		"INSERT INTO threads (thread, slug, channel, mapping, cwd, sessions, created_at, last_text, last_user, last_ts) "+
+			"VALUES ('C1/1.0', 'c1-1-0', 'C1', 'repo-example', '"+lead+"', 1, 0, 'Please look at the parser', 'U1', "+
+			"'1.000100')")
+	w.herdrList("thread-c1 working 1", "j-lead idle 1", "j-w idle 1", "j-ok working 1", "j-pi working 1 pi")
+	w.claudeSession("p2", 4102, "00000000-0000-4000-8000-000000000006",
+		assistant("l-1", "2030-01-02T06:00:00.000Z", "msg-l1", "claude-test-large", "end_turn"),
+		assistant("l-2", "2030-01-02T06:00:01.000Z", "msg-l2", "claude-test-large", "refusal"))
+	w.claudeSession("p3", 4103, sessionWorker,
+		assistant("a-1", "2030-01-02T03:00:01.000Z", "msg-1", "claude-test-large", "tool_use"),
+		noFallback("a-2", "2030-01-02T03:00:02.000Z", "claude-test-large"))
+	w.watchAt(time.Minute, 0)
+	w.noCommandTyped()
+	if closed := strings.Join(strings.Fields(w.raw("closed")), " "); closed != "p2 p3" {
+		t.Errorf("closed %q", closed)
+	}
+	starts := strings.Split(strings.TrimSpace(w.raw("starts")), "\n")
+	if len(starts) != 2 || !strings.HasPrefix(starts[0], "agent start j-lead --kind claude --pane pn1 ") ||
+		!strings.HasPrefix(starts[1], "agent start j-w --kind claude --pane pn2 ") {
+		t.Fatalf("starts %q", starts)
+	}
+	hasAll(t, "the new tabs", w.raw("tab-argv"), "--workspace w-j --label lead --no-focus --cwd "+lead,
+		"--workspace w-j --label w ")
+	stopped := "in it, the session is stopped: its latest message, on claude-test-large, was stopped by a safety classifier"
+	first := w.promptsTo("j-lead")
+	if len(first) == 0 {
+		t.Fatal("j-lead got nothing")
+	}
+	hasAll(t, "j-lead's first message", first[0], "[FROM: watch]\nYou are a lead", stopped,
+		"## Latest message from a person in the home thread", "Please look at the parser",
+		"hand that step to the people in the home thread with `fleet ask-thread --card <file>`",
+		"## Your task\n\n# Run the parser job")
+	if strings.Contains(first[0], "fleet send thread-c1") {
+		t.Errorf("the lead was told to hand the step to its parent:\n%s", first[0])
+	}
+	worker := w.promptsTo("j-w")
+	if len(worker) != 1 {
+		t.Fatalf("j-w got %q", worker)
+	}
+	hasAll(t, "j-w's first message", worker[0], stopped, "model_refusal_no_fallback: stopped on claude-test-large",
+		"hand that step to your lead j-lead with `fleet send j-lead --file <file>`")
+	if got := w.query("SELECT group_concat(action || ' ' || why, ',') FROM model_actions"); got != "replaced stopped,replaced stopped" {
+		t.Errorf("actions: %s", got)
+	}
+}
+
+// A model change no fallback made, such as a person's `/model`, is only
+// reported: no new session, no message to the agent, nothing decided.
+func TestTheModelWatchLeavesAChangeNoFallbackMadeToThePeople(t *testing.T) {
+	w := modelWorld(t)
+	w.claudeSession("p3", 4103, sessionWorker,
+		assistant("a-1", "2030-01-02T03:00:01.000Z", "msg-1", "claude-test-large", "end_turn"),
+		assistant("a-2", "2030-01-02T03:00:02.000Z", "msg-2", "claude-test-small", "end_turn"))
+	w.claudeSession("p1", 4101, sessionThread,
+		assistant("t-1", "2030-01-02T04:00:00.000Z", "msg-t1", "claude-test-large", "end_turn"),
+		assistant("t-2", "2030-01-02T04:00:01.000Z", "msg-t2", "claude-test-small", "end_turn"))
+	w.watchAt(time.Minute, 0)
+	if w.raw("tab-argv") != "" || len(w.promptsTo("j-w")) != 0 || len(w.promptsTo("thread-c1")) != 0 ||
+		w.query("SELECT count(*) FROM model_actions") != "0" {
+		t.Fatalf("acted: %q %q", w.prompts(), w.raw("tab-argv"))
+	}
+	hasAll(t, "the message to j-lead", w.promptsTo("j-lead")[0], "model_change: claude-test-large -> claude-test-small",
+		"fleet did nothing about these events", "a model change no fallback made, such as a person's `/model`, is left "+
+			"to the people")
+	hasAll(t, "the posts", strings.Join(w.posts(), "\n"), "记录 `t-2`", "没有降级记录的模型变化")
+}
+
+// Just before it acts, the watch looks again: an agent herdr no longer
+// finds idle, or whose transcript grew since this run read it, has
+// nothing done this run, and the next run acts.
+func TestTheModelWatchLooksAgainJustBeforeItActs(t *testing.T) {
+	w := modelWorld(t)
+	w.file("status-j-w", "working")
+	transcript := filepath.Join(w.dir, "home", ".claude", "projects", "-work-example", sessionThread+".jsonl")
+	hook := filepath.Join(w.dir, "on-get-thread-c1")
+	w.write(hook, "#!/bin/sh\nprintf '%s' '"+strings.TrimSpace(user("t-9", "2030-01-02T04:00:02.000Z"))+"\n' >> '"+
+		transcript+"'\nrm -f '"+hook+"'\n")
+	if err := os.Chmod(hook, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	w.watchAt(time.Minute, 0)
+	if w.raw("tab-argv") != "" || len(w.promptsTo("j-w")) != 0 || len(w.promptsTo("thread-c1")) != 0 ||
+		w.query("SELECT count(*) FROM model_actions") != "0" {
+		t.Fatalf("acted: %q %q", w.prompts(), w.raw("tab-argv"))
+	}
+	if _, err := os.Stat(hook); err == nil {
+		t.Fatal("the watch did not look at thread-c1 again")
+	}
+	if err := os.Remove(filepath.Join(w.dir, "status-j-w")); err != nil {
+		t.Fatal(err)
+	}
+	w.watchAt(2*time.Minute, 0)
+	if len(w.promptsTo("j-w")) != 1 || len(w.promptsTo("thread-c1")) != 1 {
+		t.Errorf("not acted on next run: %q", w.prompts())
+	}
+}
+
+// A watch's worker has no job to start it again in: its stop is only
+// reported, busy or not.
+func TestTheModelWatchOnlyReportsAWatchWorker(t *testing.T) {
+	w := modelWorld(t)
+	w.exec(fmt.Sprintf("INSERT INTO agents (name, role, parent, task, pane_id, state, started_at, kind) VALUES "+
+		"('watch-fix-p1', 'worker', 'watch', '{\"watch\": \"fix\", \"key\": \"p1\", \"job\": \"j\"}', 'p8', "+
+		"'active', %d, 'claude')", t0))
+	w.herdrList("thread-c1 working 1", "j-lead idle 1", "j-w working 1", "j-ok working 1", "j-pi working 1 pi",
+		"watch-fix-p1 working 8")
+	w.screen("watch-fix-p1", claude("⏺ watch-fix-p1", "1s", "2hr 59m"))
+	w.claudeSession("p8", 4108, "00000000-0000-4000-8000-000000000007",
+		assistant("x-1", "2030-01-02T07:00:00.000Z", "msg-x1", "claude-test-large", "refusal"))
+	w.watchAt(time.Minute, 0)
+	if w.raw("tab-argv") != "" || len(w.promptsTo("watch-fix-p1")) != 0 {
+		t.Fatalf("acted: %q %q", w.prompts(), w.raw("tab-argv"))
+	}
+	if got := w.query("SELECT group_concat(action || ' ' || why, ',') FROM model_actions"); got != "reported stopped" {
+		t.Errorf("actions: %s", got)
+	}
 }
 
 // threadKeyC1 is modelWorld's thread, and threadC1 the name its agents
@@ -403,7 +532,7 @@ func TestTheModelWatchStartsANewSessionForAThreadAgentMovedToAnotherModel(t *tes
 	out := w.watchAt(time.Minute, 0, linearKey)
 	w.noCommandTyped()
 	for _, text := range []string{out.stdout, out.stderr, w.raw("prompts"), w.raw("fednet.log"), w.raw("atb.log"),
-		w.raw("starts")} {
+		w.raw("atb-bodies"), w.raw("starts")} {
 		if strings.Contains(text, refusedText) {
 			t.Errorf("the conversation's text was passed on:\n%s", text)
 		}
@@ -423,6 +552,15 @@ func TestTheModelWatchStartsANewSessionForAThreadAgentMovedToAnotherModel(t *tes
 	atb := w.log("atb.log")
 	hasAll(t, "atb's calls", atb, "linear comment TH-7 --body-file F", "linear release TH-7 --agent "+threadC1,
 		"linear claim TH-7 --agent "+threadC1)
+	hasAll(t, "the summary on the ticket", w.raw("atb-bodies"), "fleet watch ended this session and started a new one "+
+		"for the thread, because a fallback after a refusal moved the session to claude-test-small; it started on claude-test-large.",
+		"The agent left no summary; fleet read none of the conversation.",
+		"2030-01-02T04:00:01.000Z model_refusal_fallback: claude-test-large -> claude-test-small (record t-2)")
+	for _, leak := range []string{sessionThread, ".jsonl"} {
+		if strings.Contains(w.raw("atb-bodies"), leak) {
+			t.Errorf("%q in the summary", leak)
+		}
+	}
 	if got := w.query("SELECT sessions || ' ' || takeovers FROM threads"); got != "2 1" {
 		t.Errorf("the thread: %s", got)
 	}
@@ -432,7 +570,7 @@ func TestTheModelWatchStartsANewSessionForAThreadAgentMovedToAnotherModel(t *tes
 	}
 	hasAll(t, "the new session's first message", first[0], "[FROM: watch]",
 		"## The message\n\nfleet watch, watch `model-changes`: this session takes over from the session before it on "+
-			"this thread, which fleet ended: in it, the session now runs on claude-test-small; it started on "+
+			"this thread, which fleet ended: in it, a fallback after a refusal moved the session to claude-test-small; it started on "+
 			"claude-test-large.",
 		"(record t-2)", "Do not redo the step that was stopped, neither as it was nor in other words",
 		"ask the people in the thread about that step")
@@ -442,21 +580,22 @@ func TestTheModelWatchStartsANewSessionForAThreadAgentMovedToAnotherModel(t *tes
 		}
 	}
 	hasAll(t, "the closing line", w.raw("fednet.log"), "fleet 结束了这次会话并另起了一个新会话")
-	hasAll(t, "the post", strings.Join(w.posts(), "\n"), "fleet 就地换了 `"+threadC1+"` 的会话 (the old session ended, "+
-		"a new session started for the thread)")
+	hasAll(t, "the post", strings.Join(w.posts(), "\n"), "fleet 就地换了 `"+threadC1+"` 的会话 (原会话已经结束，给线程另起了"+
+		"一个新会话)", "还是同一张工单", "每个线程只自动换一次")
 
 	// The new session moved too: left to the people.
 	before, starts1 := len(w.prompts()), strings.Count(w.raw("starts"), "agent start")
 	w.claudeSession("pn1", 4107, sessionNew,
-		assistant("n-1", "2030-01-02T09:00:00.000Z", "msg-n1", "claude-test-large", "end_turn"),
-		assistant("n-2", "2030-01-02T09:00:01.000Z", "msg-n2", "claude-test-small", "end_turn"))
+		assistant("n-1", "2030-01-02T09:00:00.000Z", "msg-n1", "claude-test-large", "refusal"),
+		fallback("n-2", "2030-01-02T09:00:00.500Z", "claude-test-large", "claude-test-small"),
+		assistant("n-3", "2030-01-02T09:00:01.000Z", "msg-n2", "claude-test-small", "end_turn"))
 	w.watchAt(2*time.Minute, 0, linearKey)
 	if strings.Count(w.raw("starts"), "agent start") != starts1 || len(w.prompts()) != before ||
 		len(strings.Fields(w.raw("closed"))) != 1 {
 		t.Errorf("acted again: %q", w.prompts()[before:])
 	}
 	posts := w.posts()
-	hasAll(t, "the last post", posts[len(posts)-1], "记录 `n-2`", "已经被自动处理过一次", "需要人来定怎么办")
+	hasAll(t, "the last post", posts[len(posts)-1], "记录 `n-3`", "已经被自动处理过一次", "需要人来定怎么办")
 }
 
 // A session still working is left to finish its turn: its events are
@@ -579,9 +718,9 @@ func TestTheModelWatchDoesNotGuessAModelTheLedgerLacks(t *testing.T) {
 	if w.raw("tab-argv") != "" || w.raw("starts") != "" || len(w.promptsTo("j-w")) != 0 {
 		t.Fatalf("taken over: %q %q", w.raw("tab-argv"), w.raw("starts"))
 	}
-	hasAll(t, "the message to j-lead", w.promptsTo("j-lead")[0], "fleet could not take j-w over (the session now runs "+
-		"on claude-test-small; it started on claude-test-large): the ledger has no record of the model and effort it "+
-		"was started with", "fleet will not handle this agent again")
+	hasAll(t, "the message to j-lead", w.promptsTo("j-lead")[0], "fleet could not take j-w over (a fallback after a "+
+		"refusal moved the session to claude-test-small; it started on claude-test-large): the ledger has no record of "+
+		"the model and effort it was started with", "fleet will not handle this agent again")
 	if got := w.query("SELECT takeovers || ' ' || state FROM agents WHERE name = 'j-w'"); got != "1 active" {
 		t.Errorf("j-w: %s", got)
 	}
