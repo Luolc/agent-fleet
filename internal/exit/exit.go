@@ -30,6 +30,10 @@ const (
 	// Failed means the CI run `ci wait` waited for ended in anything but
 	// success, or a job of it failed while it still runs.
 	Failed Code = 7
+	// Paused means the target is a Claude Code session paused on its
+	// `Session paused` dialog: nothing was typed, and no key may be
+	// pressed there, since one could switch the session's model.
+	Paused Code = 8
 )
 
 // Failure is a command failure: the exit code plus the message printed to

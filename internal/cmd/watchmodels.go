@@ -347,8 +347,8 @@ func jsonInt(value any) int64 {
 // the processes in the pane's foreground, those Claude Code registered in
 // `<dir>/sessions/<pid>.json`, the one started first (a Claude Code the
 // agent runs in its own commands starts after it); "" when none is.
-func (r *watchRun) sessionOf(dir, pane string) (string, error) {
-	result, err := r.h.CallOK("pane", "process-info", "--pane", pane)
+func sessionOf(h *herdr.Herdr, dir, pane string) (string, error) {
+	result, err := h.CallOK("pane", "process-info", "--pane", pane)
 	if err != nil {
 		return "", err
 	}
@@ -464,7 +464,7 @@ type sessionRead struct {
 // found, in one transaction; each new event is a line on stdout. Nil
 // while the agent has no session or transcript yet.
 func (r *watchRun) readTranscript(dir string, live Live) (*sessionRead, error) {
-	session, err := r.sessionOf(dir, live.Pane)
+	session, err := sessionOf(r.h, dir, live.Pane)
 	if err != nil || session == "" {
 		return nil, err
 	}

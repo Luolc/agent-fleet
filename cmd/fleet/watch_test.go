@@ -35,7 +35,7 @@ const rule = "──────────────────────
 // `agent start` appends its argv to <dir>/starts; `pane rename` does
 // nothing; `agent get <name>` first runs <dir>/on-get-<name> when there
 // is one, and reports the agent with the status in <dir>/status-<name>,
-// idle without it.
+// idle without it, and the pane in <dir>/pane-<name>, none without it.
 func watchHerdr(dir, reply string) string {
 	return `#!/bin/sh
 if [ "$1" = --session ]; then shift 2; fi
@@ -65,7 +65,8 @@ REPLY
     [ -x "$dir/on-get-$3" ] && "$dir/on-get-$3"
     if grep -q "\"name\":\"$3\"" "$dir/list.json"; then
       status=$(cat "$dir/status-$3" 2>/dev/null || echo idle)
-      echo '{"result":{"agent":{"name":"'"$3"'","agent_status":"'"$status"'"}}}'
+      pane=$(cat "$dir/pane-$3" 2>/dev/null)
+      echo '{"result":{"agent":{"name":"'"$3"'","agent_status":"'"$status"'","pane_id":"'"$pane"'"}}}'
     else
       echo '{"error":{"code":"agent_not_found","message":"no such agent"}}'
     fi

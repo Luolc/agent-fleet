@@ -20,9 +20,9 @@ const refusedText = "0xREFUSEDTEXT"
 // claudeSession puts a Claude Code session in `pane`: its process `pid`
 // in the pane's foreground, the session file Claude Code writes for it,
 // and its transcript, of `records`.
-func (w *watchWorld) claudeSession(pane string, pid int, session string, records ...string) {
+func (w *world) claudeSession(pane string, pid int, session string, records ...string) {
 	w.t.Helper()
-	w.file("procinfo-"+pane, fmt.Sprintf(`{"result":{"process_info":{"shell_pid":1,"foreground_processes":`+
+	w.write(filepath.Join(w.dir, "procinfo-"+pane), fmt.Sprintf(`{"result":{"process_info":{"shell_pid":1,"foreground_processes":`+
 		`[{"pid":%d,"name":"claude"}]}}}`, pid))
 	claude := filepath.Join(w.dir, "home", ".claude")
 	w.write(filepath.Join(claude, "sessions", fmt.Sprintf("%d.json", pid)),
@@ -44,7 +44,7 @@ func (w *watchWorld) appendRecords(session string, records ...string) {
 	}
 }
 
-func (w *watchWorld) write(path, body string) {
+func (w *world) write(path, body string) {
 	w.t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		w.t.Fatal(err)

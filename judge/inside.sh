@@ -100,6 +100,25 @@ proc_env() {
   pid=$("${S[@]}" pane process-info --pane "$pane" | jq -r '.result.process_info.foreground_processes[0].pid')
   tr '\0' '\n' < "/proc/$pid/environ" | grep "^$P" | sort | tr '\n' ' '
 }
+# <agent> <session> <records...>: the session file and the transcript
+# Claude Code would write for the fake Claude of <agent> in herdr session S,
+# under ~/.claude, found through the pid `herdr pane process-info` gives.
+session() {
+  local pid sid=$2
+  pid=$("${S[@]}" pane process-info --pane "$(agent_field "$1" pane_id)" |
+    jq -r '.result.process_info.foreground_processes[0].pid')
+  mkdir -p /home/agent/.claude/sessions /home/agent/.claude/projects/-home-agent
+  printf '{"pid":%s,"sessionId":"%s","cwd":"/home/agent","startedAt":1}\n' "$pid" "$2" \
+    > "/home/agent/.claude/sessions/$pid.json"
+  shift 2
+  printf '%s\n' "$@" > "/home/agent/.claude/projects/-home-agent/$sid.jsonl"
+}
+# <uuid> <message id> <model> <stop_reason>: an assistant record, its text
+# 0xREFUSEDTEXT, which nothing fleet writes may carry.
+said() {
+  printf '{"type":"assistant","uuid":"%s","timestamp":"2030-01-02T03:00:00.000Z","isSidechain":false,"message":{"id":"%s","model":"%s","stop_reason":"%s","content":[{"type":"text","text":"0xREFUSEDTEXT"}]}}' \
+    "$1" "$2" "$3" "$4"
+}
 # The whole of an agent's first message, from the fake's log, read once the
 # turn is over.
 received() { screen "$1" >/dev/null; cat "$fake/received-$(agent_field "$1" pane_id)" 2>/dev/null; }

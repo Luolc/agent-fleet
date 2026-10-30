@@ -179,8 +179,9 @@ const (
 		"`worker_stale` and `lead_question` of a single-repo job come from its repo's " +
 		"`.fleet/config.json`. FLEET_WATCH_NOW (seconds since the epoch) sets the run's clock.\n\n" +
 		"Exit: 0 when every rule that fired was carried out; 1 when the scope is not a scope name, " +
-		"a config file or FLEET_WATCH_NOW is invalid, or another run holds the lock; 2, 3 or 4 when " +
-		"a delivery gave no clear signal, found the agent blocked, or did not find it, as for " +
+		"a config file or FLEET_WATCH_NOW is invalid, or another run holds the lock; 2, 3, 4 or 8 when " +
+		"a delivery gave no clear signal, found the agent blocked, did not find it, or found it paused on " +
+		"Claude Code's `Session paused` dialog, as for " +
 		"`send` (the next run tries again where that matters); 5 when a read fails (nothing " +
 		"done), a watch's source or an action fails (the rest still done), the run is out of time, or the ledger does " +
 		"not exist."

@@ -45,3 +45,32 @@ check "send: exit 0 before the prompt appears" 0 "$rc"
 out=$(echo "again" | sender send fake 2>&1); rc=$?
 check "send: exit 3 on agent_blocked" 3 "$rc"
 has "send: blocked target's screen is printed" "$out" "Do you want to proceed?"
+
+# A Claude Code session paused on its `Session paused` dialog (refused,
+# retried, gone on with a tool, the turn's next refusal not recorded), which
+# herdr reads as idle, gets nothing typed: exit 8. One waiting at its prompt
+# after a stop with no fallback gets the message.
+check "send: paused-s starts idle" idle "$(start_fake paused-s)"
+check "send: prompt-s starts idle" idle "$(start_fake prompt-s)"
+session paused-s 00000000-0000-4000-8000-0000000000b1 "$(said s-1 msg-s1 claude-test-large end_turn)" \
+  "$(said s-2 msg-s2 claude-test-large refusal)" \
+  '{"type":"user","uuid":"s-3","message":{"content":[{"type":"tool_result","tool_use_id":"t-s2","content":"0xREFUSEDTEXT"}]}}' \
+  "$(said s-4 msg-s4 claude-test-large tool_use)"
+session prompt-s 00000000-0000-4000-8000-0000000000b2 "$(said s-1 msg-s1 claude-test-large end_turn)" \
+  "$(said s-2 msg-s2 claude-test-large refusal)" \
+  '{"type":"system","subtype":"model_refusal_no_fallback","uuid":"s-3","timestamp":"2030-01-02T03:00:05.000Z","originalModel":"claude-test-large","content":"0xREFUSEDTEXT"}'
+out=$(echo "to the dialog 0xD1A1" | sender send paused-s 2>&1); rc=$?
+check "send: exit 8 to a session paused on the dialog" 8 "$rc"
+has "send: says to press no key" "$out" "paused on Claude Code's \`Session paused\` dialog" "Press no key"
+lacks "send: nothing of the conversation in the output" "$out" "0xREFUSEDTEXT"
+lacks "send: nothing typed into the paused session" "$(received paused-s)" "0xD1A1"
+check "send: the paused session is left idle" idle "$(agent_field paused-s agent_status)"
+echo "at the prompt 0xA7A7" | sender send prompt-s >/dev/null; rc=$?
+check "send: exit 0 to a session at its prompt after a stop" 0 "$rc"
+has "send: the session at its prompt gets the message" "$(received prompt-s)" "0xA7A7"
+# Their workspaces closed, so later suites find only the agents they expect.
+for name in paused-s prompt-s; do
+  "${S[@]}" workspace close "$(agent_field "$name" workspace_id)" >/dev/null
+done
+check "send: paused-s and prompt-s are gone" "agent_not_found agent_not_found" \
+  "$(agent_field paused-s agent_status) $(agent_field prompt-s agent_status)"

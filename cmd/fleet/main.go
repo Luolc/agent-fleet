@@ -40,7 +40,9 @@ const longAbout = "Runs and coordinates coding agents through herdr.\n\n" +
 	"  4  target not found\n" +
 	"  5  environment error (herdr, atb, git or the database failed)\n" +
 	"  6  done, but a step after it failed: stdout is as for 0, and the command's help names the step\n" +
-	"  7  the CI run `fleet ci wait` waited for ended in anything but success"
+	"  7  the CI run `fleet ci wait` waited for ended in anything but success\n" +
+	"  8  target paused on Claude Code's `Session paused` dialog: nothing typed, and press no key there\n" +
+	"     (a key can switch its model); see `fleet send --help`"
 
 const scopeHelp = "Scope to act in: its ledger, settings and herdr session fleet-<NAME>. " +
 	"Default: FLEET_SCOPE, which every agent has, then `main`. Use it from a timer or a plain shell"

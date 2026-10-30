@@ -16,7 +16,8 @@ import (
 // started, so herdr lists no agent in its pane. `tab close` and `agent
 // prompt <target>` are logged to <dir>/calls with atb's calls, the prompt's
 // text to <dir>/prompt-<target>; a prompt to a target with <dir>/gone-<target>
-// is agent_not_found. Returns the worktrees' directory and the main checkout.
+// is agent_not_found; `agent get <name>` prints <dir>/get-<name>, and `pane
+// process-info --pane <pane>` <dir>/procinfo-<pane>, none found without. Returns the worktrees' directory and the main checkout.
 func workerEndWorld(t *testing.T) (w *world, wt, checkout string) {
 	t.Helper()
 	w = newWorld(t)
@@ -61,6 +62,9 @@ case "$1 $2" in
     if [ -e "$dir/gone-$3" ]; then echo '{"error":{"code":"agent_not_found","message":"no agent"}}'; else
       echo "herdr $1 $2 $3" >> "$dir/calls"; printf '%s' "$4" > "$dir/prompt-$3"
       echo '{"result":{"type":"agent_prompted"}}'; fi ;;
+  "agent get") cat "$dir/get-$3" 2>/dev/null || echo '{"error":{"code":"agent_not_found","message":"no agent"}}' ;;
+  "pane process-info")
+    cat "$dir/procinfo-$4" 2>/dev/null || echo '{"result":{"process_info":{"foreground_processes":[]}}}' ;;
   *) echo "fake herdr: unexpected command: $*" >&2; exit 2 ;;
 esac
 `
@@ -254,5 +258,21 @@ func TestWorkerEndByAThreadAgentTellsTheLeadAndAGoneLeadIsOnlyAWarning(t *testin
 	if out.code != 0 || state(w, "item-1-b") != "ended" ||
 		out.stderr != "warning: item-1-b is ended, but its parent item-1-lead was not told: it is not found\n" {
 		t.Errorf("%+v", out)
+	}
+}
+
+// A lead paused on Claude Code's `Session paused` dialog is typed nothing:
+// the worker is ended all the same, with a warning.
+func TestWorkerEndTypesNothingIntoALeadPausedOnItsDialog(t *testing.T) {
+	w, _, _ := workerEndWorld(t)
+	w.write(filepath.Join(w.dir, "get-item-1-lead"),
+		`{"result":{"agent":{"name":"item-1-lead","agent":"claude","agent_status":"idle","pane_id":"p0"}}}`)
+	w.claudeSession("p0", 4100, sessionThread, pausedRecords()...)
+	out := w.run("", []string{"worker", "end", "item-1-b"}, "FLEET_AGENT=thread-1", "FLEET_ROLE=thread",
+		"FLEET_SCOPE="+scope, linearKey)
+	if out.code != 0 || state(w, "item-1-b") != "ended" || strings.Contains(w.calls(), "agent prompt") ||
+		out.stderr != "warning: item-1-b is ended, but its parent item-1-lead was not told: it is paused on "+
+			"Claude Code's `Session paused` dialog, so nothing was typed (press no key there)\n" {
+		t.Errorf("%+v, calls %q", out, w.calls())
 	}
 }
