@@ -102,7 +102,8 @@ type transcriptRecord struct {
 // transcriptState is how far a transcript was read, with the model of
 // its session's first and latest assistant message (the first taken from
 // a fallback's original model when the fallback comes first), the model
-// its latest fallback after a refusal moved it to, and whether the latest
+// its latest fallback after a refusal moved it to (none once its messages
+// changed to another model), and whether the latest
 // message is stopped: refused by a safety classifier, or followed by a
 // stop with no fallback, with no assistant message after it.
 type transcriptState struct {
@@ -216,6 +217,16 @@ func (s *transcriptScan) fellBack(rec transcriptRecord) {
 	s.st.fellTo = rec.FallbackModel
 }
 
+// switched notes that the session's messages changed to `model`: a
+// change to another model than the latest fallback's, such as a person's
+// `/model`, means no fallback moved it there, even when it later comes
+// back to that model.
+func (s *transcriptScan) switched(model string) {
+	if baseModel(model) != baseModel(s.st.fellTo) {
+		s.st.fellTo = ""
+	}
+}
+
 // read reads one complete line of the transcript.
 func (s *transcriptScan) read(line []byte) {
 	at := s.st.readTo
@@ -249,6 +260,7 @@ func (s *transcriptScan) read(line []byte) {
 			s.st.startModel = model
 		case baseModel(model) != baseModel(s.st.lastModel):
 			s.events = append(s.events, event(eventChange, s.st.lastModel, model))
+			s.switched(model)
 		}
 		s.st.lastModel = model
 		if s.st.stopped = rec.Message.StopReason == "refusal"; !s.st.stopped {
