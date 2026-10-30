@@ -46,17 +46,16 @@ var (
 // again. `status` is what herdr says of the agent.
 func (r *watchRun) actOnSession(id int64, read *sessionRead, status InHerdr) error {
 	moved := read.st.moved()
-	if !read.st.stopped && !moved {
-		if !read.decided {
-			return nil
-		}
-		_, err := r.conn.Exec("UPDATE transcripts SET decided_at = NULL WHERE agent = ?1 AND session = ?2", id,
-			read.session)
-		return dbErr(err)
-	}
 	// A stop or move after the session was neither, in what this run
 	// read, is a new one.
-	if read.decided && !read.st.recovered {
+	if read.decided && (read.st.recovered || !read.st.stopped && !moved) {
+		if _, err := r.conn.Exec("UPDATE transcripts SET decided_at = NULL WHERE agent = ?1 AND session = ?2", id,
+			read.session); err != nil {
+			return exit.Database(err)
+		}
+		read.decided = false
+	}
+	if read.decided || !read.st.stopped && !moved {
 		return nil
 	}
 	a, err := loadAgent(r.conn, id)

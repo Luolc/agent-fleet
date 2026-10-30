@@ -478,6 +478,32 @@ func TestTheModelWatchWaitsForABusySession(t *testing.T) {
 		"fleet replaced the session of j-w")
 }
 
+// A new stop found while the session works is acted on once it is idle,
+// though the run then reads nothing new: here a session read before the
+// upgrade, stopped then, replies and is stopped again while it works.
+func TestTheModelWatchKeepsANewStopFoundWhileBusy(t *testing.T) {
+	w := modelWorld(t)
+	path := filepath.Join(w.dir, "home", ".claude", "projects", "-work-example", sessionThread+".jsonl")
+	w.exec(fmt.Sprintf("INSERT INTO transcripts (agent, session, path, read_to, start_model, last_model, stopped, "+
+		"decided_at) VALUES (1, '%s', '%s', %d, 'claude-test-large', 'claude-test-large', 1, 0)", sessionThread, path,
+		len(w.raw(filepath.Join("home", ".claude", "projects", "-work-example", sessionThread+".jsonl")))))
+	busy := []string{"thread-c1 working 1", "j-lead idle 1", "j-w working 1", "j-ok working 1", "j-pi working 1 pi"}
+	w.herdrList(busy...)
+	w.watchAt(time.Minute, 0)
+	w.appendRecords(sessionThread, assistant("t-5", "2030-01-02T08:00:01.000Z", "msg-t5", "claude-test-large", "end_turn"),
+		assistant("t-6", "2030-01-02T08:00:02.000Z", "msg-t6", "claude-test-large", "refusal"))
+	w.watchAt(2*time.Minute, 0)
+	if got := w.promptsTo("thread-c1"); len(got) != 0 {
+		t.Fatalf("told while busy: %q", got)
+	}
+	busy[0] = "thread-c1 idle 1"
+	w.herdrList(busy...)
+	w.watchAt(3*time.Minute, 0)
+	if got := w.promptsTo("thread-c1"); len(got) != 1 || !strings.Contains(got[0], "Go on with the thread's work") {
+		t.Errorf("thread-c1 got %q", got)
+	}
+}
+
 // What counts is the session as it is now, read to its end: one moved back
 // to the model it started on, or stopped and then replying again, has
 // nothing done, its events only reported; a variant of the same model is
