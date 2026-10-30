@@ -193,7 +193,8 @@ while IFS= read -r line; do
     TICK | HANG) forever "$line" ;;
   esac
   working
-  sleep "${FAKE_CLAUDE_WORK_SECS:-2}"
+  # A turn lasts 2 s, or the seconds in ~/.fake-claude/work-secs.
+  sleep "$(cat "$fake/work-secs" 2>/dev/null || echo "${FAKE_CLAUDE_WORK_SECS:-2}")"
   last=$line
   while [ "${last%$'\n'}" != "$last" ]; do last=${last%$'\n'}; done
   case "${last##*$'\n'}" in

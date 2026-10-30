@@ -286,15 +286,22 @@ func SubmitLeftover(h *herdr.Herdr, to, text string, before *string) string {
 	if !ok || trace == "" || before != nil && box == *before {
 		return ""
 	}
-	if _, err := h.CallOK("agent", "send-keys", to, "enter"); err != nil {
-		fmt.Fprintf(os.Stderr, "note: cannot press Enter in the input box of %s: %v\n", to, err)
-		return ""
-	}
-	reply, err := h.Call("agent", "wait", to, "--until", "working", "--until", "blocked", "--timeout", "5000")
-	if err != nil || reply.Error != nil {
+	if !pressEnter(h, to) {
 		return ""
 	}
 	return trace
+}
+
+// pressEnter presses Enter once in the input box of `to` and is whether
+// herdr then finds it working or blocked within 5 s; a press herdr fails
+// is one note on stderr.
+func pressEnter(h *herdr.Herdr, to string) bool {
+	if _, err := h.CallOK("agent", "send-keys", to, "enter"); err != nil {
+		fmt.Fprintf(os.Stderr, "note: cannot press Enter in the input box of %s: %v\n", to, err)
+		return false
+	}
+	reply, err := h.Call("agent", "wait", to, "--until", "working", "--until", "blocked", "--timeout", "5000")
+	return err == nil && reply.Error == nil
 }
 
 // LeftoverTrace is what shows that `box`, the text of a Claude Code input

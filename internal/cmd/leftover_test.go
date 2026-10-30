@@ -27,22 +27,39 @@ func claudeImageParts(text string) []string {
 	return found
 }
 
-// A file's path in the message fleet types must not be read as an image to
-// attach: Claude Code would drop the Enter herdr presses while it reads the
-// image, and the message would wait in the input box (2026-10-30).
-func TestTheFilesSectionHasNoPartClaudeCodeTakesForAnImage(t *testing.T) {
-	text, err := WithHeader(inboxSender, inboxMessage(eventOf(t, filesEvent), "", "/s").body())
+// What fleet types must have no part Claude Code reads as an image to attach:
+// it would drop the Enter herdr presses while it reads the image, and the
+// message would wait in the input box (2026-10-30). Both the path fleet
+// writes for a file and the `file: <name> <permalink>` line fednet adds to
+// the text end in the file's name.
+func TestADeliveredMessageHasNoPartClaudeCodeTakesForAnImage(t *testing.T) {
+	e := eventOf(t, filesEvent)
+	if parts := claudeImageParts(e.Payload.Text); len(parts) == 0 {
+		t.Fatal("the fixture's text has no part an image would be read from")
+	}
+	text, err := WithHeader(inboxSender, inboxMessage(e, "", "/s").body())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if parts := claudeImageParts(text); len(parts) > 0 {
 		t.Errorf("parts read as images: %q", parts)
 	}
-	if !strings.Contains(text, "path `/var/cache/fednet/F0IMG1-shot.png`") {
-		t.Errorf("the path is not given: %q", text)
+	for _, want := range []string{"path `/var/cache/fednet/F0IMG1-shot.png`",
+		"\nfile: shot.png `https://ws.example.test/files/U0ABC/F0IMG1/shot.png`\n"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("%q is not in %q", want, text)
+		}
 	}
-	if parts := claudeImageParts("see " + "/var/cache/fednet/F0IMG1-shot.png"); len(parts) != 1 {
-		t.Errorf("the check misses a path at the end of a line: %q", parts)
+}
+
+// Only fednet's line for one of the message's files is changed; a person's
+// own words are left as they are.
+func TestOnlyFednetsFileLinesAreQuoted(t *testing.T) {
+	msg := inboundMessage{Files: []inboundFile{{Name: "a.png", URL: "https://ws.example.test/files/U0ABC/F0A/a.png"}}}
+	in := "file: a.png https://ws.example.test/files/U0ABC/F0A/a.png\nsee /tmp/b.png\nfile: c.png https://ws.example.test/c.png"
+	want := "file: a.png `https://ws.example.test/files/U0ABC/F0A/a.png`\nsee /tmp/b.png\nfile: c.png https://ws.example.test/c.png"
+	if got := msg.quoteFileLines(in); got != want {
+		t.Errorf("got %q, want %q", got, want)
 	}
 }
 
@@ -202,26 +219,40 @@ func typedLedger(t *testing.T) *sql.DB {
 }
 
 // A message fednet hands over again after exit 2 is not typed again
-// (2026-10-30: one message typed into an agent eight times).
+// (2026-10-30: one message typed into an agent eight times). Enter is
+// pressed only while the input box still holds what it held right after
+// the message was typed; anything else in it is left alone.
 func TestARetryOfATypedMessageTypesNothing(t *testing.T) {
 	msg := inboxMessage(eventOf(t, filesEvent), "", "/s")
+	left := "[Image #4][Pasted text #5 +6 lines]"
 	for name, c := range map[string]struct {
 		files map[string]string
+		box   any
 		code  exit.Code
 		typed bool
 		keys  int
 	}{
-		"left in the box": {map[string]string{"status": "done",
-			"screen": boxScreen("", "[Image #4][Pasted text #5 +6 lines]")}, exit.Ok, true, 1},
-		"box empty":       {map[string]string{"status": "idle", "screen": boxScreen("", "")}, exit.Ok, true, 0},
-		"working, queued": {map[string]string{"status": "working", "screen": boxScreen("", "")}, exit.Ok, true, 0},
-		"blocked":         {map[string]string{"status": "blocked", "screen": boxScreen("", "")}, exit.Blocked, true, 0},
-		"something else":  {map[string]string{"status": "idle", "screen": boxScreen("", "a draft")}, exit.Unknown, true, 0},
-		"gone":            {map[string]string{"status": "idle", "gone": "", "screen": ""}, exit.Ok, false, 0},
+		"still in the box": {map[string]string{"status": "done", "screen": boxScreen("", left)}, left, exit.Ok, true, 1},
+		"more typed after it": {map[string]string{"status": "idle", "screen": boxScreen("", left+"[Pasted text #6 +2 lines]")},
+			left, exit.Ok, true, 1},
+		"box empty":       {map[string]string{"status": "idle", "screen": boxScreen("", "")}, left, exit.Ok, true, 0},
+		"working, queued": {map[string]string{"status": "working", "screen": boxScreen("", "")}, left, exit.Ok, true, 0},
+		// A person's draft, or another message: not this one's to submit.
+		"something else": {map[string]string{"status": "idle", "screen": boxScreen("", "a draft [Pasted text #9 +2 lines]")},
+			left, exit.Ok, true, 0},
+		"box not read after typing": {map[string]string{"status": "idle", "screen": boxScreen("", left)}, nil,
+			exit.Unknown, true, 0},
+		"blocked": {map[string]string{"status": "blocked", "screen": boxScreen("", left)}, left, exit.Blocked, true, 0},
+		"gone":    {map[string]string{"status": "idle", "gone": "", "screen": ""}, left, exit.Ok, false, 0},
 	} {
 		dir := fakeClaudeHerdr(t)
 		write(t, dir, c.files)
-		code, typed, err := submitTyped(herdr.New(nil), typedLedger(t), "main", msg)
+		conn := typedLedger(t)
+		if _, err := conn.Exec("INSERT INTO inbox (msg_id, thread, state, received_at, box) VALUES ('m1', 'C1/1.0', "+
+			"'typed', 0, ?1)", c.box); err != nil {
+			t.Fatal(err)
+		}
+		code, typed, err := submitTyped(herdr.New(nil), conn, "main", "m1", msg)
 		if err != nil || code != c.code || typed != c.typed {
 			t.Errorf("%s: %v, exit %d, typed %v; want exit %d, typed %v", name, err, code, typed, c.code, c.typed)
 		}
@@ -231,6 +262,25 @@ func TestARetryOfATypedMessageTypesNothing(t *testing.T) {
 		if log, _ := os.ReadFile(filepath.Join(dir, "log")); strings.Contains(string(log), "agent prompt") {
 			t.Errorf("%s: the message was typed again", name)
 		}
+	}
+}
+
+// What the input box held right after a message was typed with no clear
+// signal is recorded with it, for its retry.
+func TestATypedMessageKeepsWhatTheBoxHeld(t *testing.T) {
+	dir := fakeClaudeHerdr(t)
+	write(t, dir, map[string]string{"status": "idle", "screen": boxScreen("", "[Pasted text #3 +4 lines]")})
+	conn := typedLedger(t)
+	if _, err := conn.Exec("INSERT INTO inbox (msg_id, thread, state, received_at) VALUES ('m1', 'C1/1.0', 'reserved', 0)"); err != nil {
+		t.Fatal(err)
+	}
+	if err := setTyped(herdr.New(nil), conn, "m1", "C1/1.0"); err != nil {
+		t.Fatal(err)
+	}
+	var row string
+	if err := conn.QueryRow("SELECT state || ' ' || box FROM inbox WHERE msg_id = 'm1'").Scan(&row); err != nil ||
+		row != "typed [Pasted text #3 +4 lines]" {
+		t.Errorf("row %q (%v)", row, err)
 	}
 }
 
