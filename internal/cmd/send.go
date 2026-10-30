@@ -52,7 +52,10 @@ const (
 		"watch worker it leaves to the people, and those stay paused. So if a later send still " +
 		"exits 8, do not wait for a replacement: a lead ends its own paused worker with `fleet " +
 		"worker end` and starts another to take over; anyone else tells whoever started them (a " +
-		"thread agent, the people in its thread). A target fleet cannot tell about (no session or transcript found, a read that " +
+		"thread agent, the people in its thread). When whoever started you is the paused session " +
+		"itself, end your turn and wait for a message: the watch has told the people in its thread " +
+		"(a session it holds is reported there, one herdr reads as blocked is asked about on a card " +
+		"there). A target fleet cannot tell about (no session or transcript found, a read that " +
 		"fails or takes over 5 s) gets the message as before.\n\n" +
 		"Exit: 0 when herdr reported agent_prompted; 1 for an empty body, a forged header or a " +
 		"missing FLEET_AGENT; 2 when herdr gave no clear signal (timeout, stalled); 3 when " +
@@ -132,7 +135,9 @@ func beforePrompt(h *herdr.Herdr, to string) (exit.Code, error) {
 			"session to another model. Do not send again in a loop: `fleet watch` replaces such a session only "+
 			"once, and only when herdr finds it idle or done, and leaves the rest to the people. If a later send "+
 			"still exits 8, a lead ends its own paused worker with `fleet worker end` and starts another; anyone "+
-			"else tells whoever started them (a thread agent, the people in its thread). See `fleet send --help`.\n", to)
+			"else tells whoever started them (a thread agent, the people in its thread); when that is the paused "+
+			"session itself, end your turn and wait for a message: the watch has told the people in its thread. "+
+			"See `fleet send --help`.\n", to)
 		return exit.Paused, nil
 	}
 	kind, _ := agent["agent"].(string)
