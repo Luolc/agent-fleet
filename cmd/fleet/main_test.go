@@ -28,6 +28,10 @@ func TestMain(m *testing.M) {
 		cmd.CIReadEvery = 50 * time.Millisecond
 		cmd.CIRunAppears = 2 * time.Second
 		cmd.CILookupFresh = 500 * time.Millisecond
+		// A test can run the model watch out of its time to read.
+		if budget, err := time.ParseDuration(os.Getenv("FLEET_TEST_READ_BUDGET")); err == nil {
+			cmd.TranscriptBudget = budget
+		}
 		main()
 		return
 	}

@@ -90,8 +90,10 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: tools/*.sum
 
+      # Under -race, cmd/fleet's tests take about 10 minutes on this
+      # runner, the go test default; the timeout leaves them room.
       - name: race tests
-        run: go test -race ./...
+        run: go test -race -timeout 20m ./...
 
   # The judge's suites in three shards, so the longest suite (lifecycle)
   # sets the judge's time; together the shards run every suite once. The

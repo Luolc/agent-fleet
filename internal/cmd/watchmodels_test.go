@@ -3,6 +3,7 @@ package cmd
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -16,14 +17,14 @@ func TestATranscriptIsReadOnlyToItsLastCompleteLine(t *testing.T) {
 	if err := os.WriteFile(path, []byte(first+change[:20]), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	events, st, err := scanTranscript(path, transcriptState{})
+	events, st, _, err := scanTranscript(path, transcriptState{}, never)
 	if err != nil || len(events) != 0 || st.readTo != int64(len(first)) || st.startModel != "claude-test-large" {
 		t.Fatalf("partial: %v %+v %v", events, st, err)
 	}
 	if err := os.WriteFile(path, []byte(first+change+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	events, st, err = scanTranscript(path, st)
+	events, st, _, err = scanTranscript(path, st, never)
 	if err != nil || len(events) != 1 || events[0].Kind != eventChange || events[0].From != "claude-test-large" ||
 		events[0].To != "claude-test-small" || events[0].UUID != "a-2" || st.lastModel != "claude-test-small" {
 		t.Fatalf("complete: %+v %+v %v", events, st, err)
@@ -31,7 +32,7 @@ func TestATranscriptIsReadOnlyToItsLastCompleteLine(t *testing.T) {
 	if err := os.WriteFile(path, []byte(first), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	events, st, err = scanTranscript(path, st)
+	events, st, _, err = scanTranscript(path, st, never)
 	if err != nil || len(events) != 0 || st.readTo != int64(len(first)) || st.lastModel != "claude-test-large" {
 		t.Fatalf("shorter: %+v %+v %v", events, st, err)
 	}
@@ -47,9 +48,128 @@ func TestAValueOfAnotherShapeIsLeftOutOfTheEvent(t *testing.T) {
 	if err := os.WriteFile(path, []byte(forged), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	events, _, err := scanTranscript(path, transcriptState{})
+	events, _, _, err := scanTranscript(path, transcriptState{}, never)
 	if err != nil || len(events) != 1 || events[0].From != "claude-test-large" || events[0].To != "(unreadable)" ||
 		events[0].UUID != "f-1" {
 		t.Fatalf("%+v %v", events, err)
+	}
+}
+
+// never is a clock that never runs out.
+func never() bool { return false }
+
+func writeLines(t *testing.T, path string, lines ...string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func fellBack(uuid, from, to string) string {
+	return `{"type":"system","subtype":"model_refusal_fallback","uuid":"` + uuid + `","originalModel":"` + from +
+		`","fallbackModel":"` + to + `"}`
+}
+
+func said(uuid, id, model, stop string) string {
+	return `{"type":"assistant","uuid":"` + uuid + `","message":{"id":"` + id + `","model":"` + model +
+		`","stop_reason":"` + stop + `"}}`
+}
+
+// A variant suffix such as `[1m]` names the same model: no change, and
+// the session is not moved; another model a fallback moved it to is.
+func TestAVariantOfTheSameModelIsNoChange(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.jsonl")
+	writeLines(t, path, said("a-1", "m-1", "claude-test-large[1m]", "refusal"),
+		fellBack("f-1", "claude-test-large[1m]", "claude-test-large"), said("a-2", "m-2", "claude-test-large", "end_turn"))
+	events, st, complete, err := scanTranscript(path, transcriptState{}, never)
+	if err != nil || !complete || len(events) != 2 || st.moved() {
+		t.Fatalf("same model: %+v %+v %v %v", events, st, complete, err)
+	}
+	writeLines(t, path, said("a-1", "m-1", "claude-test-large[1m]", "refusal"),
+		fellBack("f-1", "claude-test-large[1m]", "claude-test-small[1m]"), said("a-2", "m-2", "claude-test-small", "end_turn"))
+	events, st, _, err = scanTranscript(path, transcriptState{}, never)
+	if err != nil || len(events) != 3 || events[2].Kind != eventChange || !st.moved() {
+		t.Fatalf("another model: %+v %+v %v", events, st, err)
+	}
+}
+
+// Only a fallback after a refusal moves a session: another model it runs
+// on with no fallback to it, such as one a person chose with `/model`, is
+// a change only; a fallback before the session's first reply gives the
+// model it started on.
+func TestOnlyAFallbackMovesASession(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.jsonl")
+	for _, c := range []struct {
+		lines []string
+		start string
+		moved bool
+	}{
+		{[]string{said("a-1", "m-1", "claude-test-large", "end_turn"), said("a-2", "m-2", "claude-test-small", "end_turn")},
+			"claude-test-large", false},
+		{[]string{said("a-1", "m-1", "claude-test-large", "refusal"), fellBack("f-1", "claude-test-large", "claude-test-small"),
+			said("a-2", "m-2", "claude-test-small", "end_turn"), said("a-3", "m-3", "claude-test-medium", "end_turn")},
+			"claude-test-large", false},
+		{[]string{fellBack("f-1", "claude-test-large", "claude-test-small"), said("a-1", "m-1", "claude-test-small", "end_turn")},
+			"claude-test-large", true},
+	} {
+		writeLines(t, path, c.lines...)
+		_, st, _, err := scanTranscript(path, transcriptState{}, never)
+		if err != nil || st.startModel != c.start || st.moved() != c.moved {
+			t.Errorf("%q: started on %q, moved %v; want %q, %v (%v)", c.lines, st.startModel, st.moved(), c.start, c.moved,
+				err)
+		}
+	}
+}
+
+// A session is stopped while its latest assistant message is refused, or
+// a stop with no fallback came after it, until a reply on a real model;
+// a message Claude Code makes up itself changes nothing.
+func TestASessionIsStoppedUntilItRepliesAgain(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.jsonl")
+	for _, c := range []struct {
+		lines   []string
+		stopped bool
+	}{
+		{[]string{said("a-1", "m-1", "claude-test-large", "end_turn"), said("a-2", "m-2", "claude-test-large", "refusal")}, true},
+		{[]string{said("a-1", "m-1", "claude-test-large", "refusal"), said("a-2", "m-2", "claude-test-large", "end_turn")}, false},
+		{[]string{said("a-1", "m-1", "claude-test-large", "end_turn"),
+			`{"type":"system","subtype":"model_refusal_no_fallback","uuid":"n-1","originalModel":"claude-test-large"}`,
+			said("a-2", "m-2", "<synthetic>", "stop_sequence")}, true},
+	} {
+		writeLines(t, path, c.lines...)
+		_, st, _, err := scanTranscript(path, transcriptState{}, never)
+		if err != nil || st.stopped != c.stopped {
+			t.Errorf("%q: stopped %v, want %v (%v)", c.lines, st.stopped, c.stopped, err)
+		}
+	}
+}
+
+// A transcript of any length is read to its last complete line in one
+// go; only the clock stops a read, which the next one goes on from.
+func TestALongTranscriptIsReadToItsEndUnlessTheClockStopsIt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.jsonl")
+	filler := `{"type":"user","message":{"content":"` + strings.Repeat("x", 4000) + `"}}`
+	lines := []string{said("a-1", "m-1", "claude-test-large", "end_turn")}
+	for len(lines)*len(filler) < 40<<20 {
+		lines = append(lines, filler)
+	}
+	lines = append(lines, said("a-2", "m-2", "claude-test-large", "refusal"))
+	writeLines(t, path, lines...)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, st, complete, err := scanTranscript(path, transcriptState{}, never)
+	if err != nil || !complete || st.readTo != info.Size() || len(events) != 1 || events[0].Kind != eventRefusal ||
+		!st.stopped {
+		t.Fatalf("in one go: %d events, %+v, complete %v, %v", len(events), st, complete, err)
+	}
+	events, st, complete, err = scanTranscript(path, transcriptState{}, func() bool { return true })
+	if err != nil || complete || st.readTo < readCheck || st.readTo >= info.Size() || len(events) != 0 {
+		t.Fatalf("stopped: %d events, read to %d, complete %v, %v", len(events), st.readTo, complete, err)
+	}
+	events, st, complete, err = scanTranscript(path, st, never)
+	if err != nil || !complete || st.readTo != info.Size() || len(events) != 1 {
+		t.Fatalf("went on: %d events, %+v, complete %v, %v", len(events), st, complete, err)
 	}
 }

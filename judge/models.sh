@@ -5,13 +5,20 @@
 # file and the transcript Claude Code would write for it, under
 # ~/.claude, found through the pid `herdr pane process-info` gives. Arms
 # that must differ:
-#   m-w       a worker downgraded after a refusal: its lead told, the home
-#             thread posted to, once
+#   m-w       a worker downgraded after a refusal, in its job's workspace:
+#             a new session of the same name in a new tab of that
+#             workspace, on the model and effort the ledger recorded, the
+#             old tab closed; its lead told, the home thread posted to,
+#             once; stopped again in the new session, left to the people
 #   thread-m  the home thread's agent, stopped by a refusal with no
-#             fallback: its own thread posted to
+#             fallback: told once to go on, its own thread posted to
+#   KN's agent a thread agent moved to another model: its session ended,
+#             the thread's next one started in the `threads` workspace
 #   m-ok      a worker that stayed on its model: nobody told
+#   m-p       a worker moved to another model with no fallback, as a
+#             person's /model moves it: only reported, its session kept
 # Every conversation text in the transcripts carries 0xREFUSEDTEXT, which
-# no report may.
+# nothing fleet writes may.
 saved=("$SCOPE" "$DB")
 SCOPE=models
 S=(herdr --session fleet-$SCOPE)
@@ -39,17 +46,41 @@ chmod +x /home/agent/fake-models/fednet
 mwatch() { PATH=/home/agent/fake-models:$PATH "$T" --scope "$SCOPE" watch; }
 KM=C0MOD/1700000000.000
 
-for name in thread-m m-lead m-w m-ok; do
+KN=C0MOD/1700000001.000
+TN=thread-c0mod-1700000001-000
+for name in thread-m m-ok m-p "$TN"; do
   check "models: $name starts idle" idle "$(start_fake "$name")"
 done
+# The job's workspace m: its lead, and m-w in a tab of its own.
+mws=$("${S[@]}" workspace create --cwd /home/agent --label m --no-focus)
+sleep 1
+check "models: m-lead starts idle" idle "$("${S[@]}" agent start m-lead --kind claude --pane \
+  "$(printf '%s' "$mws" | jq -r .result.root_pane.pane_id)" --timeout 20000 | jq -r '.result.agent.agent_status // .error.code')"
+mkdir -p /home/agent/mwork
+wpane=$("${S[@]}" tab create --workspace "$(printf '%s' "$mws" | jq -r .result.root_pane.workspace_id)" --label w \
+  --cwd /home/agent/mwork --no-focus | jq -r .result.root_pane.pane_id)
+sleep 1
+check "models: m-w starts idle" idle "$("${S[@]}" agent start m-w --kind claude --pane "$wpane" --timeout 20000 |
+  jq -r '.result.agent.agent_status // .error.code')"
+mtask=$(task m-w '# Fix the example parser
+
+Make the parser accept empty input.')
 now=$(date +%s)
 sqlite3 "$DB" >/dev/null <<SQL
 INSERT INTO jobs (job, lead_cwd, home_thread, state, started_at) VALUES ('m', '/home/agent', '$KM', 'open', $now);
-INSERT INTO agents (name, role, job, parent, cwd, thread, state, started_at, pane_id) VALUES
-    ('thread-m', 'thread', '', '', '/home/agent', '$KM', 'active', $now, '$(agent_field thread-m pane_id)'),
-    ('m-lead', 'lead', 'm', 'thread-m', '/home/agent', '', 'active', $now, '$(agent_field m-lead pane_id)'),
-    ('m-w', 'worker', 'm', 'm-lead', '/home/agent', '', 'active', $now, '$(agent_field m-w pane_id)'),
-    ('m-ok', 'worker', 'm', 'm-lead', '/home/agent', '', 'active', $now, '$(agent_field m-ok pane_id)');
+INSERT INTO threads (thread, slug, channel, mapping, cwd, sessions, created_at) VALUES
+    ('$KN', 'c0mod-1700000001-000', 'C0MOD', 'repo-models', '/home/agent', 1, $now);
+INSERT INTO agents (name, role, job, parent, cwd, thread, state, started_at, pane_id, kind) VALUES
+    ('thread-m', 'thread', '', '', '/home/agent', '$KM', 'active', $now, '$(agent_field thread-m pane_id)', 'claude'),
+    ('$TN', 'thread', '', '', '/home/agent', '$KN', 'active', $now, '$(agent_field "$TN" pane_id)', 'claude'),
+    ('m-ok', 'worker', 'm', 'm-lead', '/home/agent', '', 'active', $now, '$(agent_field m-ok pane_id)', 'claude');
+INSERT INTO agents (name, role, job, parent, cwd, thread, state, started_at, pane_id, kind, model, effort, task) VALUES
+    ('m-lead', 'lead', 'm', 'thread-m', '/home/agent', '', 'active', $now, '$(agent_field m-lead pane_id)', 'claude',
+     'claude-test-configured', 'high', ''),
+    ('m-w', 'worker', 'm', 'm-lead', '/home/agent/mwork', '', 'active', $now, '$wpane', 'claude',
+     'claude-test-configured', 'high', '$mtask'),
+    ('m-p', 'worker', 'm', 'm-lead', '/home/agent', '', 'active', $now, '$(agent_field m-p pane_id)', 'claude',
+     'claude-test-configured', 'high', '$mtask');
 SQL
 # <agent> <session> <records...>: the agent's session file and transcript.
 session() {
@@ -76,6 +107,12 @@ session m-w "$SW" "$(said a-1 msg-1 claude-test-large tool_use)" "$(said a-2 msg
 session thread-m "$ST" "$(said t-1 msg-t1 claude-test-large end_turn)" "$(said t-2 msg-t2 claude-test-large refusal)" \
   '{"type":"system","subtype":"model_refusal_no_fallback","uuid":"t-3","timestamp":"2030-01-02T03:00:05.000Z","originalModel":"claude-test-large","content":"0xREFUSEDTEXT"}'
 session m-ok "$SO" "$(said o-1 msg-o1 claude-test-large tool_use)" "$(said o-2 msg-o2 claude-test-large end_turn)"
+ppane=$(agent_field m-p pane_id)
+session m-p 00000000-0000-4000-8000-0000000000a6 "$(said p-1 msg-p1 claude-test-large end_turn)" \
+  "$(said p-2 msg-p2 claude-test-small end_turn)"
+session "$TN" 00000000-0000-4000-8000-0000000000a4 "$(said n-1 msg-n1 claude-test-large refusal)" \
+  '{"type":"system","subtype":"model_refusal_fallback","uuid":"n-2","timestamp":"2030-01-02T03:00:07.000Z","originalModel":"claude-test-large","fallbackModel":"claude-test-small","content":"0xREFUSEDTEXT"}' \
+  "$(said n-3 msg-n3 claude-test-small end_turn)"
 
 mwatch >/home/agent/models1.out 2>&1; rc=$?
 check "models: watch exits 0" 0 "$rc"
@@ -86,19 +123,56 @@ has "models: each event is a line on stdout" "$(cat /home/agent/models1.out)" \
 lacks "models: m-ok, which stayed on its model, is not reported" "$(cat /home/agent/models1.out)" "model event: m-ok"
 lead_got=$(received m-lead)
 has "models: the lead is told about its worker, as watch" "$lead_got" "[FROM: watch]" \
-  "the Claude Code session of m-w (worker, job m) has 3 model event(s)" "(record f-1)" "fleet only reports this"
+  "the Claude Code session of m-w (worker, job m) has 3 model event(s)" "(record f-1)" \
+  "fleet replaced the session of m-w (pane $wpane closed, the new session in pane"
+check "models: m-w's row now records a new pane, live" "active 1 1" \
+  "$(ledger "SELECT state, takeovers, pane_id != '$wpane' FROM agents WHERE name = 'm-w'" | tr '|' ' ' | xargs)"
+check "models: m-w's old tab is gone" pane_not_found \
+  "$("${S[@]}" pane get "$wpane" 2>&1 | jq -r '.error.code // "still there"')"
+check "models: m-w's new session is in its job's workspace" \
+  "$(printf '%s' "$mws" | jq -r .result.root_pane.workspace_id)" "$(agent_field m-w workspace_id)"
+wpid=$("${S[@]}" pane process-info --pane "$(agent_field m-w pane_id)" |
+  jq -r '.result.process_info.foreground_processes[0].pid')
+has "models: m-w's new session runs on the model and effort the ledger recorded" \
+  "$(tr '\0' ' ' < "/proc/$wpid/cmdline")" "--model claude-test-configured --effort high"
+w_got=$(received m-w)
+has "models: m-w's new session gets its task and the takeover note" "$w_got" "[FROM: watch]" \
+  "This session takes over from an earlier session of m-w" "Do not redo the step that was stopped" \
+  "# Fix the example parser"
+lacks "models: no /model is typed into m-w" "$w_got" "/model"
+has "models: m-p, moved with no fallback, is only reported" "$lead_got" \
+  "the Claude Code session of m-p (worker, job m) has 1 model event(s)" "fleet did nothing about these events"
+check "models: m-p keeps its session" "$ppane 0" \
+  "$(agent_field m-p pane_id) $(ledger "SELECT takeovers FROM agents WHERE name = 'm-p'" | xargs)"
+lacks "models: m-p is sent nothing" "$(received m-p)" "[FROM: watch]"
+has "models: thread-m is told once to go on" "$(received thread-m)" "Go on with the thread's work"
+lacks "models: no /model is typed into thread-m" "$(received thread-m)" "/model"
+check "models: the moved thread agent's session ended, the next one live" "ended active" \
+  "$(ledger "SELECT state FROM agents WHERE name = '$TN' ORDER BY id" | xargs)"
+has "models: the thread's next session starts with the takeover note" "$(received "$TN")" \
+  "this session takes over from the session before it on this thread" "Do not redo the step that was stopped"
+check "models: the thread's next session is in the threads workspace" threads \
+  "$("${S[@]}" workspace list | jq -r --arg id "$(agent_field "$TN" workspace_id)" \
+    '.result.workspaces[] | select(.workspace_id == $id) | .label')"
 posts=$(cat /home/agent/models-fednet.log)
 has "models: the home thread is posted to about both agents" "$posts" \
   "-thread $KM -- fleet watch：m-w 的 Claude Code 会话出现了 3 个模型事件" \
   "-thread $KM -- fleet watch：thread-m 的 Claude Code 会话出现了 2 个模型事件"
-for text in "$(cat /home/agent/models1.out)" "$lead_got" "$posts"; do
-  lacks "models: no report carries the conversation's text" "$text" 0xREFUSEDTEXT
+for text in "$(cat /home/agent/models1.out)" "$lead_got" "$posts" "$w_got" "$(received thread-m)" "$(received "$TN")"; do
+  lacks "models: nothing fleet writes carries the conversation's text" "$text" 0xREFUSEDTEXT
 done
 mwatch >/home/agent/models2.out 2>&1; rc=$?
 check "models: the next run exits 0" 0 "$rc"
 lacks "models: the next run reports nothing again" "$(cat /home/agent/models2.out)" "model event:"
-check "models: each agent's events are posted once" 2 "$(grep -c '的 Claude Code 会话出现了' /home/agent/models-fednet.log)"
-for out in /home/agent/models1.out /home/agent/models2.out; do
+check "models: each agent's events are posted once" 4 "$(grep -c '的 Claude Code 会话出现了' /home/agent/models-fednet.log)"
+# m-w's new session is stopped too: left to the people, no third session.
+newpane=$(agent_field m-w pane_id)
+session m-w 00000000-0000-4000-8000-0000000000a5 "$(said r-1 msg-r1 claude-test-large refusal)"
+mwatch >/home/agent/models3.out 2>&1; rc=$?
+check "models: the third run exits 0" 0 "$rc"
+check "models: m-w keeps its second session" "$newpane" "$(agent_field m-w pane_id)"
+has "models: the lead is told a person decides" "$(received m-lead)" "it handled m-w once already"
+for out in /home/agent/models1.out /home/agent/models2.out /home/agent/models3.out; do
   [ "$fail" = 0 ] || { echo "--- $out"; cat "$out"; }
 done
 "${S[@]}" server stop >/dev/null

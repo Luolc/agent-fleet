@@ -29,7 +29,13 @@ const rule = "──────────────────────
 // <dir>/panes.json, or no pane without it; `workspace list` and `tab
 // list` print <dir>/workspaces.json and <dir>/tabs.json, or none without
 // them; `pane process-info --pane <pane>` prints <dir>/procinfo-<pane>,
-// or a pane with nothing in its foreground without it.
+// or a pane with nothing in its foreground without it. `tab create`
+// appends its argv to <dir>/tab-argv and makes the pane pn<n>, the n-th
+// it made (in the tab tab-pn<n>), or fails while <dir>/tab-down exists;
+// `agent start` appends its argv to <dir>/starts; `pane rename` does
+// nothing; `agent get <name>` first runs <dir>/on-get-<name> when there
+// is one, and reports the agent with the status in <dir>/status-<name>,
+// idle without it.
 func watchHerdr(dir, reply string) string {
 	return `#!/bin/sh
 if [ "$1" = --session ]; then shift 2; fi
@@ -56,8 +62,10 @@ REPLY
     echo '{"running":true}'
     ;;
   "agent get")
+    [ -x "$dir/on-get-$3" ] && "$dir/on-get-$3"
     if grep -q "\"name\":\"$3\"" "$dir/list.json"; then
-      echo '{"result":{"agent":{"name":"'"$3"'"}}}'
+      status=$(cat "$dir/status-$3" 2>/dev/null || echo idle)
+      echo '{"result":{"agent":{"name":"'"$3"'","agent_status":"'"$status"'"}}}'
     else
       echo '{"error":{"code":"agent_not_found","message":"no such agent"}}'
     fi
@@ -79,6 +87,20 @@ REPLY
     else
       echo '{"result":{}}'
     fi
+    ;;
+  "tab create")
+    echo "$*" >> "$dir/tab-argv"
+    [ -e "$dir/tab-down" ] && { echo '{"error":{"code":"server_error","message":"no tab"}}'; exit 1; }
+    n=$(( $(cat "$dir/tab-count" 2>/dev/null || echo 0) + 1 ))
+    echo "$n" > "$dir/tab-count"
+    echo '{"result":{"root_pane":{"workspace_id":"w-j","tab_id":"tab-pn'"$n"'","pane_id":"pn'"$n"'"}}}'
+    ;;
+  "agent start")
+    echo "$*" >> "$dir/starts"
+    echo '{"result":{}}'
+    ;;
+  "pane rename")
+    echo '{"result":{}}'
     ;;
   "workspace list")
     cat "$dir/workspaces.json" 2>/dev/null || echo '{"result":{"workspaces":[]}}'
@@ -410,10 +432,16 @@ case "$2" in
     echo '{"id":"card-'"${8#*:}"'","channel":"C0","ts":"1.0","permalink":"https://slack.example.test/card-'"${8#*:}"'"}' ;;
 esac
 `
-	// `linear query` prints <dir>/issues.json, no started issue without it.
+	// `linear query` prints <dir>/issues.json, no started issue without it;
+	// the file of a `--body-file` is copied to <dir>/atb-bodies.
 	atb := `#!/bin/sh
 dir='` + w.dir + `'
 printf '%s\n' "$*" >> "$dir/atb.log"
+prev=
+for arg; do
+  [ "$prev" = --body-file ] && { cat "$arg" >> "$dir/atb-bodies"; printf '\n--END--\n' >> "$dir/atb-bodies"; }
+  prev=$arg
+done
 [ -e "$dir/atb-down" ] && exit 1
 case " $* " in *" --restore "*) [ -f "$dir/restore-exit" ] && exit "$(cat "$dir/restore-exit")" ;; esac
 if [ "$2" = query ]; then

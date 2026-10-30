@@ -933,7 +933,7 @@ func workOrder(conn querier, l *linear, parent, title, task string, id *identity
 		return atb.Issue{}, err
 	}
 	*created = append(*created, fmt.Sprintf("work order %s (%s), not claimed", issue.Identifier, issue.URL))
-	if err := setIssue(conn, agent, issue.Identifier); err != nil {
+	if err := setIssue(conn, agent, issue.Identifier, issue.URL); err != nil {
 		return atb.Issue{}, err
 	}
 	if err := atb.Claim(issue.Identifier, agent, source, scope); err != nil {
@@ -984,10 +984,11 @@ func insertStarting(conn querier, id *identity.Identity, cwd, task, parentIssue 
 	return nil
 }
 
-// setIssue records the agent's work order on its reserved row.
-func setIssue(conn querier, agent, issue string) error {
-	if _, err := conn.Exec("UPDATE agents SET issue = ?1 WHERE name = ?2 AND state != 'ended'",
-		issue, agent); err != nil {
+// setIssue records the agent's work order and its URL on its reserved
+// row.
+func setIssue(conn querier, agent, issue, url string) error {
+	if _, err := conn.Exec("UPDATE agents SET issue = ?1, issue_url = ?3 WHERE name = ?2 AND state != 'ended'",
+		issue, agent, url); err != nil {
 		return exit.Database(err)
 	}
 	return nil
@@ -1095,14 +1096,15 @@ func taskSection(url, task string) string {
 
 // startAndDeliver starts the agent of kind `kind` in `place` (its
 // directory `cwd`), delivers `body` (its first message, after the header `sender` adds) and
-// marks the row active.
+// marks the row active. The row records the pane and what the start
+// passes the runtime, so the agent can be started the same way again.
 // Every step appends what it made to `created`. The row is marked active
 // only when herdr reported the message delivered, so a row still
 // `starting` means the agent may not have its task.
 func startAndDeliver(h *herdr.Herdr, conn *sql.DB, id *identity.Identity, place Place, cwd, kind string,
 	model, effort *string, sender, body string, created *[]string) (exit.Code, error) {
-	if _, err := conn.Exec("UPDATE agents SET pane_id = ?1 WHERE name = ?2 AND state != 'ended'",
-		place.PaneID, id.Agent); err != nil {
+	if _, err := conn.Exec("UPDATE agents SET pane_id = ?1, kind = ?3, model = ?4, effort = ?5 "+
+		"WHERE name = ?2 AND state != 'ended'", place.PaneID, id.Agent, kind, model, effort); err != nil {
 		return 0, exit.Database(err)
 	}
 	if err := StartAgent(h, id.Agent, place.PaneID, cwd, kind, model, effort); err != nil {

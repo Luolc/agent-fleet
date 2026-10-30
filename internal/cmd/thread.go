@@ -687,7 +687,7 @@ func (s *threadStart) linearSteps() error {
 		s.ticket = atb.Issue{Identifier: s.known.Ticket, URL: s.known.TicketURL}
 	}
 	s.id.Issue = s.ticket.Identifier
-	if err := setIssue(s.conn, s.id.Agent, s.ticket.Identifier); err != nil {
+	if err := setIssue(s.conn, s.id.Agent, s.ticket.Identifier, s.ticket.URL); err != nil {
 		return err
 	}
 	if err := log.try(func() error {
@@ -907,7 +907,7 @@ func (s *threadStart) withoutLinear(cause error) error {
 	}
 	ticket := s.ticket.Identifier
 	s.id.Issue, s.ticket = "", atb.Issue{}
-	if err := setIssue(s.conn, s.id.Agent, ""); err != nil {
+	if err := setIssue(s.conn, s.id.Agent, "", ""); err != nil {
 		return err
 	}
 	why := fmt.Sprintf("Linear was unavailable when this session started (%s)", class)

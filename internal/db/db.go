@@ -17,7 +17,7 @@ import (
 	"github.com/Luolc/agent-fleet/internal/exit"
 )
 
-const schemaVersion = 21
+const schemaVersion = 22
 
 // Version 1: the `agents` table. Ended rows are kept as history, so `name`
 // is unique only among rows that have not ended.
@@ -364,8 +364,50 @@ CREATE TABLE model_events (
 );
 `
 
+// Version 22: what a start passed the agent runtime (`kind`, `claude` or
+// `pi`, empty in rows from before; `model` and `effort`, null when none
+// was passed) and the work order's URL, so the watch `model-changes` can
+// start the same agent again; `takeovers`, how many times that watch
+// replaced the row's session, told it to go on or tried to, and on a
+// thread how many times it replaced the thread's session; the model a
+// session's latest fallback after a refusal moved it to
+// (`transcripts.fell_to`, empty when none did), whether its latest
+// assistant message is stopped (`stopped`) and when the watch decided
+// about its present stop or move (`decided_at`, null while it is
+// neither; 0 for the sessions read before, so what was reported before
+// is not acted on); and `model_actions`, what the watch did about a stop
+// or move, with its detail for the agents (`detail`) and for the people
+// in a thread (`detail_zh`), each reported once to the agent's parent
+// (`told_at`) and its thread (`posted_at`).
+const schemaV22 = `
+ALTER TABLE agents ADD COLUMN kind TEXT NOT NULL DEFAULT '';
+ALTER TABLE agents ADD COLUMN model TEXT;
+ALTER TABLE agents ADD COLUMN effort TEXT;
+ALTER TABLE agents ADD COLUMN issue_url TEXT NOT NULL DEFAULT '';
+ALTER TABLE agents ADD COLUMN takeovers INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE threads ADD COLUMN takeovers INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE transcripts ADD COLUMN fell_to TEXT NOT NULL DEFAULT '';
+ALTER TABLE transcripts ADD COLUMN stopped INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE transcripts ADD COLUMN decided_at INTEGER;
+UPDATE transcripts SET decided_at = 0;
+CREATE TABLE model_actions (
+    id         INTEGER PRIMARY KEY,
+    agent      INTEGER NOT NULL,
+    session    TEXT    NOT NULL,
+    action     TEXT    NOT NULL,
+    why        TEXT    NOT NULL,
+    from_model TEXT    NOT NULL,
+    to_model   TEXT    NOT NULL,
+    detail     TEXT    NOT NULL DEFAULT '',
+    detail_zh  TEXT    NOT NULL DEFAULT '',
+    at         INTEGER NOT NULL,
+    told_at    INTEGER,
+    posted_at  INTEGER
+);
+`
+
 // migrations[v] upgrades a ledger at version v to v+1.
-var migrations = [schemaVersion]string{schema, schemaV2, schemaV3, schemaV4, schemaV5, schemaV6, schemaV7, schemaV8, schemaV9, schemaV10, schemaV11, schemaV12, schemaV13, schemaV14, schemaV15, schemaV16, schemaV17, schemaV18, schemaV19, schemaV20, schemaV21}
+var migrations = [schemaVersion]string{schema, schemaV2, schemaV3, schemaV4, schemaV5, schemaV6, schemaV7, schemaV8, schemaV9, schemaV10, schemaV11, schemaV12, schemaV13, schemaV14, schemaV15, schemaV16, schemaV17, schemaV18, schemaV19, schemaV20, schemaV21, schemaV22}
 
 // Path is where the ledger of `scope` lives:
 // `$XDG_STATE_HOME/fleet/<scope>.db`, with `~/.local/state` when

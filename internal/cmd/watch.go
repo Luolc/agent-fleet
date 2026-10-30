@@ -112,13 +112,24 @@ const (
 		"is told when a worker starts for it or the people are asked, and so is the starter of a lead or " +
 		"worker whose start stopped at the screen.\n\n" +
 		"Models (the watch `model-changes`): then the Claude Code transcript of every live agent in herdr, Pi " +
-		"agents left out, is read from where the last run stopped, its session found from the processes in its " +
-		"pane and the session files Claude Code keeps (~/.claude, or CLAUDE_CONFIG_DIR). A fallback after a " +
+		"agents left out, is read from where the last run stopped to its last complete line (until 30 s into the " +
+		"run; what is left waits, and the agent has nothing done that run), its session found from the processes " +
+		"in its pane and the session files Claude Code keeps (~/.claude, or CLAUDE_CONFIG_DIR). A fallback after a " +
 		"refusal (model_refusal_fallback), a stop with no fallback (model_refusal_no_fallback), a message stopped " +
-		"by a safety classifier (stop_reason refusal) and a change of the messages' model are each a line on " +
-		"stdout, and are reported once: to the agent's parent, as watch, and in Chinese to its thread (a thread " +
-		"agent's own, a job's home thread), with the time, the models and the record's uuid, never the " +
-		"conversation's text. fleet only reports them: it switches no model and types nothing into the agent.\n\n" +
+		"by a safety classifier (stop_reason refusal) and a change of the messages' model (`[1m]` and the like " +
+		"name the same model) are each a line on stdout and are reported once. What is acted on is the session " +
+		"as it is now: stopped (its latest message refused, no reply after it) or moved (a fallback after a " +
+		"refusal moved it to the model it runs on, another than it started on; a change no fallback made, such as " +
+		"a person's /model, is only reported), each stop or move once. A lead or worker gets a new session of the same name (a new tab in " +
+		"its job's workspace, the old tab closed, started as its start was, with the model and effort the ledger " +
+		"recorded and its task); a thread agent stopped on its model is told once to go on; a thread agent moved " +
+		"gets the thread's next session (the old one ended as a reclaimed one is, a new one started as `inbox` " +
+		"starts one). Each is done once per agent (per thread for a thread's new session); after that, and when " +
+		"it cannot be done, the people decide. A session still working, or no longer as the run read it when " +
+		"fleet is about to act, is looked at again next run. Reports go " +
+		"to the agent's parent, as watch, and in Chinese to its thread (a thread agent's own, a job's home " +
+		"thread), with the time, the models, the record's uuid and what fleet did, never the conversation's " +
+		"text. fleet never switches a session's model and types into a session only its own messages.\n\n" +
 		"Threads (only with a fednet socket): a live thread agent gone from herdr has its session " +
 		"ended as abnormal (its ticket released without --done, a closing line saying the session " +
 		"broke off). A thread with no message for `thread_idle` (72h) has its live session " +
