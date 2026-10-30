@@ -1007,26 +1007,38 @@ settled "$AF"
 
 # A message Claude Code would read an image path in waits in its input box:
 # Claude Code 2.1.296 drops the Enter herdr presses while it reads the
-# image, and fake Claude does the same under image-paste (2026-10-30). The
-# path of an attached file is quoted, so a message with an image file goes
-# in with herdr's own Enter; a person's text ending in an image's path waits
-# after herdr's stall, and fleet presses Enter once.
+# image, and fake Claude does the same under image-paste (2026-10-30). fleet
+# puts in backquotes the path of an attached file and the link of the
+# `file: <name> <link>` line fednet adds to the text (a Slack permalink,
+# ending in the file's name), so such a message goes in with herdr's own
+# Enter, also to an agent at work. A person's own path is left as it is:
+# that message waits after herdr's stall, and fleet presses Enter once.
 KI=C0777/1700000777.000
 AI=thread-c0777-1700000777-000
 inbox "$(event i1 "$KI" 'first 0xIMG0')" >/dev/null 2>&1; rc=$?
 check "inbox, image: the thread's agent started" "0 $AI" "$rc $(agent_field "$AI" name)"
 settled "$AI"
 touch "$fake/image-paste"
-out=$(inbox "$(event i2 "$KI" 'what is this 0xIMG1' '' '"channel_name":"repo-'$R'","files":[{"id":"F0IMG1","name":"shot.png","mimetype":"image/png","size":10,"url":"https://files.example.test/shot","path":"/home/agent/shot.png"}]')" 2>&1); rc=$?
-check "inbox, image: a message with an image file, exit 0" 0 "$rc"
+link='https://files.example.test/files/U0ABC/F0IMG1/shot.png'
+out=$(inbox "$(event i2 "$KI" "what is this 0xIMG1\\nfile: shot.png $link" '' '"channel_name":"repo-'$R'","files":[{"id":"F0IMG1","name":"shot.png","mimetype":"image/png","size":10,"url":"'$link'","path":"/home/agent/shot.png"}]')" 2>&1); rc=$?
+check "inbox, image: a message with an image file and fednet's file line, exit 0" 0 "$rc"
 lacks "inbox, image: submitted with herdr's own Enter" "$out" "pressed Enter"
 check "inbox, image: the agent has the message once" 1 "$(received "$AI" | grep -c 0xIMG1)"
 settled "$AI"
 out=$(inbox "$(event i3 "$KI" 'is 0xIMG2 like /home/agent/shot.png')" 2>&1); rc=$?
-check "inbox, image: a text ending in an image's path, exit 0" 0 "$rc"
+check "inbox, image: a person's text ending in an image's path, exit 0" 0 "$rc"
 has "inbox, image: fleet pressed Enter once, saying why" "$out" "pressed Enter once" "an [Image #…] placeholder"
-check "inbox, image: the agent has the message once, delivered" "1 delivered " \
+check "inbox, image: the agent has it once, delivered" "1 delivered " \
   "$(received "$AI" | grep -c 0xIMG2) $(tledger "SELECT state FROM inbox WHERE msg_id = 'i3'")"
+settled "$AI"
+echo 6 > "$fake/work-secs"
+inbox "$(event i3b "$KI" 'work on this 0xIMG3')" >/dev/null 2>&1
+check "inbox, image: the agent is at work" working "$(agent_field "$AI" agent_status)"
+out=$(inbox "$(event i3c "$KI" "and this 0xIMG4\\nfile: shot.png $link" '' '"channel_name":"repo-'$R'","files":[{"id":"F0IMG1","name":"shot.png","mimetype":"image/png","size":10,"url":"'$link'","path":"/home/agent/shot.png"}]')" 2>&1); rc=$?
+rm "$fake/work-secs"
+check "inbox, image: fednet's file line to an agent at work, exit 0" 0 "$rc"
+for _ in $(seq 1 75); do received "$AI" | grep -q 0xIMG4 && break; sleep 0.2; done
+has "inbox, image: the agent at work took it from its queue" "$(received "$AI")" 0xIMG4
 settled "$AI"
 rm "$fake/image-paste"
 

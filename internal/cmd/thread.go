@@ -339,8 +339,10 @@ type inboundFile struct {
 	ID       string `json:"id"`
 	Name     string `json:"name"`
 	Mimetype string `json:"mimetype"`
-	Path     string `json:"path"`
-	Error    string `json:"error"`
+	// URL is the file's Slack permalink, which needs a login.
+	URL   string `json:"url"`
+	Path  string `json:"path"`
+	Error string `json:"error"`
 }
 
 // filesSection lists the message's files for the agent, empty when there
@@ -444,7 +446,29 @@ const seePrompt = "The user-level skill `fleet` (`references/thread.md`) says wh
 
 // body is the message as the thread agent reads it.
 func (m inboundMessage) body() string {
-	return m.text() + m.filesSection()
+	return m.quoteFileLines(m.text()) + m.filesSection()
+}
+
+// quoteFileLines puts in backquotes the link of each `file: <name> <link>`
+// line fednet adds to the text for one of the message's files. The link
+// is the file's Slack permalink, which ends in the file's name, and
+// Claude Code 2.1.296 reads a part of a paste ending in an image's
+// extension as an image to attach, dropping the Enter that comes
+// meanwhile; a person's own lines are left as they are.
+func (m inboundMessage) quoteFileLines(text string) string {
+	if len(m.Files) == 0 {
+		return text
+	}
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		for _, f := range m.Files {
+			if f.URL != "" && line == "file: "+f.Name+" "+f.URL {
+				lines[i] = "file: " + f.Name + " `" + f.URL + "`"
+				break
+			}
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (m inboundMessage) text() string {
