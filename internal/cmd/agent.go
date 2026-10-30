@@ -922,7 +922,11 @@ func scopeOf(repo, job string) string {
 // it returns the zero Issue. The identifier is written onto the agent's
 // reserved row as soon as the issue exists, before the claim, so a
 // failure later leaves it on the row. An issue that was created is in
-// `created`, claimed or not.
+// `created`, claimed or not, and returned with the error of a later step.
+// A claim whose conflict check did not finish
+// (atb.Unchecked) counts as claimed: the issue was created by this
+// command and no other agent has its identifier, so no earlier claim can
+// be on it.
 func workOrder(conn querier, l *linear, parent, title, task string, id *identity.Identity, source, scope string, created *[]string) (atb.Issue, error) {
 	if l == nil {
 		return atb.Issue{}, nil
@@ -934,14 +938,29 @@ func workOrder(conn querier, l *linear, parent, title, task string, id *identity
 	}
 	*created = append(*created, fmt.Sprintf("work order %s (%s), not claimed", issue.Identifier, issue.URL))
 	if err := setIssue(conn, agent, issue.Identifier, issue.URL); err != nil {
-		return atb.Issue{}, err
+		return issue, err
 	}
 	if err := atb.Claim(issue.Identifier, agent, source, scope); err != nil {
-		return atb.Issue{}, err
+		if !atb.Unchecked(err) {
+			(*created)[len(*created)-1] = fmt.Sprintf("work order %s (%s), its claim by %s not confirmed (%s)",
+				issue.Identifier, issue.URL, agent, linearClass(err))
+			return issue, err
+		}
+		claimedUnchecked(issue.Identifier, "the work order", err)
 	}
 	(*created)[len(*created)-1] = fmt.Sprintf("work order %s (%s), claimed by %s",
 		issue.Identifier, issue.URL, agent)
 	return issue, nil
+}
+
+// claimedUnchecked says on stderr that the claim on `issue` (`what`, an
+// issue this command just created) is taken although atb did not finish
+// its conflict check (`err`, atb.Unchecked), and why that is safe.
+func claimedUnchecked(issue, what string, err error) {
+	fmt.Fprintf(os.Stderr, "note: atb wrote the claim comment on %s but did not finish its conflict check; %s was "+
+		"created by this command and no other agent has its identifier yet, so no earlier claim can be on it: "+
+		"taken as claimed\n", issue, what)
+	atb.WriteStderr(os.Stderr, err)
 }
 
 // querier is what the checks and the reservation run on: the ledger, or

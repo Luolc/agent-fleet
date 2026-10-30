@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -926,7 +927,7 @@ func dirExists(path string) bool {
 // line, to <dir>/calls, with `key=set` when LINEAR_API_KEY reached it. The
 // subcommand named by failOn (`comment`, `release`, or a subcommand with
 // its first argument such as `claim EX-12`) prints the key it got to
-// stdout and stderr and exits 4. Every body file commented is appended to
+// stdout and stderr and exits 4, or the code atbExits set. Every body file commented is appended to
 // <dir>/bodies.
 func (w *world) fakeAtb(failOn string) {
 	w.t.Helper()
@@ -938,10 +939,18 @@ echo "atb $* key=$key" >> "$(dirname "$0")/../calls"
 if [ "$2" = "` + failOn + `" ] || [ "$2 $3" = "` + failOn + `" ]; then
   echo "error: refused: no holder, key $LINEAR_API_KEY" >&2
   echo "key $LINEAR_API_KEY"
-  exit 4
+  exit "$(cat "$(dirname "$0")/../atb-exit" 2>/dev/null || echo 4)"
 fi
 `
 	if err := os.WriteFile(filepath.Join(w.dir, "fake-herdr", "atb"), []byte(script), 0o755); err != nil {
+		w.t.Fatal(err)
+	}
+}
+
+// atbExits makes the step fakeAtb fails exit with `code` instead of 4.
+func (w *world) atbExits(code int) {
+	w.t.Helper()
+	if err := os.WriteFile(filepath.Join(w.dir, "atb-exit"), []byte(strconv.Itoa(code)+"\n"), 0o644); err != nil {
 		w.t.Fatal(err)
 	}
 }

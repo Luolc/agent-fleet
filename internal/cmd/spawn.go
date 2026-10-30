@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
+	"github.com/Luolc/agent-fleet/internal/atb"
 	"github.com/Luolc/agent-fleet/internal/config"
 	"github.com/Luolc/agent-fleet/internal/db"
 	"github.com/Luolc/agent-fleet/internal/exit"
@@ -49,9 +51,14 @@ const (
 		"created next, before anything else: `atb linear create` under the job's parent issue, " +
 		"titled with the task's title (as `fleet job start --help` says) and described by the task file, written onto the row, then `atb linear " +
 		"claim` in the worker's name. The worker gets FLEET_ISSUE and its task starts with a " +
-		"line naming the work order's URL. If an atb step fails, nothing else is created and the " +
-		"row is ended, so the name is free and `job end` does not wait for it; an issue created " +
-		"but not claimed is listed, and the ended row keeps it.\n\n" +
+		"line naming the work order's URL. A claim whose conflict check atb (0.4.0 or later) did " +
+		"not finish, its exit 5, counts as claimed, with a note on stderr: the work order was just " +
+		"created and no other agent can have claimed it. If an atb step fails, nothing else is " +
+		"created and the row is ended, so the name is free and `job end` does not wait for it; " +
+		"an issue created is listed, and the ended row keeps it. The last line says what is left: " +
+		"no work order fleet heard of (a create that failed may still have made one, held by " +
+		"nobody), one claimed by nobody (cancel it in Linear), or a claim atb did not confirm " +
+		"(timed out, an exit other than 5), which `fleet worker end <name> --issue <ISSUE>` releases.\n\n" +
 		"Then a tab is made in the job's workspace " +
 		"with the FLEET_* variables set, and the agent --agent names is started; the pane is " +
 		"renamed after the worker. Claude Code, the default, is started with `herdr agent start " +
@@ -259,19 +266,35 @@ func (c *spawnChecked) dedup(conn querier) error {
 }
 
 // linearFailed ends a spawn whose Linear steps failed. Nothing is in herdr
-// yet and the work order, if created, is not claimed, so the reserved row
-// is ended: the name is free again and `job end` is not held up by a
-// worker that never started. The ended row keeps the work order.
-func (c *spawnChecked) linearFailed(conn *sql.DB, err error, created []string, hint string) (exit.Code, error) {
+// yet, so the reserved row is ended: the name is free again and `job end`
+// is not held up by a worker that never started. The ended row keeps the
+// work order `issue` (empty when none was created), and the hint says
+// what is left on it.
+func (c *spawnChecked) linearFailed(conn *sql.DB, err error, issue string, created []string, hint string) (exit.Code, error) {
 	if endErr := endRow(conn, c.id.Agent); endErr != nil {
 		return startFailed(c.id.Agent, errors.Join(err, endErr), 0, created, hint)
 	}
 	created[0] = fmt.Sprintf("ledger row %s, now ended: nothing was started and the name is free", c.id.Agent)
-	hint = "find out why from the error above first"
-	if len(created) > 1 {
-		hint += "; the work order is claimed by nobody, cancel it in Linear"
-	}
+	hint = "find out why from the error above first; " + c.orderLeft(err, issue)
 	return startFailed(c.id.Agent, err, 0, created, hint)
+}
+
+// orderLeft says what a spawn stopped by `err` left of the worker's work
+// order `issue`: none fleet heard of, though a create that failed may
+// have made one; created and not claimed, held by nobody; or a claim atb
+// did not confirm, which may be on it.
+func (c *spawnChecked) orderLeft(err error, issue string) string {
+	var failure *atb.Failure
+	switch {
+	case issue == "":
+		return fmt.Sprintf("atb linear create reported no work order; if it made one under %s anyway, nobody "+
+			"holds it: cancel it in Linear", c.job.ParentIssue)
+	case !errors.As(err, &failure) || !strings.HasPrefix(failure.Op, "atb linear claim "):
+		return fmt.Sprintf("the work order %s is claimed by nobody, cancel it in Linear", issue)
+	}
+	return fmt.Sprintf("atb did not confirm the claim of %[1]s on the work order %[2]s, so it may be there: "+
+		"`fleet worker end %[1]s --issue %[2]s` releases it as abandoned, or exits 5 after atb's exit 4 when "+
+		"%[1]s holds nothing there, and then nobody does: cancel %[2]s in Linear", c.id.Agent, issue)
 }
 
 // Spawn runs `spawn`.
@@ -293,7 +316,7 @@ func Spawn(h *herdr.Herdr, args SpawnArgs) (exit.Code, error) {
 	issue, err := workOrder(conn, c.linear, c.job.ParentIssue, c.title, c.task, c.id, c.me.Agent,
 		scopeOf(c.job.Repo, c.me.Job), &created)
 	if err != nil {
-		return c.linearFailed(conn, err, created, hint)
+		return c.linearFailed(conn, err, issue.Identifier, created, hint)
 	}
 	c.id.Issue = issue.Identifier
 	c.id.Scratch = jobScratch(c.sc, c.job.Repo, c.job.LeadCwd)

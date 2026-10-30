@@ -103,7 +103,10 @@ const (
 		"steps after it are skipped and the agent starts anyway: before the ticket is " +
 		"claimed, the session runs without it (FLEET_ISSUE empty), the thread is told in one " +
 		"line (`fednet client post`, as far as it can) and `fleet thread end` or the next " +
-		"session catches up; after, it keeps the ticket. Either way its first message says " +
+		"session catches up; after, it keeps the ticket. A claim a try left with atb's exit 5 " +
+		"(0.4.0 or later: written, its conflict check not finished) is on the ticket even when a " +
+		"later try fails another way, so the session keeps the ticket, for `thread end` to " +
+		"release, unless a later try lost to an earlier claim (exit 3). Either way its first message says " +
 		"what is missing and the message is delivered. Before the start, the thread's " +
 		"checkout is fetched from origin and fast-forwarded when it is on origin/HEAD's " +
 		"branch, clean and only behind; otherwise it is left and the first message says why. " +

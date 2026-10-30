@@ -276,3 +276,77 @@ func TestWorkerEndTypesNothingIntoALeadPausedOnItsDialog(t *testing.T) {
 		t.Errorf("%+v, calls %q", out, w.calls())
 	}
 }
+
+// `worker end --issue` releases, in the worker's name and as abandoned,
+// only the work order an ended row of that name kept unreleased, as one
+// atb call that writes nothing when refused; it touches nothing in herdr
+// and no live row, even one that reuses the name.
+func TestWorkerEndIssueReleasesOnlyTheWorkOrderAnEndedRowLeft(t *testing.T) {
+	w, _, _ := workerEndWorld(t)
+	conn := w.ledger()
+	for _, stmt := range []string{
+		"INSERT INTO agents (name, role, job, parent, state, started_at, issue) VALUES " +
+			"('item-1-c', 'worker', 'item-1', 'item-1-lead', 'ended', 0, 'EX-15'), " +
+			"('item-1-c', 'worker', 'item-1', 'item-1-lead', 'active', 1, 'EX-16'), " +
+			"('item-1-d', 'worker', 'item-1', 'item-1-lead', 'ended', 0, 'EX-17'), " +
+			"('item-1-e', 'worker', 'item-1', 'item-1-lead', 'ended', 0, 'EX-18'), " +
+			"('item-2-a', 'worker', 'item-2', 'item-2-lead', 'ended', 0, 'EX-19')",
+		"INSERT INTO steps (key, step, done_at) SELECT 'watch-gone:' || id, 'release-work-order', 0 FROM agents " +
+			"WHERE name = 'item-1-e'",
+	} {
+		if _, err := conn.Exec(stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	conn.Close()
+	release := "atb linear release EX-15 --agent item-1-c --reason released by item-1-lead with `fleet worker end " +
+		"--issue`: the row of item-1-c ended without releasing it --abandon key=set\n"
+	out := w.endWorker("item-1-c", "--issue", "EX-15")
+	if out.code != 0 || out.stdout != "released the work order EX-15 of item-1-c (job item-1) as abandoned\n" ||
+		w.calls() != release {
+		t.Fatalf("%+v, calls %q", out, w.calls())
+	}
+	if got := state(w, "item-1-c"); got != "active" {
+		t.Errorf("the live item-1-c is %s", got)
+	}
+	_ = os.Remove(filepath.Join(w.dir, "calls"))
+	refused := map[string]struct {
+		out  result
+		code int
+		says string
+	}{
+		"released already":        {w.endWorker("item-1-c", "--issue", "EX-15"), 1, "is recorded already (worker-end:"},
+		"released by watch":       {w.endWorker("item-1-e", "--issue", "EX-18"), 1, "is recorded already (watch-gone:"},
+		"a live row's order":      {w.endWorker("item-1-c", "--issue", "EX-16"), 4, "no ended agent item-1-c with the work order EX-16"},
+		"another job's worker":    {w.endWorker("item-2-a", "--issue", "EX-19"), 1, "not yours (item-1)"},
+		"with a report":           {w.endWorker("item-1-d", "--issue", "EX-17", "--report-file", task(w, "r.md", "x\n")), 1, "does not go with --issue"},
+		"not an identifier":       {w.endWorker("item-1-d", "--issue", "ex-17"), 1, "not a Linear issue identifier"},
+		"a worker ending another": {w.asAgent("item-1-a", "worker", "item-1-lead", "item-1", "worker", "end", "item-1-d", "--issue", "EX-17"), 1, "a worker cannot end an agent"},
+	}
+	for name, c := range refused {
+		if c.out.code != c.code || !strings.Contains(c.out.stderr, c.says) {
+			t.Errorf("%s: %+v, want exit %d saying %q", name, c.out, c.code, c.says)
+		}
+	}
+	if calls := w.calls(); calls != "" {
+		t.Errorf("a refusal called %q", calls)
+	}
+
+	// The worker holds nothing there (another agent's claim, or none): atb
+	// refuses with exit 4, writing nothing, and fleet fails without
+	// recording the release, so it can be run again.
+	w.fakeAtb("release")
+	out = w.run("", []string{"worker", "end", "item-1-d", "--issue", "EX-17"}, "FLEET_AGENT=thread-1",
+		"FLEET_ROLE=thread", "FLEET_SCOPE="+scope, linearKey)
+	if out.code != 5 || !strings.Contains(out.stderr, "atb linear release EX-17 failed (exit status: 4)") ||
+		strings.Contains(w.calls(), "atb linear comment") || strings.Contains(w.calls(), "--force") {
+		t.Errorf("held by another: %+v, calls %q", out, w.calls())
+	}
+	w.fakeAtb("")
+	out = w.run("", []string{"worker", "end", "item-1-d", "--issue", "EX-17"}, "FLEET_AGENT=thread-1",
+		"FLEET_ROLE=thread", "FLEET_SCOPE="+scope, linearKey)
+	if out.code != 0 || !strings.Contains(w.calls(), "atb linear release EX-17 --agent item-1-d --reason released by "+
+		"thread-1 with") {
+		t.Errorf("again, from the thread agent: %+v, calls %q", out, w.calls())
+	}
+}

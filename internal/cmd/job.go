@@ -80,7 +80,11 @@ const (
 		"question; over 80 characters, cut to 79 and ended with `…`) and described by " +
 		"the task file, written onto the lead's row, and claimed in the lead's name; when the " +
 		"caller has a thread ticket (FLEET_ISSUE), it is related to the parent (`atb linear " +
-		"relate`): the ticket is not the parent, so do not pass it as --parent-issue. If an atb " +
+		"relate`): the ticket is not the parent, so do not pass it as --parent-issue. A claim " +
+		"whose conflict check atb (0.4.0 or later) did not finish, its exit 5, counts as claimed, " +
+		"with a note on stderr, on an issue this start created (the work order, a --new-parent " +
+		"parent), which no other agent can have claimed; on a --parent-issue it is a failed step, " +
+		"the claim listed for the cleanup to release. If an atb " +
 		"step fails, nothing else is created; what was created is listed, with the cleanup " +
 		"command, and the rows keep the identifiers written so far.\n\n" +
 		"Then the checkout the lead reads (the repo's, or for a cross-repo job the initiative's) " +
@@ -526,7 +530,11 @@ func (c *jobChecked) bindParent(conn querier) error {
 
 // linearSteps creates the parent when asked and binds it to the reserved
 // rows at once, claims it for the lead, and makes the lead's work order.
-// Returns the work order (zero without Linear).
+// Returns the work order (zero without Linear). A claim whose conflict
+// check did not finish (atb.Unchecked) counts as claimed on a parent this
+// start created, as on a work order; on a parent that was there before,
+// another agent's earlier claim may be on it, so the start stops, the
+// claim listed, for `job end --force` to release.
 func (c *jobChecked) linearSteps(conn querier, args JobStartArgs, created *[]string) (atb.Issue, error) {
 	if c.linear == nil {
 		return atb.Issue{}, nil
@@ -544,7 +552,15 @@ func (c *jobChecked) linearSteps(conn querier, args JobStartArgs, created *[]str
 		}
 	}
 	if err := atb.Claim(c.parent, c.id.Agent, c.me.Agent, scope); err != nil {
-		return atb.Issue{}, err
+		switch {
+		case !atb.Unchecked(err):
+			return atb.Issue{}, err
+		case args.NewParent == nil:
+			*created = append(*created, fmt.Sprintf("parent issue %s: the claim comment of %s is written, but its "+
+				"conflict check did not finish; `fleet job end %s --force` releases it", c.parent, c.id.Agent, c.id.Job))
+			return atb.Issue{}, err
+		}
+		claimedUnchecked(c.parent, "the parent issue", err)
 	}
 	*created = append(*created, fmt.Sprintf("parent issue %s claimed by %s", c.parent, c.id.Agent))
 	issue, err := workOrder(conn, c.linear, c.parent, c.title, c.task, c.id, c.me.Agent, scope, created)

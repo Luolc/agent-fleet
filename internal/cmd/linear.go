@@ -58,8 +58,10 @@ type linearLogEntry struct {
 	Exit   int    `json:"exit"`
 	Class  string `json:"class"`
 	Stderr string `json:"stderr"`
-	// Outcome is `retried`, `gave up`, or `held` for a claim another agent
-	// holds.
+	// Outcome is `retried`, `gave up`, `held` for a claim another agent
+	// holds, or `unchecked` for a claim whose last try wrote the claim
+	// without finishing its conflict check (atb's exit 5), which the start
+	// takes, as it takes one an earlier try wrote.
 	Outcome string `json:"outcome"`
 }
 
@@ -94,6 +96,9 @@ func (l linearLog) try(do func() error) error {
 			outcome = "held"
 		case try > len(LinearPauses) || failure.ExitCode < 0 || !linearNow().Add(LinearPauses[try-1]).Before(l.deadline):
 			outcome = "gave up"
+			if atb.Unchecked(err) {
+				outcome = "unchecked"
+			}
 		}
 		l.write(linearLogEntry{Step: failure.Op, Try: try, Exit: failure.ExitCode, Class: failure.Class,
 			Stderr: failure.Stderr, Outcome: outcome})

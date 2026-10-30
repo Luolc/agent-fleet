@@ -92,3 +92,22 @@ func TestWriteStderrShowsTheRedactedStderrWithoutControlCharacters(t *testing.T)
 		t.Errorf("wrote %q for an error that is not atb's", out.String())
 	}
 }
+
+// Only atb's exit 5 is a claim written without its conflict check.
+func TestUncheckedIsOnlyExit5(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("PATH", dir+":/usr/bin:/bin")
+	for code, want := range map[int]bool{5: true, 2: false, 3: false, 1: false} {
+		script := "#!/bin/sh\necho 'note: the claim comment on EX-1 was written, but the conflict check did not finish' >&2\nexit " +
+			strconv.Itoa(code) + "\n"
+		if err := os.WriteFile(filepath.Join(dir, "atb"), []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if got := Unchecked(Claim("EX-1", "a", "s", "x")); got != want {
+			t.Errorf("exit %d: Unchecked = %v, want %v", code, got, want)
+		}
+	}
+	if Unchecked(nil) {
+		t.Error("a claim that succeeded is unchecked")
+	}
+}

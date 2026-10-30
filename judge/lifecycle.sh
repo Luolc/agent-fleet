@@ -329,13 +329,39 @@ esac
 ATB
 settled wire-lead
 out=$(PATH=/home/agent/fake-atb:$PATH as wire-lead lead thread-1 wire -- spawn b --cwd /home/agent/x-repo/general/wire --task-file "$(task wireb 'wire worker b')" 2>&1); rc=$?
-mv /home/agent/fake-atb/atb.ok /home/agent/fake-atb/atb
 check "spawn: exit 5 when the work order cannot be created" 5 "$rc"
 has "spawn: atb's stderr shown with the key redacted, the row ended" "$out" \
   "atb linear create failed (exit status: 1)" "atb linear create printed on stderr (credentials redacted):" \
   "  error: project not found, key [redacted]" "ledger row wire-b, now ended: nothing was started and the name is free"
 check "spawn: the key is not shown" no "$(case "$out" in *judge0xK3Y*) echo yes ;; *) echo no ;; esac)"
 check "spawn: the worker's row is ended" "ended " "$(ledger "SELECT state FROM agents WHERE name = 'wire-b'")"
+# A spawn whose claim atb does not confirm: the row is ended keeping the
+# work order, the hint names `worker end --issue`, and that releases the
+# claim in the worker's name, as abandoned, in one atb call.
+cat > /home/agent/fake-atb/atb <<'ATB'
+#!/bin/sh
+case "$2" in
+  query) echo '{"issue":{"team":{"key":"QT"},"project":{"name":"Queried project"}}}' ;;
+  create) echo '{"identifier":"QT-13","url":"https://linear.example.test/QT-13"}' ;;
+  claim) echo "error: the read-back failed" >&2; exit 4 ;;
+esac
+ATB
+settled wire-lead
+out=$(PATH=/home/agent/fake-atb:$PATH as wire-lead lead thread-1 wire -- spawn c --cwd /home/agent/x-repo/general/wire --task-file "$(task wirec 'wire worker c')" 2>&1); rc=$?
+mv /home/agent/fake-atb/atb.ok /home/agent/fake-atb/atb
+check "spawn, claim not confirmed: exit 5" 5 "$rc"
+has "spawn, claim not confirmed: the work order listed and the hint names worker end --issue" "$out" \
+  "work order QT-13 (https://linear.example.test/QT-13), its claim by wire-c not confirmed (atb linear claim QT-13: exit 4)" \
+  "\`fleet worker end wire-c --issue QT-13\` releases it as abandoned"
+check "spawn, claim not confirmed: the ended row keeps the work order" "ended|QT-13 " \
+  "$(ledger "SELECT state || '|' || issue FROM agents WHERE name = 'wire-c'")"
+: > /home/agent/atb.log
+out=$(PATH=/home/agent/fake-atb:$PATH thr worker end wire-c --issue QT-13 2>&1); rc=$?
+check "worker end --issue: exit 0" 0 "$rc"
+has "worker end --issue: says what it released" "$out" "released the work order QT-13 of wire-c (job wire) as abandoned"
+check "worker end --issue: one release in the worker's name, as abandoned" \
+  "linear release QT-13 --agent wire-c --reason released by thread-1 with \`fleet worker end --issue\`: the row of wire-c ended without releasing it --abandon|" \
+  "$(tr '\n' '|' < /home/agent/atb.log)"
 # A worker of the cross-repo job gets its work order where the parent says.
 : > /home/agent/atb.log
 settled wire-lead
@@ -383,7 +409,7 @@ check "job end cross-repo: the conclusion written to the parent" \
 rm /home/agent/atb-fail
 has "job end cross-repo: the conclusion printed" "$out" "Job wire ended: abandoned."
 check "job end cross-repo: directory removed" no "$([ -e /home/agent/x-repo/general/wire ] && echo yes || echo no)"
-check "job end cross-repo: job ended as abandoned with its rows" "ended|abandoned ended ended ended " \
+check "job end cross-repo: job ended as abandoned with its rows" "ended|abandoned ended ended ended ended " \
   "$(ledger "SELECT state, outcome FROM jobs WHERE job = 'wire'")$(ledger "SELECT state FROM agents WHERE job = 'wire' ORDER BY id")"
 check "job end cross-repo: workspace and agents gone" "0 0" \
   "$("${S[@]}" workspace list | jq '[.result.workspaces[] | select(.label == "wire")] | length') $("${S[@]}" agent list | jq '[.result.agents[] | select(.name | startswith("wire-"))] | length')"

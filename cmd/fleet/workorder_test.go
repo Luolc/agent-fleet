@@ -517,7 +517,8 @@ func TestSpawnStopsWhenAnAtbStepFails(t *testing.T) {
 		failed := "atb linear create failed (exit status: 4)"
 		if step == "claim" {
 			failed = "atb linear claim EX-12 failed (exit status: 4)"
-			if !strings.Contains(out.stderr, "work order EX-12 (https://linear.example.test/EX-12), not claimed") {
+			if !strings.Contains(out.stderr, "work order EX-12 (https://linear.example.test/EX-12), its claim by "+
+				"item-1-a not confirmed (atb linear claim EX-12: exit 4)") {
 				t.Errorf("claim: the created issue is not listed: %q", out.stderr)
 			}
 		}
@@ -538,10 +539,14 @@ func TestSpawnStopsWhenAnAtbStepFails(t *testing.T) {
 		// Nothing was started, so the reserved row is ended, keeping the work
 		// order once that was created.
 		want := " EX-10 ended " + dir(w, "wt")
-		hint := "find out why from the error above first\n"
+		hint := "find out why from the error above first; atb linear create reported no work order; if it made one " +
+			"under EX-10 anyway, nobody holds it: cancel it in Linear\n"
 		if step == "claim" {
 			want = "EX-12" + want
-			hint = "find out why from the error above first; the work order is claimed by nobody, cancel it in Linear\n"
+			hint = "find out why from the error above first; atb did not confirm the claim of item-1-a on the work " +
+				"order EX-12, so it may be there: `fleet worker end item-1-a --issue EX-12` releases it as abandoned, " +
+				"or exits 5 after atb's exit 4 when item-1-a holds nothing there, and then nobody does: cancel EX-12 " +
+				"in Linear\n"
 		}
 		if got := row(w, "item-1-a"); got != want {
 			t.Errorf("%s: row = %s, want %s", step, got, want)
@@ -550,6 +555,57 @@ func TestSpawnStopsWhenAnAtbStepFails(t *testing.T) {
 			!strings.HasSuffix(out.stderr, hint) {
 			t.Errorf("%s: the ended row and the hint are not listed: %q", step, out.stderr)
 		}
+	}
+}
+
+// atb's exit 5 on the claim of a work order the spawn just created is a
+// claim whose conflict check did not finish: the worker starts with it,
+// and a note says why that is safe.
+func TestSpawnTakesAClaimWhoseCheckDidNotFinishOnItsNewWorkOrder(t *testing.T) {
+	w := newWorld(t)
+	w.configure(withLinear)
+	openJobWithLead(w, "EX-10")
+	w.useStartHerdr()
+	w.fakeAtbCreating("claim")
+	w.atbExits(5)
+	cwd := dir(w, "wt")
+	out := w.spawnWorker("--task-file", task(w, "task.md", "import\n"), "--cwd", cwd)
+	if out.code != 0 || !strings.Contains(out.stdout, "started item-1-a in job item-1") {
+		t.Fatalf("%+v", out)
+	}
+	if !strings.Contains(out.stderr, "note: atb wrote the claim comment on EX-12 but did not finish its conflict check; "+
+		"the work order was created by this command and no other agent has its identifier yet, so no earlier claim "+
+		"can be on it: taken as claimed\n") {
+		t.Errorf("stderr = %q", out.stderr)
+	}
+	if got := row(w, "item-1-a"); got != "EX-12 EX-10 active "+cwd {
+		t.Errorf("row = %s", got)
+	}
+	if argv, _ := os.ReadFile(filepath.Join(w.dir, "argv")); !strings.Contains(string(argv), "FLEET_ISSUE=EX-12 (your work order") {
+		t.Errorf("delivered argv = %q", argv)
+	}
+}
+
+// A work order created but never claimed (here the ledger refused its
+// identifier) is held by nobody, and the hint says so.
+func TestSpawnSaysAWorkOrderNeverClaimedIsHeldByNobody(t *testing.T) {
+	w := newWorld(t)
+	w.configure(withLinear)
+	openJobWithLead(w, "EX-10")
+	w.useStartHerdr()
+	w.fakeAtbCreating("")
+	conn := w.ledger()
+	if _, err := conn.Exec("CREATE TRIGGER refuse_issue BEFORE UPDATE OF issue ON agents " +
+		"BEGIN SELECT RAISE(ABORT, 'made-up refusal'); END"); err != nil {
+		t.Fatal(err)
+	}
+	conn.Close()
+	out := w.spawnWorker("--task-file", task(w, "task.md", "import\n"), "--cwd", dir(w, "wt"))
+	if out.code != 5 || strings.Contains(w.calls(), "atb linear claim") ||
+		!strings.Contains(out.stderr, "work order EX-12 (https://linear.example.test/EX-12), not claimed") ||
+		!strings.HasSuffix(out.stderr, "find out why from the error above first; the work order EX-12 is claimed "+
+			"by nobody, cancel it in Linear\n") {
+		t.Errorf("%+v, calls %q", out, w.calls())
 	}
 }
 
@@ -1197,7 +1253,8 @@ func TestJobStartKeepsTheIdentifiersWrittenBeforeAnAtbStepFailed(t *testing.T) {
 		// The parent is claimed and the work order created and bound, then
 		// its claim fails.
 		{"claim EX-12", "EX-11", "EX-12 EX-11 starting ", []string{"parent issue EX-11 claimed by item-2-lead",
-			"work order EX-12 (https://linear.example.test/EX-12), not claimed"}},
+			"work order EX-12 (https://linear.example.test/EX-12), its claim by item-2-lead not confirmed " +
+				"(atb linear claim EX-12: exit 4)"}},
 	} {
 		w := newWorld(t)
 		w.configure(withLinear)
@@ -1222,6 +1279,63 @@ func TestJobStartKeepsTheIdentifiersWrittenBeforeAnAtbStepFailed(t *testing.T) {
 		if strings.Contains(w.calls(), "herdr workspace create") {
 			t.Errorf("%s: the workspace was created", c.failOn)
 		}
+	}
+}
+
+// atb's exit 5 on the claim of a parent that was there before stops the
+// start, since another agent's earlier claim may be on it; the claim is
+// listed, and the reclaim the hint names releases it with --restore in
+// the lead's name.
+func TestJobStartStopsAtAnUncheckedClaimOnAnExistingParentAndTheReclaimReleasesIt(t *testing.T) {
+	w := newWorld(t)
+	w.configure(withLinear)
+	w.useStartHerdr()
+	w.fakeAtbCreating("claim EX-10")
+	w.atbExits(5)
+	out := w.startJob("item-2", "--repo", "example-dataset", "--parent-issue", "EX-10",
+		"--task-file", task(w, "task.md", "import\n"))
+	if out.code != 5 || strings.Contains(w.calls(), "atb linear create") || strings.Contains(w.calls(), "herdr workspace create") {
+		t.Fatalf("%+v, calls %q", out, w.calls())
+	}
+	for _, want := range []string{"parent issue EX-10: the claim comment of item-2-lead is written, but its conflict " +
+		"check did not finish; `fleet job end item-2 --force` releases it",
+		"find out why from the error above first; then clean up with: fleet job end item-2 --force"} {
+		if !strings.Contains(out.stderr, want) {
+			t.Errorf("%q missing from %q", want, out.stderr)
+		}
+	}
+	if got := row(w, "item-2-lead"); !strings.HasPrefix(got, " EX-10 starting ") {
+		t.Errorf("row = %q", got)
+	}
+	w.closeHerdr("")
+	w.fakeAtb("")
+	_ = os.Remove(filepath.Join(w.dir, "calls"))
+	out = w.run("", []string{"job", "end", "item-2", "--force"}, "FLEET_AGENT=thread-1", "FLEET_ROLE=thread",
+		"FLEET_SCOPE="+scope, linearKey)
+	if out.code != 0 {
+		t.Fatalf("reclaim: %+v", out)
+	}
+	if release := "atb linear release EX-10 --agent item-2-lead --reason job item-2 reclaimed --restore key=set"; !strings.Contains(w.calls(), release) {
+		t.Errorf("calls = %q, want %q", w.calls(), release)
+	}
+}
+
+// A parent this start created (--new-parent) has no earlier claim on it,
+// so atb's exit 5 on its claim counts as claimed, as on a work order.
+func TestJobStartTakesAnUncheckedClaimOnTheParentItCreated(t *testing.T) {
+	w := newWorld(t)
+	w.configure(withLinear)
+	w.useStartHerdr()
+	w.fakeAtbCreating("claim EX-11")
+	w.atbExits(5)
+	out := w.startJob("item-2", "--repo", "example-dataset", "--new-parent", "Import",
+		"--task-file", task(w, "task.md", "import\n"))
+	if out.code != 0 || !strings.Contains(out.stderr, "note: atb wrote the claim comment on EX-11 but did not finish "+
+		"its conflict check; the parent issue was created by this command") {
+		t.Fatalf("%+v", out)
+	}
+	if got := row(w, "item-2-lead"); !strings.HasPrefix(got, "EX-12 EX-11 active ") {
+		t.Errorf("row = %q", got)
 	}
 }
 
