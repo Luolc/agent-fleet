@@ -31,7 +31,7 @@ func TestAMessageWithFilesListsEachOne(t *testing.T) {
 	want := "Message in thread C1/1.0 from U0ABC at 1.5:\n\nsee these\n\n" +
 		"Files attached to the message (open the path with the Read tool to see the file; a " +
 		"`file: <name> <link>` line in the text is a Slack link that needs a login, so do not use it, go by the path):\n" +
-		"- shot.png (image/png, id F0IMG1): path /var/cache/fednet/F0IMG1-shot.png\n" +
+		"- shot.png (image/png, id F0IMG1): path `/var/cache/fednet/F0IMG1-shot.png`\n" +
 		"- notes.txt (text/plain, id F0DOC2): not fetched; to get a local path run " + cmd + "F0DOC2`, which prints it, then Read it\n" +
 		"- big.pdf (application/pdf, id F0BIG3): not fetched, error: file too large; to try again run " + cmd +
 		"F0BIG3`, which prints the path, then Read it\n" +
@@ -54,7 +54,7 @@ func TestAFileWithAPathGetsNoCommandOfItsOwn(t *testing.T) {
 func TestARelayedMessageListsItsFilesToo(t *testing.T) {
 	e := eventOf(t, strings.Replace(filesEvent, `"type":"message",`, `"type":"message","trigger":"relay","from_client":"m1",`, 1))
 	got := inboxMessage(e, "", "/s").body()
-	if !strings.HasPrefix(got, "[RELAY from m1]\n") || !strings.Contains(got, "path /var/cache/fednet/F0IMG1-shot.png") {
+	if !strings.HasPrefix(got, "[RELAY from m1]\n") || !strings.Contains(got, "path `/var/cache/fednet/F0IMG1-shot.png`") {
 		t.Errorf("relay body: %q", got)
 	}
 }

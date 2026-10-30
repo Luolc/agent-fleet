@@ -21,6 +21,14 @@
 # Claude does: TICK also adds a transcript line each time (a moving agent),
 # HANG does not (a stuck one). Exact, because a stuck agent's screen, with
 # the word on it, is quoted in the notice another fake Claude receives.
+# While ~/.fake-claude/image-paste exists, a message with a part that Claude
+# Code 2.1.296 reads as the path of an image to attach (the text split at
+# newlines and at each space before `/`, a part ending in .png, .jpg, .jpeg,
+# .gif or .webp) is held in the input box, drawn as `[Image #N][Pasted text
+# #M]`, and not submitted: Claude Code drops the Enter that comes while it
+# reads the image, and herdr presses Enter 300 ms after the paste. A message
+# typed in while one is held joins it; a lone Enter (a key pressed on its
+# own) submits what is held.
 # Every message received is also appended in full to
 # ~/.fake-claude/received-<pane id> (HERDR_PANE_ID, as herdr sets it in the
 # pane), because the screen shows only the last 20 lines and a long first
@@ -33,10 +41,18 @@ draw() {
   printf '\033[2J\033[H'
   printf '%s\n' "${transcript[@]:$start}"
 }
-idle() {
+idle() { # [what the input box holds]
   printf '\033]0;\xe2\x9c\xb3 Claude Code\007'
   draw
-  printf '\n%s\n\xe2\x9d\xaf \n%s\n  ? for shortcuts\n' "$rule" "$rule"
+  printf '\n%s\n\xe2\x9d\xaf %s\n%s\n  ? for shortcuts\n' "$rule" "${1:-}" "$rule"
+}
+# image_part: whether the text has a part Claude Code reads as an image path.
+image_part() {
+  local part
+  while IFS= read -r part; do
+    case "${part,,}" in *.png | *.jpg | *.jpeg | *.gif | *.webp) return 0 ;; esac
+  done < <(printf '%s\n' "$1" | sed 's| /|\n/|g; s/[[:space:]]*$//')
+  return 1
 }
 working() {
   printf '\033]0;\xe2\xa0\x8b Working\007'
@@ -136,6 +152,7 @@ if [ -e "$fake/trust" ] && ! grep -qxF "$(pwd)" "$fake/trusted" 2>/dev/null; the
   trust_dialog
 fi
 idle
+held='' box='' pastes=0
 while IFS= read -r line; do
   # herdr types the text, then presses Enter about 300 ms later (measured
   # on 2026-10-07). A multi-line message therefore arrives as its first
@@ -145,15 +162,30 @@ while IFS= read -r line; do
   # window is taken as part of the same message. The window is 1 s, or the
   # number of seconds in ~/.fake-claude/gather-secs (the judge sets it past
   # 5 s to prove the first frame does not wait for it).
-  [ -n "$line" ] || continue
   gather=$(cat "$HOME/.fake-claude/gather-secs" 2>/dev/null || echo 1)
-  transcript+=("> $line")
-  [ -e "$HOME/.fake-claude/stall" ] || working
-  while IFS= read -r -t "$gather" more; do
-    line="$line"$'\n'"$more"
-    transcript+=("> $more")
+  if [ -z "$line" ]; then
+    [ -n "$held" ] || continue
+    line=$held held='' box=''
+    while IFS= read -r more; do transcript+=("> $more"); done <<<"$line"
+  elif [ -e "$fake/image-paste" ]; then
+    while IFS= read -r -t "$gather" more; do line="$line"$'\n'"$more"; done
+    if image_part "$line"; then
+      held=${held:+$held$'\n'}$line pastes=$((pastes + 2))
+      box="$box[Image #$((pastes - 1))][Pasted text #$pastes]"
+      idle "$box"
+      continue
+    fi
+    line=${held:+$held$'\n'}$line held='' box=''
+    while IFS= read -r more; do transcript+=("> $more"); done <<<"$line"
+  else
+    transcript+=("> $line")
     [ -e "$HOME/.fake-claude/stall" ] || working
-  done
+    while IFS= read -r -t "$gather" more; do
+      line="$line"$'\n'"$more"
+      transcript+=("> $more")
+      [ -e "$HOME/.fake-claude/stall" ] || working
+    done
+  fi
   mkdir -p "$fake"
   printf '%s\n' "$line" >> "$fake/received-${HERDR_PANE_ID:-$$}"
   if [ -e "$HOME/.fake-claude/stall" ]; then idle; continue; fi

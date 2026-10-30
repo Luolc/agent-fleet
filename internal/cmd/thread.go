@@ -361,7 +361,10 @@ func (m inboundMessage) filesSection() string {
 		cmd := fmt.Sprintf("`fednet client fetch-file -socket %s %s`", socket, f.ID)
 		switch {
 		case f.Path != "":
-			b.WriteString("path " + f.Path)
+			// In backquotes, so no part of the line ends in the image's
+			// extension: Claude Code reads such a part of a paste as an
+			// image to attach, and drops the Enter that comes meanwhile.
+			b.WriteString("path `" + f.Path + "`")
 		case f.Error != "":
 			fmt.Fprintf(&b, "not fetched, error: %s; to try again run %s, which prints the path, then Read it", f.Error, cmd)
 		default:
@@ -854,6 +857,9 @@ func (s *threadStart) start() (exit.Code, error) {
 		return startFailed(s.id.Agent, err, 0, s.created, "")
 	}
 	code, err := startAndDeliver(s.h, s.conn, s.id, place, s.cwd, KindClaude, nil, nil, s.msg.sender(), s.firstMessage(), &s.created)
+	if err == nil && code == exit.Unknown {
+		return typedFirst(s.conn, s.id.Agent)
+	}
 	if err != nil || code != exit.Ok {
 		s.abandon(place, row)
 		return startFailed(s.id.Agent, err, code, s.created, "")
@@ -1028,20 +1034,45 @@ func resumeThreadStart(h *herdr.Herdr, conn *sql.DB, scope string, cfg *config.S
 			return 0, false, err
 		}
 	}
-	if err := ResumeAgent(h, name, pane, s.cwd); err != nil {
-		return 0, false, err
+	// An agent at work is past its start screens; the message waits in
+	// its queue.
+	status, _ := herdrAgent(h, name)["agent_status"].(string)
+	if status != "working" {
+		if err := ResumeAgent(h, name, pane, s.cwd); err != nil {
+			return 0, false, err
+		}
 	}
 	text, err := WithHeader(s.msg.sender(), s.firstMessage())
 	if err != nil {
 		return 0, false, err
 	}
-	if code, err = Deliver(h, name, text); err != nil || code != exit.Ok {
+	if code, err = Deliver(h, name, text); err == nil && code == exit.Unknown {
+		code, err = typedFirst(conn, name)
+		return code, false, err
+	}
+	if err != nil || code != exit.Ok {
 		return code, false, err
 	}
 	if _, err := conn.Exec("UPDATE agents SET state = 'active' WHERE name = ?1 AND state = 'starting'", name); err != nil {
 		return 0, false, exit.Database(err)
 	}
 	return exit.Ok, false, nil
+}
+
+// typedFirst ends a thread agent's start whose first message herdr gave
+// no clear signal for: the message is typed into the agent, so its row is
+// `active`, and the thread's next messages reach it as messages, without
+// the prompt again. The retry of the message that started it (recorded
+// `typed`) submits it if it waits in the input box; an agent that did not
+// come up is gone from herdr, and the next message starts a new session.
+// Exit 2.
+func typedFirst(conn *sql.DB, name string) (exit.Code, error) {
+	if _, err := conn.Exec("UPDATE agents SET state = 'active' WHERE name = ?1 AND state = 'starting'", name); err != nil {
+		return 0, exit.Database(err)
+	}
+	fmt.Fprintf(os.Stderr, "note: %s has its first message typed in, but herdr saw no turn start; its row is active, so "+
+		"the thread's next messages reach it without the prompt\n", name)
+	return exit.Unknown, nil
 }
 
 // maxPostBytes is the largest body `thread post` takes.
