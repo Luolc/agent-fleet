@@ -136,7 +136,7 @@ func modelWorld(t *testing.T) *watchWorld {
 			"('j-pi', 'worker', 'j', 'j-lead', 'p5', 'active', 0, 'pi', 'example/pi-model', NULL)",
 		"INSERT INTO agents (name, role, job, parent, pane_id, state, started_at, kind, model, effort, cwd, task, "+
 			"issue, issue_url) VALUES ('j-w', 'worker', 'j', 'j-lead', 'p3', 'active', 0, 'claude', '"+startModel+"', '"+
-			startEffort+"', '"+work+"', '"+task+"', 'LL-9', 'https://linear.example.test/issue/LL-9')")
+			startEffort+"', '"+work+"', '"+task+"', 'EX-9', 'https://linear.example.test/issue/EX-9')")
 	w.herdrList("thread-c1 idle 1", "j-lead idle 1", "j-w idle 1", "j-ok working 1", "j-pi working 1 pi")
 	for _, name := range []string{"thread-c1", "j-lead", "j-w", "j-ok", "j-pi"} {
 		w.screen(name, claude("⏺ "+name, "1s", "2hr 59m"))
@@ -239,12 +239,12 @@ func TestTheModelWatchTakesOverWithoutTheConversation(t *testing.T) {
 		t.Errorf("starts %q", starts)
 	}
 	hasAll(t, "the new tab", w.raw("tab-argv"), "--workspace w-j --label w ", "--cwd "+filepath.Join(w.dir, "work"),
-		"FLEET_AGENT=j-w", "FLEET_ROLE=worker", "FLEET_PARENT=j-lead", "FLEET_JOB=j", "FLEET_ISSUE=LL-9")
+		"FLEET_AGENT=j-w", "FLEET_ROLE=worker", "FLEET_PARENT=j-lead", "FLEET_JOB=j", "FLEET_ISSUE=EX-9")
 	if closed := strings.Fields(w.raw("closed")); strings.Join(closed, " ") != "p3" {
 		t.Errorf("closed %q, want the old session's pane p3 alone", closed)
 	}
 	if got := w.query("SELECT group_concat(id || ' ' || pane_id || ' ' || state || ' ' || takeovers || ' ' || issue, ',') " +
-		"FROM agents WHERE name = 'j-w'"); got != "5 pn1 active 1 LL-9" {
+		"FROM agents WHERE name = 'j-w'"); got != "5 pn1 active 1 EX-9" {
 		t.Errorf("j-w's rows: %s", got)
 	}
 	first := w.promptsTo("j-w")
@@ -255,12 +255,12 @@ func TestTheModelWatchTakesOverWithoutTheConversation(t *testing.T) {
 		"## Note from fleet\n\nThis session takes over from an earlier session of j-w, which fleet closed: in it, "+
 			"the session now runs on claude-test-small; it started on claude-test-large.",
 		"2030-01-02T03:00:03.000Z model_refusal_fallback: claude-test-large -> claude-test-small (record f-1)",
-		"the same name, task, work order (LL-9), directory and parent (j-lead)",
+		"the same name, task, work order (EX-9), directory and parent (j-lead)",
 		"your directory "+filepath.Join(w.dir, "work")+" (read its branch, HEAD and `git status` first)",
 		"~/scratch/example/report-j-j-w-2030-01-02.md",
 		"Do not redo the step that was stopped, neither as it was nor in other words",
 		"hand that step to your lead j-lead",
-		"## Your task\n\nWork order: https://linear.example.test/issue/LL-9\n\n# Fix the example parser")
+		"## Your task\n\nWork order: https://linear.example.test/issue/EX-9\n\n# Fix the example parser")
 	for _, leak := range []string{"report-j-other", sessionWorker, ".jsonl"} {
 		if strings.Contains(first[0], leak) {
 			t.Errorf("%q in j-w's first message:\n%s", leak, first[0])
