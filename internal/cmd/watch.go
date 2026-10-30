@@ -118,13 +118,15 @@ const (
 		"refusal (model_refusal_fallback), a stop with no fallback (model_refusal_no_fallback), a message stopped " +
 		"by a safety classifier (stop_reason refusal) and a change of the messages' model (`[1m]` and the like " +
 		"name the same model) are each a line on stdout and are reported once. What is acted on is the session " +
-		"as it is now: stopped (its latest message refused, no reply after it) or moved (on another model than it " +
-		"started on), each stop or move once. A lead or worker gets a new session of the same name (a new tab in " +
+		"as it is now: stopped (its latest message refused, no reply after it) or moved (a fallback after a " +
+		"refusal moved it to the model it runs on, another than it started on; a change no fallback made, such as " +
+		"a person's /model, is only reported), each stop or move once. A lead or worker gets a new session of the same name (a new tab in " +
 		"its job's workspace, the old tab closed, started as its start was, with the model and effort the ledger " +
 		"recorded and its task); a thread agent stopped on its model is told once to go on; a thread agent moved " +
 		"gets the thread's next session (the old one ended as a reclaimed one is, a new one started as `inbox` " +
 		"starts one). Each is done once per agent (per thread for a thread's new session); after that, and when " +
-		"it cannot be done, the people decide. A session still working is looked at again next run. Reports go " +
+		"it cannot be done, the people decide. A session still working, or no longer as the run read it when " +
+		"fleet is about to act, is looked at again next run. Reports go " +
 		"to the agent's parent, as watch, and in Chinese to its thread (a thread agent's own, a job's home " +
 		"thread), with the time, the models, the record's uuid and what fleet did, never the conversation's " +
 		"text. fleet never switches a session's model and types into a session only its own messages.\n\n" +

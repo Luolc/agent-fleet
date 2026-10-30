@@ -79,10 +79,10 @@ func said(uuid, id, model, stop string) string {
 // the session is not moved; another model a fallback moved it to is.
 func TestAVariantOfTheSameModelIsNoChange(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "s.jsonl")
-	writeLines(t, path, said("a-1", "m-1", "claude-test-large[1m]", "end_turn"),
-		said("a-2", "m-2", "claude-test-large", "end_turn"))
+	writeLines(t, path, said("a-1", "m-1", "claude-test-large[1m]", "refusal"),
+		fellBack("f-1", "claude-test-large[1m]", "claude-test-large"), said("a-2", "m-2", "claude-test-large", "end_turn"))
 	events, st, complete, err := scanTranscript(path, transcriptState{}, never)
-	if err != nil || !complete || len(events) != 0 || st.moved() {
+	if err != nil || !complete || len(events) != 2 || st.moved() {
 		t.Fatalf("same model: %+v %+v %v %v", events, st, complete, err)
 	}
 	writeLines(t, path, said("a-1", "m-1", "claude-test-large[1m]", "refusal"),

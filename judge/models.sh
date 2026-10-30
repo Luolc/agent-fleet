@@ -15,6 +15,8 @@
 #   KN's agent a thread agent moved to another model: its session ended,
 #             the thread's next one started in the `threads` workspace
 #   m-ok      a worker that stayed on its model: nobody told
+#   m-p       a worker moved to another model with no fallback, as a
+#             person's /model moves it: only reported, its session kept
 # Every conversation text in the transcripts carries 0xREFUSEDTEXT, which
 # nothing fleet writes may.
 saved=("$SCOPE" "$DB")
@@ -46,7 +48,7 @@ KM=C0MOD/1700000000.000
 
 KN=C0MOD/1700000001.000
 TN=thread-c0mod-1700000001-000
-for name in thread-m m-ok "$TN"; do
+for name in thread-m m-ok m-p "$TN"; do
   check "models: $name starts idle" idle "$(start_fake "$name")"
 done
 # The job's workspace m: its lead, and m-w in a tab of its own.
@@ -76,6 +78,8 @@ INSERT INTO agents (name, role, job, parent, cwd, thread, state, started_at, pan
     ('m-lead', 'lead', 'm', 'thread-m', '/home/agent', '', 'active', $now, '$(agent_field m-lead pane_id)', 'claude',
      'claude-test-configured', 'high', ''),
     ('m-w', 'worker', 'm', 'm-lead', '/home/agent/mwork', '', 'active', $now, '$wpane', 'claude',
+     'claude-test-configured', 'high', '$mtask'),
+    ('m-p', 'worker', 'm', 'm-lead', '/home/agent', '', 'active', $now, '$(agent_field m-p pane_id)', 'claude',
      'claude-test-configured', 'high', '$mtask');
 SQL
 # <agent> <session> <records...>: the agent's session file and transcript.
@@ -103,6 +107,9 @@ session m-w "$SW" "$(said a-1 msg-1 claude-test-large tool_use)" "$(said a-2 msg
 session thread-m "$ST" "$(said t-1 msg-t1 claude-test-large end_turn)" "$(said t-2 msg-t2 claude-test-large refusal)" \
   '{"type":"system","subtype":"model_refusal_no_fallback","uuid":"t-3","timestamp":"2030-01-02T03:00:05.000Z","originalModel":"claude-test-large","content":"0xREFUSEDTEXT"}'
 session m-ok "$SO" "$(said o-1 msg-o1 claude-test-large tool_use)" "$(said o-2 msg-o2 claude-test-large end_turn)"
+ppane=$(agent_field m-p pane_id)
+session m-p 00000000-0000-4000-8000-0000000000a6 "$(said p-1 msg-p1 claude-test-large end_turn)" \
+  "$(said p-2 msg-p2 claude-test-small end_turn)"
 session "$TN" 00000000-0000-4000-8000-0000000000a4 "$(said n-1 msg-n1 claude-test-large refusal)" \
   '{"type":"system","subtype":"model_refusal_fallback","uuid":"n-2","timestamp":"2030-01-02T03:00:07.000Z","originalModel":"claude-test-large","fallbackModel":"claude-test-small","content":"0xREFUSEDTEXT"}' \
   "$(said n-3 msg-n3 claude-test-small end_turn)"
@@ -133,6 +140,11 @@ has "models: m-w's new session gets its task and the takeover note" "$w_got" "[F
   "This session takes over from an earlier session of m-w" "Do not redo the step that was stopped" \
   "# Fix the example parser"
 lacks "models: no /model is typed into m-w" "$w_got" "/model"
+has "models: m-p, moved with no fallback, is only reported" "$lead_got" \
+  "the Claude Code session of m-p (worker, job m) has 1 model event(s)" "fleet did nothing about these events"
+check "models: m-p keeps its session" "$ppane 0" \
+  "$(agent_field m-p pane_id) $(ledger "SELECT takeovers FROM agents WHERE name = 'm-p'" | xargs)"
+lacks "models: m-p is sent nothing" "$(received m-p)" "[FROM: watch]"
 has "models: thread-m is told once to go on" "$(received thread-m)" "Go on with the thread's work"
 lacks "models: no /model is typed into thread-m" "$(received thread-m)" "/model"
 check "models: the moved thread agent's session ended, the next one live" "ended active" \
@@ -152,7 +164,7 @@ done
 mwatch >/home/agent/models2.out 2>&1; rc=$?
 check "models: the next run exits 0" 0 "$rc"
 lacks "models: the next run reports nothing again" "$(cat /home/agent/models2.out)" "model event:"
-check "models: each agent's events are posted once" 3 "$(grep -c '的 Claude Code 会话出现了' /home/agent/models-fednet.log)"
+check "models: each agent's events are posted once" 4 "$(grep -c '的 Claude Code 会话出现了' /home/agent/models-fednet.log)"
 # m-w's new session is stopped too: left to the people, no third session.
 newpane=$(agent_field m-w pane_id)
 session m-w 00000000-0000-4000-8000-0000000000a5 "$(said r-1 msg-r1 claude-test-large refusal)"
