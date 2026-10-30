@@ -234,12 +234,16 @@ func (s *transcriptScan) switched(model string) {
 	}
 }
 
+// decodedNames are what a line of the transcript names when it is a
+// record the watch reads; no other line is decoded.
+var decodedNames = [][]byte{[]byte(`"assistant"`), []byte(`"model_refusal_`), []byte(`"turn_duration"`),
+	[]byte(`"interruptedMessageId"`)}
+
 // read reads one complete line of the transcript.
 func (s *transcriptScan) read(line []byte) {
 	at := s.st.readTo
 	s.st.readTo += int64(len(line))
-	if !bytes.Contains(line, []byte(`"assistant"`)) && !bytes.Contains(line, []byte(`"model_refusal_`)) &&
-		!bytes.Contains(line, []byte(`"turn_duration"`)) && !bytes.Contains(line, []byte(`"interruptedMessageId"`)) {
+	if !slices.ContainsFunc(decodedNames, func(name []byte) bool { return bytes.Contains(line, name) }) {
 		return
 	}
 	var rec transcriptRecord
