@@ -94,7 +94,11 @@ const (
 		"the message was submitted (exit 0), one that holds it gets Enter pressed once as `fleet send` " +
 		"does after no clear signal (exit 0 once the turn starts); a blocked agent is exit 3 and a " +
 		"paused one exit 8, nothing pressed, and a screen that shows neither exit 2 again. An agent " +
-		"gone from herdr went with the message, which is routed again. Then the route: " +
+		"gone from herdr went with the message, which is routed again. A thread's messages reach its " +
+		"agent in the order fleet first saw them, whatever order fednet's retries come in: the event of " +
+		"a message is kept in the ledger until it is delivered or dropped, for at most an hour (past " +
+		"fednet's retries), and a message first delivers the thread's earlier ones still only " +
+		"reserved; while one of them cannot go, it waits too, with that one's exit code. Then the route: " +
 		"a thread whose agent is live gets the message as `fleet send` would, headed `[FROM: " +
 		"inbox]`, also while the agent is at work (it queues the message); only a screen that waits " +
 		"for a person's answer is exit 3. Otherwise a thread agent is started: `thread-<slug>` (the slug is the key, " +

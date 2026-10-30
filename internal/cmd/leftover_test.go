@@ -88,8 +88,8 @@ func TestLeftoverTraceNamesWhatShowsTheMessage(t *testing.T) {
 
 // fakeClaudeHerdr puts on PATH a herdr for one Claude Code agent `a`: its
 // status is the file `status`, its screen the file `screen` (and
-// `screen-typed` once the message is typed), `agent prompt` types and
-// reports agent_prompt_stalled (setting the status from `prompt-status`
+// `screen-typed` once the message is typed), `agent prompt` refuses a
+// blocked agent, else types and reports agent_prompt_stalled (setting the status from `prompt-status`
 // when that file exists), `send-keys` makes the agent working, `agent
 // wait` matches working or blocked. Every call is logged in `log`.
 func fakeClaudeHerdr(t *testing.T) string {
@@ -107,6 +107,7 @@ case "$1 $2" in
 "agent read")
   if [ -e "$d/typed" ] && [ -e "$d/screen-typed" ]; then cat "$d/screen-typed"; else cat "$d/screen"; fi ;;
 "agent prompt")
+  [ "$(cat "$d/status")" = blocked ] && { echo '{"id":"1","error":{"code":"agent_blocked","message":"blocked"}}' >&2; exit 1; }
   touch "$d/typed"
   [ -e "$d/prompt-status" ] && cp "$d/prompt-status" "$d/status"
   echo '{"id":"1","error":{"code":"agent_prompt_stalled","message":"no observed working state"}}' >&2; exit 1 ;;
