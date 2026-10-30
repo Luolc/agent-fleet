@@ -409,7 +409,7 @@ check "job end cross-repo: the conclusion written to the parent" \
 rm /home/agent/atb-fail
 has "job end cross-repo: the conclusion printed" "$out" "Job wire ended: abandoned."
 check "job end cross-repo: directory removed" no "$([ -e /home/agent/x-repo/general/wire ] && echo yes || echo no)"
-check "job end cross-repo: job ended as abandoned with its rows" "ended|abandoned ended ended ended " \
+check "job end cross-repo: job ended as abandoned with its rows" "ended|abandoned ended ended ended ended " \
   "$(ledger "SELECT state, outcome FROM jobs WHERE job = 'wire'")$(ledger "SELECT state FROM agents WHERE job = 'wire' ORDER BY id")"
 check "job end cross-repo: workspace and agents gone" "0 0" \
   "$("${S[@]}" workspace list | jq '[.result.workspaces[] | select(.label == "wire")] | length') $("${S[@]}" agent list | jq '[.result.agents[] | select(.name | startswith("wire-"))] | length')"
