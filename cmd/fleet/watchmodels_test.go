@@ -273,7 +273,7 @@ func TestTheModelWatchTakesOverWithoutTheConversation(t *testing.T) {
 		t.Fatalf("thread-c1 got %q", nudge)
 	}
 	hasAll(t, "the message to thread-c1", nudge[0], "[FROM: watch]",
-		"the session is stopped: a message of its, on claude-test-large, was stopped by a safety classifier",
+		"the session is stopped: one of its messages, on claude-test-large, was stopped by a safety classifier",
 		"2030-01-02T04:00:01.500Z model_refusal_no_fallback: stopped on claude-test-large, no fallback (record t-3)",
 		"Go on with the thread's work", "(the open jobs reporting to this thread: j)",
 		"Do not redo the step that was stopped, neither as it was nor in other words")
@@ -388,7 +388,7 @@ func TestTheModelWatchTakesOverAStoppedLeadAndWorker(t *testing.T) {
 	}
 	hasAll(t, "the new tabs", w.raw("tab-argv"), "--workspace w-j --label lead --no-focus --cwd "+lead,
 		"--workspace w-j --label w ")
-	stopped := "in it, the session is stopped: a message of its, on claude-test-large, was stopped by a safety classifier"
+	stopped := "in it, the session is stopped: one of its messages, on claude-test-large, was stopped by a safety classifier"
 	first := w.promptsTo("j-lead")
 	if len(first) == 0 {
 		t.Fatal("j-lead got nothing")
@@ -627,7 +627,7 @@ func TestTheModelWatchStartsANewSessionForAThreadAgentStoppedOnADialog(t *testin
 		t.Fatalf("%s got %q", threadC1, first)
 	}
 	hasAll(t, "the new session's first message", first[0], "this session takes over from the session before it on "+
-		"this thread, which fleet ended: in it, the session is stopped: a message of its, on claude-test-large, was "+
+		"this thread, which fleet ended: in it, the session is stopped: one of its messages, on claude-test-large, was "+
 		"stopped by a safety classifier", "(record t-2)")
 }
 

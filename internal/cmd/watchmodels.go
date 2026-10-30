@@ -92,6 +92,7 @@ type transcriptRecord struct {
 	IsSidechain   bool   `json:"isSidechain"`
 	OriginalModel string `json:"originalModel"`
 	FallbackModel string `json:"fallbackModel"`
+	Interrupted   string `json:"interruptedMessageId"`
 	Message       struct {
 		ID         string `json:"id"`
 		Model      string `json:"model"`
@@ -108,7 +109,9 @@ type transcriptRecord struct {
 // assistant message after it that ended its turn (one that asked for a
 // tool did not), and whether it then waits at its prompt: its stop is one
 // with no fallback, after which Claude Code ends the turn, while after a
-// refusal it waits on a dialog.
+// refusal it waits on a dialog. A turn that ends with no such message, on
+// an API error, a person's interrupt or Claude Code's `turn_duration`,
+// ends a stop that is not at the prompt.
 type transcriptState struct {
 	readTo     int64
 	startModel string
@@ -235,7 +238,8 @@ func (s *transcriptScan) switched(model string) {
 func (s *transcriptScan) read(line []byte) {
 	at := s.st.readTo
 	s.st.readTo += int64(len(line))
-	if !bytes.Contains(line, []byte(`"assistant"`)) && !bytes.Contains(line, []byte(`"model_refusal_`)) {
+	if !bytes.Contains(line, []byte(`"assistant"`)) && !bytes.Contains(line, []byte(`"model_refusal_`)) &&
+		!bytes.Contains(line, []byte(`"turn_duration"`)) && !bytes.Contains(line, []byte(`"interruptedMessageId"`)) {
 		return
 	}
 	var rec transcriptRecord
@@ -257,6 +261,8 @@ func (s *transcriptScan) read(line []byte) {
 	case rec.Type == "system" && rec.Subtype == eventNoFallback:
 		s.events = append(s.events, event(eventNoFallback, rec.OriginalModel, ""))
 		s.st.stopped, s.st.atPrompt = true, true
+	case rec.Type == "system" && rec.Subtype == "turn_duration", rec.Type == "user" && rec.Interrupted != "":
+		s.turnEnded()
 	case rec.Type == "assistant" && realModel(rec.Message.Model):
 		model := rec.Message.Model
 		switch {
@@ -289,6 +295,19 @@ func (s *transcriptScan) read(line []byte) {
 			s.seen[e.Key] = true
 			s.events = append(s.events, e)
 		}
+	case rec.Type == "assistant" && rec.Message.StopReason != "refusal":
+		// A message Claude Code makes up itself, such as an API error,
+		// ends the turn; the one it adds to a stop with no fallback is
+		// refused.
+		s.turnEnded()
+	}
+}
+
+// turnEnded notes a turn that ended with no reply on a real model: a stop
+// in it ends, unless the session waits at its prompt after it.
+func (s *transcriptScan) turnEnded() {
+	if !s.st.atPrompt {
+		s.st.stopped = false
 	}
 }
 
@@ -882,10 +901,10 @@ func (x modelAction) whyLine(zh bool) string {
 	case x.why == "moved":
 		return fmt.Sprintf("a fallback after a refusal moved the session to %s; it started on %s", x.to, x.from)
 	case zh:
-		return fmt.Sprintf("会话被拦停住了 (有一条回复被 safety classifier 拦下，那一轮之后没有结束)，模型 `%s`", x.to)
+		return fmt.Sprintf("会话被拦停住了 (有一条回复被 safety classifier 拦下，之后没有回复把那一轮做完)，模型 `%s`", x.to)
 	}
-	return fmt.Sprintf("the session is stopped: a message of its, on %s, was stopped by a safety classifier, and no "+
-		"reply after it ended its turn", x.to)
+	return fmt.Sprintf("the session is stopped: one of its messages, on %s, was stopped by a safety classifier, and "+
+		"no reply after it ended its turn", x.to)
 }
 
 // line is the action about the lead or worker `name` as its parent reads
