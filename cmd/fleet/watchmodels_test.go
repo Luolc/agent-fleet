@@ -273,7 +273,7 @@ func TestTheModelWatchTakesOverWithoutTheConversation(t *testing.T) {
 		t.Fatalf("thread-c1 got %q", nudge)
 	}
 	hasAll(t, "the message to thread-c1", nudge[0], "[FROM: watch]",
-		"the session is stopped: its latest message, on claude-test-large, was stopped by a safety classifier",
+		"the session is stopped: a message of its, on claude-test-large, was stopped by a safety classifier",
 		"2030-01-02T04:00:01.500Z model_refusal_no_fallback: stopped on claude-test-large, no fallback (record t-3)",
 		"Go on with the thread's work", "(the open jobs reporting to this thread: j)",
 		"Do not redo the step that was stopped, neither as it was nor in other words")
@@ -330,7 +330,8 @@ func TestTheModelWatchLeavesASecondEventToThePeople(t *testing.T) {
 	w.claudeSession("pn1", 4106, sessionNew,
 		assistant("n-1", "2030-01-02T08:00:00.000Z", "msg-n1", "claude-test-large", "refusal"))
 	w.appendRecords(sessionThread, assistant("t-5", "2030-01-02T08:00:01.000Z", "msg-t5", "claude-test-large", "end_turn"),
-		assistant("t-6", "2030-01-02T08:00:02.000Z", "msg-t6", "claude-test-large", "refusal"))
+		assistant("t-6", "2030-01-02T08:00:02.000Z", "msg-t6", "claude-test-large", "refusal"),
+		noFallback("t-7", "2030-01-02T08:00:02.500Z", "claude-test-large"))
 	w.watchAt(2*time.Minute, 0)
 	w.noCommandTyped()
 	if starts := strings.Count(w.raw("starts"), "agent start"); starts != 1 || len(strings.Fields(w.raw("closed"))) != 1 {
@@ -387,7 +388,7 @@ func TestTheModelWatchTakesOverAStoppedLeadAndWorker(t *testing.T) {
 	}
 	hasAll(t, "the new tabs", w.raw("tab-argv"), "--workspace w-j --label lead --no-focus --cwd "+lead,
 		"--workspace w-j --label w ")
-	stopped := "in it, the session is stopped: its latest message, on claude-test-large, was stopped by a safety classifier"
+	stopped := "in it, the session is stopped: a message of its, on claude-test-large, was stopped by a safety classifier"
 	first := w.promptsTo("j-lead")
 	if len(first) == 0 {
 		t.Fatal("j-lead got nothing")
@@ -598,6 +599,38 @@ func TestTheModelWatchStartsANewSessionForAThreadAgentMovedToAnotherModel(t *tes
 	hasAll(t, "the last post", posts[len(posts)-1], "记录 `n-3`", "已经被自动处理过一次", "需要人来定怎么办")
 }
 
+// A thread agent stopped on the dialog Claude Code pauses on after a
+// refusal (refused, retried, gone on with a tool, then refused again with
+// nothing recorded) is typed nothing into, since a message would answer
+// the dialog: the thread gets its next session, as for a move, counted on
+// the thread.
+func TestTheModelWatchStartsANewSessionForAThreadAgentStoppedOnADialog(t *testing.T) {
+	w := threadTakeoverWorld(t)
+	w.claudeSession("p1", 4101, sessionThread,
+		assistant("t-1", "2030-01-02T04:00:00.000Z", "msg-t1", "claude-test-large", "end_turn"),
+		assistant("t-2", "2030-01-02T04:00:01.000Z", "msg-t2", "claude-test-large", "refusal"),
+		assistant("t-3", "2030-01-02T04:00:02.000Z", "msg-t3", "claude-test-large", "tool_use"))
+	w.watchAt(time.Minute, 0, linearKey)
+	w.noCommandTyped()
+	if got := w.query("SELECT group_concat(state || ' ' || pane_id || ' ' || takeovers, ',') FROM (SELECT * FROM " +
+		"agents WHERE name = '" + threadC1 + "' ORDER BY id)"); got != "ended p1 0,active pn1 0" {
+		t.Errorf("%s's rows: %s", threadC1, got)
+	}
+	if closed := strings.Fields(w.raw("closed")); strings.Join(closed, " ") != "p1" {
+		t.Errorf("closed %q", closed)
+	}
+	if got := w.query("SELECT sessions || ' ' || takeovers FROM threads"); got != "2 1" {
+		t.Errorf("the thread: %s", got)
+	}
+	first := w.promptsTo(threadC1)
+	if len(first) != 1 || strings.Contains(first[0], "Go on with the thread's work") {
+		t.Fatalf("%s got %q", threadC1, first)
+	}
+	hasAll(t, "the new session's first message", first[0], "this session takes over from the session before it on "+
+		"this thread, which fleet ended: in it, the session is stopped: a message of its, on claude-test-large, was "+
+		"stopped by a safety classifier", "(record t-2)")
+}
+
 // A session still working is left to finish its turn: its events are
 // reported, but nothing is done until herdr finds it idle.
 func TestTheModelWatchWaitsForABusySession(t *testing.T) {
@@ -630,7 +663,8 @@ func TestTheModelWatchKeepsANewStopFoundWhileBusy(t *testing.T) {
 	w.herdrList(busy...)
 	w.watchAt(time.Minute, 0)
 	w.appendRecords(sessionThread, assistant("t-5", "2030-01-02T08:00:01.000Z", "msg-t5", "claude-test-large", "end_turn"),
-		assistant("t-6", "2030-01-02T08:00:02.000Z", "msg-t6", "claude-test-large", "refusal"))
+		assistant("t-6", "2030-01-02T08:00:02.000Z", "msg-t6", "claude-test-large", "refusal"),
+		noFallback("t-7", "2030-01-02T08:00:02.500Z", "claude-test-large"))
 	w.watchAt(2*time.Minute, 0)
 	if got := w.promptsTo("thread-c1"); len(got) != 0 {
 		t.Fatalf("told while busy: %q", got)
