@@ -45,9 +45,20 @@ const (
 		"parent that is gone, blocked, paused on Claude Code's `Session paused` dialog (nothing is " +
 		"typed into it, as for `fleet send`'s exit 8) or gives no clear signal leaves a warning on stderr and " +
 		"the exit code unchanged.\n\n" +
-		"Exit: 0 when the row is ended; 1 when a check refuses (the caller, the row, the report " +
-		"file); 4 when no live row has the name; 5 when atb, git, herdr or the database fails, " +
-		"or something is in the way (listed)."
+		"With --issue <ISSUE>, for a worker whose row ended without releasing its work order " +
+		"(a `spawn` that stopped after atb did not confirm the claim): only the newest ended row " +
+		"of a worker with the name and that work order is taken, refused when its release is " +
+		"recorded already, and the work order is released as abandoned in the worker's name " +
+		"(`atb linear release --reason <who and why> --abandon`, one comment, recorded so it is " +
+		"not done twice); nothing else is done, nobody is told. atb refuses, writing nothing, " +
+		"when the worker holds nothing there (another agent's claim, or none): exit 5 after its " +
+		"exit 4. Not with --report-file. The caller is checked as above, so while the job is open its " +
+		"lead or a thread agent runs it, and once the job has ended a thread agent or a shell on " +
+		"the machine whose ledger has the row.\n\n" +
+		"Exit: 0 when the row is ended (with --issue: the work order released); 1 when a check " +
+		"refuses (the caller, the row, the report file, a release recorded already); 4 when no " +
+		"live row has the name (with --issue: no ended row with the name and the work order); 5 " +
+		"when atb, git, herdr or the database fails, or something is in the way (listed)."
 )
 
 // WorkerEndArgs are the arguments of `worker end`.
@@ -57,6 +68,9 @@ type WorkerEndArgs struct {
 	// ReportFile is written to the worker's work order; nil writes a
 	// fixed line.
 	ReportFile *string
+	// Issue, when set, releases only this work order of an ended row
+	// (releaseLeftOrder).
+	Issue *string
 }
 
 // workerRow is the live ledger row `worker end` ends.
@@ -110,6 +124,9 @@ func WorkerEnd(h *herdr.Herdr, args WorkerEndArgs) (exit.Code, error) {
 	leadJob, err := workerEndCaller()
 	if err != nil {
 		return 0, err
+	}
+	if args.Issue != nil {
+		return releaseLeftOrder(args.Name, *args.Issue, leadJob, args.ReportFile != nil)
 	}
 	var report string
 	if args.ReportFile != nil {
@@ -239,6 +256,51 @@ func endWorkerRow(conn *sql.DB, row *workerRow, dirs []jobDir) error {
 		return exit.Database(err)
 	}
 	return nil
+}
+
+// releaseLeftOrder is `worker end --issue`: the work order `issue` of the
+// newest ended row of the worker `name` (of `leadJob` when set) is
+// released as abandoned in the worker's name, recorded under the row's
+// `worker-end:<id>`; refused when that row's release is recorded there or
+// under `watch-gone:<id>`.
+func releaseLeftOrder(name, issue, leadJob string, report bool) (exit.Code, error) {
+	if report {
+		return 0, exit.Refusedf("--report-file does not go with --issue: the release names who released the work order and why")
+	}
+	if err := atb.CheckIdentifier(issue); err != nil {
+		return 0, err
+	}
+	conn, err := OpenLedger()
+	if err != nil {
+		return 0, err
+	}
+	defer conn.Close()
+	var row workerRow
+	err = conn.QueryRow("SELECT id, role, job FROM agents WHERE name = ?1 AND issue = ?2 AND state = 'ended' "+
+		"ORDER BY id DESC LIMIT 1", name, issue).Scan(&row.id, &row.role, &row.job)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return 0, exit.New(exit.NotFound, fmt.Sprintf("no ended agent %s with the work order %s in the ledger", name, issue))
+	case err != nil:
+		return 0, exit.Database(err)
+	case row.role != "worker" || row.job == "":
+		return 0, exit.Refusedf("%s is not a worker of a job; `worker end --issue` releases only those work orders", name)
+	case leadJob != "" && row.job != leadJob:
+		return 0, exit.Refusedf("%s is in job %s, not yours (%s); a lead ends only its own workers", name, row.job, leadJob)
+	}
+	key := fmt.Sprintf("worker-end:%d", row.id)
+	for _, k := range []string{key, fmt.Sprintf("watch-gone:%d", row.id)} {
+		if stepDone(conn, k, "release-work-order") {
+			return 0, exit.Refusedf("the release of %s by %s is recorded already (%s)", issue, name, k)
+		}
+	}
+	reason := fmt.Sprintf("released by %s with `fleet worker end --issue`: the row of %s ended without releasing it",
+		callerName(), name)
+	if err := runStep(conn, key, "release-work-order", func() error { return atb.Abandon(issue, name, reason) }); err != nil {
+		return 0, err
+	}
+	fmt.Fprintf(os.Stdout, "released the work order %s of %s (job %s) as abandoned\n", issue, name, row.job)
+	return exit.Ok, nil
 }
 
 // workerToEnd is the live row named `name`, refused unless it is a worker

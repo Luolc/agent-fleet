@@ -172,6 +172,15 @@ func ReleaseRestore(issue, agent, reason string) error {
 	return err
 }
 
+// Abandon is `atb linear release <issue> --agent <agent> --reason <reason>
+// --abandon`: one comment, `release: <agent> abandoned: <reason>`, then the
+// abandoned state; atb writes nothing when `agent` does not hold the issue
+// (exit 4).
+func Abandon(issue, agent, reason string) error {
+	_, err := run("atb linear release "+issue, "linear", "release", issue, "--agent", agent, "--reason", reason, "--abandon")
+	return err
+}
+
 // Release is `atb linear release <issue> --agent <agent> --reason done
 // --done`, or `--reason abandoned --abandon` when abandoned.
 func Release(issue, agent string, abandon bool) error {
@@ -212,6 +221,15 @@ func (f *Failure) Unwrap() error { return f.Failure }
 func Held(err error) bool {
 	var failure *Failure
 	return errors.As(err, &failure) && failure.ExitCode == 3
+}
+
+// Unchecked is whether `err`, from Claim, is atb (from 0.4.0) having
+// written the claim comment but not finished the conflict check after it
+// (exit 5): the claim is on the issue, not checked against an earlier
+// one. It is not "not claimed".
+func Unchecked(err error) bool {
+	var failure *Failure
+	return errors.As(err, &failure) && failure.ExitCode == 5
 }
 
 // maxStderr is how much of atb's stderr a Failure keeps.

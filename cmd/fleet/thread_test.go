@@ -723,6 +723,30 @@ func TestInboxStartsWithoutTheTicketAnotherAgentHolds(t *testing.T) {
 	}
 }
 
+// A claim atb wrote without finishing its conflict check (exit 5) is
+// tried again like any failed step; when the last try is the same, the
+// claim is on the ticket, so the session keeps it and `thread end` will
+// release it.
+func TestInboxKeepsTheTicketWhoseClaimCheckDidNotFinish(t *testing.T) {
+	w := threadWorld(t, "")
+	failAtb(w, "claim", 99, 5)
+	out := w.inbox(w.event("m1", "hello", ""))
+	if out.code != 0 {
+		t.Fatalf("%+v", out)
+	}
+	calls := w.calls()
+	if n := strings.Count(calls, "atb linear claim TH-5"); n != 3 || strings.Contains(calls, "fednet client post") {
+		t.Errorf("claim tried %d times, want 3, and nothing posted: %q", n, calls)
+	}
+	if !strings.Contains(w.file("argv"), "## Note from fleet\n\natb wrote your claim on the thread ticket TH-5 but did "+
+		"not finish its conflict check (atb linear claim TH-5: exit 5), so fleet takes the ticket as yours") {
+		t.Errorf("prompt = %q", w.file("argv"))
+	}
+	if got := threadAgentRow(w); got != "TH-5 active" {
+		t.Errorf("row = %q, want the agent keeping the ticket", got)
+	}
+}
+
 func TestInboxKeepsTheTicketWhenLinearFailsAfterTheClaim(t *testing.T) {
 	w := threadWorld(t, "")
 	if out := w.inbox(w.event("m1", "hello", "")); out.code != 0 {
