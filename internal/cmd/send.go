@@ -46,9 +46,13 @@ const (
 		"conversation's text): a session stopped by a refusal with no reply since that ended its " +
 		"turn, and not one waiting at its prompt after a stop with no fallback, gets nothing typed " +
 		"and no key, and the send ends with exit 8, its screen not printed. Press no key on that " +
-		"screen either: `fleet watch` replaces such a session with a new one (send again once it " +
-		"has), or, for a worker, its lead may end it with `fleet worker end` and start another to " +
-		"take over. A target fleet cannot tell about (no session or transcript found, a read that " +
+		"screen either, and do not send again in a loop. `fleet watch` replaces a paused lead's or " +
+		"worker's session, or a thread's, once (once per thread for a thread agent), when herdr " +
+		"finds it idle or done; a session it replaced before, one herdr reads as blocked, and a " +
+		"watch worker it leaves to the people, and those stay paused. So if a later send still " +
+		"exits 8, do not wait for a replacement: a lead ends its own paused worker with `fleet " +
+		"worker end` and starts another to take over; anyone else tells whoever started them (a " +
+		"thread agent, the people in its thread). A target fleet cannot tell about (no session or transcript found, a read that " +
 		"fails or takes over 5 s) gets the message as before.\n\n" +
 		"Exit: 0 when herdr reported agent_prompted; 1 for an empty body, a forged header or a " +
 		"missing FLEET_AGENT; 2 when herdr gave no clear signal (timeout, stalled); 3 when " +
@@ -125,9 +129,10 @@ func beforePrompt(h *herdr.Herdr, to string) (exit.Code, error) {
 		fmt.Fprintf(os.Stderr, "%s is taken to be paused on Claude Code's `Session paused` dialog: its transcript "+
 			"shows a message of its present turn stopped by a safety classifier, and herdr does not find it working. "+
 			"Nothing was typed. Press no key on its screen: a key there can pick `Switch to <fallback>` and move the "+
-			"session to another model. "+
-			"`fleet watch` replaces such a session with a new one; send again once it has. A worker's lead may "+
-			"instead end it with `fleet worker end` and start another to take over.\n", to)
+			"session to another model. Do not send again in a loop: `fleet watch` replaces such a session only "+
+			"once, and only when herdr finds it idle or done, and leaves the rest to the people. If a later send "+
+			"still exits 8, a lead ends its own paused worker with `fleet worker end` and starts another; anyone "+
+			"else tells whoever started them (a thread agent, the people in its thread). See `fleet send --help`.\n", to)
 		return exit.Paused, nil
 	}
 	kind, _ := agent["agent"].(string)
