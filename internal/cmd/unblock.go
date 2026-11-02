@@ -333,9 +333,12 @@ func (u *workers) handle(e config.Entry, due bool, row stopRow, screen string) e
 		}
 		return nil
 	case handsOffScreen:
-		card, err := u.screenCard(row, row.Name+" is stopped at a screen fleet never answers", fmt.Sprintf("%s (%s) is "+
-			"stopped at a screen fleet never answers: a usage limit, a model switch, a usage reset or a purchase.",
-			row.Name, row.who()), screen)
+		why := fmt.Sprintf("%s (%s) is stopped at a screen fleet never answers: a usage limit, a model switch, a "+
+			"usage reset or a purchase.", row.Name, row.who())
+		if reset, ok := dialogQuota(screen, row.Cwd); ok {
+			why += fmt.Sprintf(" Machine: %s; reset, as the screen gives it: %s.", machine(), reset)
+		}
+		card, err := u.screenCard(row, row.Name+" is stopped at a screen fleet never answers", why, screen)
 		if err != nil {
 			return err
 		}

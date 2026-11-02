@@ -21,7 +21,8 @@ const rule = "──────────────────────
 
 // watchHerdr is the stand-in for herdr in the watch tests, with the world's
 // paths baked in. `agent list` prints <dir>/list.json; `agent read <name>`
-// prints <dir>/screens/<name> and fails like herdr when there is none;
+// prints <dir>/screens/<name>, a blank screen without it for an agent of
+// list.json, and fails like herdr for any other;
 // `agent prompt` appends the target and the text to <dir>/prompts and
 // answers with `reply`; `agent get` finds the agents of list.json; a pane
 // has the tab `tab-<pane>`, and `tab close` writes the pane to
@@ -47,7 +48,7 @@ case "$1 $2" in
   "agent read")
     if [ -f "$dir/screens/$3" ]; then
       cat "$dir/screens/$3"
-    else
+    elif ! grep -q "\"name\":\"$3\"" "$dir/list.json"; then
       echo '{"error":{"code":"agent_not_found","message":"no such agent"}}' >&2
       exit 1
     fi
@@ -1449,5 +1450,37 @@ func TestWatchEndsAGoneAgentOnlyWhenItsPaneHasNoAgent(t *testing.T) {
 	w.watchAt(10*time.Minute, 0)
 	if got := states(); got != "a-lead=ended|gone a-w1=active|working" {
 		t.Errorf("%s", got)
+	}
+}
+
+// A thread agent at its input box after a quota error: watch itself tells
+// its thread once, prompting no agent, and once more when the error is
+// gone.
+func TestWatchTellsAThreadOfItsAgentsQuotaErrorItself(t *testing.T) {
+	w := watchThreadWorld(t)
+	w.exec("INSERT INTO threads (thread, slug, created_at) VALUES ('C1/1.0', 'c1-1-0', 0)",
+		"INSERT INTO agents (name, role, thread, pane_id, state, started_at) VALUES ('thread-c1', 'thread', 'C1/1.0', 'p1', 'active', 0)")
+	w.herdrList("thread-c1 idle 1")
+	w.lastMessage("C1/1.0", t0+3600)
+	idle := func(transcript string) string { return transcript + "\n\n" + rule + "\n❯ \n" + rule + "\n" }
+	w.screen("thread-c1", idle("> go on\n  ⎿  API Error: example-proxy: quota exhausted, earliest reset 2031-01-02T03:04:05Z"))
+	posts := func() string {
+		data, _ := os.ReadFile(filepath.Join(w.dir, "fednet.log"))
+		return string(data)
+	}
+	said := "client post -socket /run/example/fednet.sock -thread C1/1.0 -- fleet watch on "
+	w.watchAt(time.Minute, 0)
+	w.watchAt(2*time.Minute, 0)
+	if got := posts(); strings.Count(got, said) != 1 || !strings.Contains(got, " found an error naming a quota") ||
+		!strings.Contains(got, "\n- thread-c1: seen since ") || !strings.Contains(got, "; reset: 2031-01-02T03:04:05Z\n") {
+		t.Fatalf("posts while the error stays:\n%s", got)
+	}
+	w.screen("thread-c1", idle("> go on\n⏺ Done."))
+	w.watchAt(3*time.Minute, 0)
+	if got := posts(); strings.Count(got, said) != 2 || !strings.Contains(got, " no longer finds that error ") {
+		t.Errorf("posts once it is gone:\n%s", got)
+	}
+	if got := w.prompts(); len(got) != 0 {
+		t.Errorf("prompted %q", got)
 	}
 }

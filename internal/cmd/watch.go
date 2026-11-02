@@ -111,6 +111,13 @@ const (
 		"stop is asked about again, whether or not the people answered. A worker's lead " +
 		"is told when a worker starts for it or the people are asked, and so is the starter of a lead or " +
 		"worker whose start stopped at the screen.\n\n" +
+		"Quota (only with a fednet socket): then every live agent's screen, watch workers left out and an " +
+		"agent herdr reports working skipped, is read for a usage limit or quota error: Claude Code's own `API " +
+		"Error` line naming one (or HTTP 429) as the last entry above its input box, or, in a pane whose agent is " +
+		"not running, such a line among the shell's last 4 lines; a usage-limit menu is the card's (Screens). " +
+		"Its home thread gets one fixed message per run naming the agents newly found, with the host, when watch " +
+		"first found it and the reset time the screen gives (or unknown), and one when an agent is found past " +
+		"it; nothing is said twice for one error, and no model is called.\n\n" +
 		"Models (the watch `model-changes`): then the Claude Code transcript of every live agent in herdr, Pi " +
 		"agents left out, is read from where the last run stopped to its last complete line (until 30 s into the " +
 		"run; what is left waits, and the agent has nothing done that run), its session found from the processes " +
@@ -221,6 +228,8 @@ type watchRun struct {
 	// workers are the agents watch starts, once the run closed those
 	// that were done.
 	workers *workers
+	// panes are herdr's panes as the run first listed them.
+	panes map[string]herdrPane
 }
 
 // failed records a failed action: printed, its code kept, the run goes on.
@@ -322,7 +331,8 @@ func Watch(h *herdr.Herdr) (exit.Code, error) {
 }
 
 // agentRules closes the watch workers that are done, then runs the rules
-// on the agents stopped at a screen and on the agents' transcripts.
+// on the agents stopped at a screen, on the quota errors on the agents'
+// screens and on the agents' transcripts.
 func (r *watchRun) agentRules(inHerdr map[string]InHerdr) error {
 	var err error
 	if r.workers, err = r.newWorkers(inHerdr); err != nil {
@@ -332,6 +342,9 @@ func (r *watchRun) agentRules(inHerdr map[string]InHerdr) error {
 		return err
 	}
 	if err := r.workers.unblock(); err != nil {
+		return err
+	}
+	if err := r.workers.quota(); err != nil {
 		return err
 	}
 	return r.modelChanges(inHerdr)
@@ -346,6 +359,7 @@ func (r *watchRun) leadsAndWorkers(all []watched) ([]watched, error) {
 	if err != nil {
 		return nil, err
 	}
+	r.panes = panes
 	confirmGone(all, panes)
 	if err := saveReadings(r.conn, all); err != nil {
 		return nil, err
@@ -713,18 +727,24 @@ func evidence(w watched, now int64) string {
 // notices. What remains is the transcript.
 func FilterClaudeScreen(screen string) string {
 	all := lines(screen)
-	boxTop := len(all)
-	for i := len(all) - 2; i >= 0; i-- {
-		if isRule(all[i]) && strings.HasPrefix(strings.TrimLeftFunc(all[i+1], unicode.IsSpace), "❯") {
-			boxTop = i
-			break
-		}
-	}
+	boxTop, _ := claudeBoxTop(all)
 	kept := all[:boxTop]
 	for len(kept) > 0 && isStatusLine(kept[len(kept)-1]) {
 		kept = kept[:len(kept)-1]
 	}
 	return strings.Join(kept, "\n")
+}
+
+// claudeBoxTop is the line of the rule above Claude Code's input box,
+// the last rule followed by a line starting with ❯; ok is false, and the
+// line past the last, when `all` shows no input box.
+func claudeBoxTop(all []string) (top int, ok bool) {
+	for i := len(all) - 2; i >= 0; i-- {
+		if isRule(all[i]) && strings.HasPrefix(strings.TrimLeftFunc(all[i+1], unicode.IsSpace), "❯") {
+			return i, true
+		}
+	}
+	return len(all), false
 }
 
 // FilterPiScreen is Pi's visible screen without the parts that move while
