@@ -48,6 +48,14 @@ func TestOnlyTheAgentsOwnQuotaErrorAtTheEndOfItsTranscriptCounts(t *testing.T) {
 			"2031-01-02T03:04:05Z.\n  The test reads that line."), quotaClear, ""},
 		"a reply after it": {"idle", idleClaude("  ⎿  " + proxyError + "\n> go on\n⏺ Done."), quotaClear, ""},
 		"plain idle":       {"idle", idleClaude("⏺ Done."), quotaClear, ""},
+		"a message typed in after it": {"idle", idleClaude("  ⎿  " + proxyError + "\n> [FROM: watch] j-impl looks stuck"),
+			quotaUnknown, ""},
+		"a message of lines typed in after it": {"idle", idleClaude("  ⎿  " + proxyError + "\n> [FROM: watch]\n\n  j-impl " +
+			"looks stuck.\n\n✻ Thinking… (esc to interrupt)"), quotaUnknown, ""},
+		"its first line off the screen": {"idle", idleClaude("  usage limit) · example-proxy: quota exhausted\n  and more"),
+			quotaUnknown, ""},
+		"a 429 wrapped onto many lines": {"idle", idleClaude("  ⎿  API Error: 429 {\"type\":\"error\",\"error\":\n" +
+			strings.Repeat("    \"field\": \"a long message the pane wrapped\",\n", 12) + "    }"), quotaShown, "unknown"},
 		"no input box":     {"idle", "⏺ Done.\n", quotaUnknown, ""},
 		"usage-limit menu": {"blocked", limitMenu, quotaUnknown, ""},
 		"another dialog":   {"blocked", bashPrompt, quotaClear, ""},

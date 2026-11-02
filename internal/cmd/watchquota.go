@@ -48,9 +48,6 @@ var (
 )
 
 const (
-	// maxErrorLines bounds the lines an `API Error` line is read over:
-	// its own and those Claude Code wrapped it onto.
-	maxErrorLines = 8
 	// shellTail is how many of a pane's last non-blank lines are read
 	// when its agent is not running in it: the shell's prompt, of one
 	// or two lines, and the line before it, which the terminal may have
@@ -208,7 +205,10 @@ func (w *workers) quotaRead(row stopRow) (quotaState, string, error) {
 // says, only the agent's own error decides: Claude Code's `API Error`
 // line naming a usage limit or quota (or HTTP 429), with the lines it
 // wrapped onto, as the last entry above the input box; whatever the
-// transcript quotes above it cannot. Any other screen is unknown.
+// transcript quotes above it cannot. A last entry that is a message typed
+// in and not yet answered, as watch may have delivered earlier in the
+// run, or whose first line is off the screen, is unknown, and so is any
+// other screen.
 func quotaOnScreen(status, screen, cwd string) (quotaState, string) {
 	all := lines(screen)
 	end, box := claudeBoxTop(all)
@@ -224,30 +224,34 @@ func quotaOnScreen(status, screen, cwd string) (quotaState, string) {
 	for end > 0 && besideTranscript(all[end-1]) {
 		end--
 	}
-	text, ok := lastAPIError(all[:end])
-	if !ok || !hasQuotaPhrase(text) && !strings.Contains(strings.ToLower(text), "quota") && !status429.MatchString(text) {
+	text, ok := lastEntry(all[:end])
+	switch {
+	case !ok || strings.HasPrefix(text, ">") || strings.HasPrefix(text, "❯"):
+		return quotaUnknown, ""
+	case !strings.HasPrefix(text, "API Error") ||
+		!hasQuotaPhrase(text) && !strings.Contains(strings.ToLower(text), "quota") && !status429.MatchString(text):
 		return quotaClear, ""
 	}
 	return quotaShown, resetOf(resetPattern, text)
 }
 
-// lastAPIError is the last entry of `transcript` when it is an `API
-// Error` line, joined with the lines Claude Code wrapped it onto.
-func lastAPIError(transcript []string) (string, bool) {
-	for i := len(transcript) - 1; i >= 0 && i >= len(transcript)-maxErrorLines; i-- {
-		head := entryText(transcript[i])
-		if strings.HasPrefix(head, "API Error") {
-			parts := []string{head}
-			for _, line := range transcript[i+1:] {
-				parts = append(parts, strings.TrimSpace(line))
-			}
-			return strings.Join(parts, " "), true
-		}
-		if !wrapped(transcript[i]) {
-			break
-		}
+// lastEntry is the last entry of `transcript` without its marker, joined
+// with the lines Claude Code wrapped it onto and the blank lines among
+// them (a message typed in may hold some); ok is false when its first
+// line is above the screen.
+func lastEntry(transcript []string) (string, bool) {
+	i := len(transcript) - 1
+	for i >= 0 && (wrapped(transcript[i]) || strings.TrimSpace(transcript[i]) == "") {
+		i--
 	}
-	return "", false
+	if i < 0 {
+		return "", !slices.ContainsFunc(transcript, wrapped)
+	}
+	parts := []string{entryText(transcript[i])}
+	for _, line := range transcript[i+1:] {
+		parts = append(parts, strings.TrimSpace(line))
+	}
+	return strings.Join(parts, " "), true
 }
 
 // quotaOnShell reads the pane of an agent that is not running in it, as
