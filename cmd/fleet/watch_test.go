@@ -1463,7 +1463,7 @@ func TestWatchTellsAThreadOfItsAgentsQuotaErrorItself(t *testing.T) {
 	w.herdrList("thread-c1 idle 1")
 	w.lastMessage("C1/1.0", t0+3600)
 	idle := func(transcript string) string { return transcript + "\n\n" + rule + "\n❯ \n" + rule + "\n" }
-	w.screen("thread-c1", idle("> go on\n  ⎿  API Error: example-gw: quota exhausted, earliest reset 2031-01-02T03:04:05Z"))
+	w.screen("thread-c1", idle("> go on\n  ⎿  API Error: example-proxy: quota exhausted, earliest reset 2031-01-02T03:04:05Z"))
 	posts := func() string {
 		data, _ := os.ReadFile(filepath.Join(w.dir, "fednet.log"))
 		return string(data)

@@ -19,13 +19,13 @@ func idleClaude(transcript string) string {
 	return transcript + "\n\n" + rule + "\n❯ \n" + rule + "\n  ⏵⏵ bypass permissions on\n"
 }
 
-// The two errors a wrapper in front of the API gives when its quota runs
+// The two errors a proxy in front of the API gives when its quota runs
 // out: in a session, after Claude Code's `API Error`, and before Claude
 // Code started, the pane left at the shell.
 const (
-	gatewayError = "API Error: Server is temporarily limiting requests (not your usage limit) · example-gw: quota " +
+	proxyError = "API Error: Server is temporarily limiting requests (not your usage limit) · example-proxy: quota " +
 		"exhausted, earliest reset 2031-01-02T03:04:05Z"
-	gatewayShell = "❯ claude\nexample-gw: quota exhausted or rate-limited, earliest recovery 2031-01-02T06:07:08Z\n\n" +
+	proxyShell = "❯ claude\nexample-proxy: quota exhausted or rate-limited, earliest recovery 2031-01-02T06:07:08Z\n\n" +
 		" ~/dev/example  main\n❯ \n"
 )
 
@@ -35,18 +35,18 @@ func TestOnlyTheAgentsOwnQuotaErrorAtTheEndOfItsTranscriptCounts(t *testing.T) {
 		want           quotaState
 		reset          string
 	}{
-		"gateway error": {"idle", idleClaude("> go on\n  ⎿  " + gatewayError), quotaShown, "2031-01-02T03:04:05Z"},
+		"a proxy's error": {"idle", idleClaude("> go on\n  ⎿  " + proxyError), quotaShown, "2031-01-02T03:04:05Z"},
 		"wrapped, under a tip": {"done", idleClaude("● API Error: Server is temporarily limiting requests (not your\n" +
-			"  usage limit) · example-gw: quota exhausted, earliest reset\n  2031-01-02T03:04:05Z\n\n" +
+			"  usage limit) · example-proxy: quota exhausted, earliest reset\n  2031-01-02T03:04:05Z\n\n" +
 			"  ⎿  Tip: press ? for shortcuts"), quotaShown, "2031-01-02T03:04:05Z"},
-		"blocked at its input box": {"blocked", idleClaude("  ⎿  " + gatewayError), quotaShown, "2031-01-02T03:04:05Z"},
+		"blocked at its input box": {"blocked", idleClaude("  ⎿  " + proxyError), quotaShown, "2031-01-02T03:04:05Z"},
 		"429": {"idle", idleClaude(`  ⎿  API Error: 429 {"type":"error","error":{"type":"rate_limit_error"}}`),
 			quotaShown, "unknown"},
 		"another API error": {"idle", idleClaude(`  ⎿  API Error: 500 {"type":"error","error":{"type":"api_error"}}`),
 			quotaClear, ""},
-		"the words quoted": {"idle", idleClaude("⏺ The wrapper said: quota exhausted, earliest reset " +
+		"the words quoted": {"idle", idleClaude("⏺ The proxy said: quota exhausted, earliest reset " +
 			"2031-01-02T03:04:05Z.\n  The test reads that line."), quotaClear, ""},
-		"a reply after it": {"idle", idleClaude("  ⎿  " + gatewayError + "\n> go on\n⏺ Done."), quotaClear, ""},
+		"a reply after it": {"idle", idleClaude("  ⎿  " + proxyError + "\n> go on\n⏺ Done."), quotaClear, ""},
 		"plain idle":       {"idle", idleClaude("⏺ Done."), quotaClear, ""},
 		"no input box":     {"idle", "⏺ Done.\n", quotaUnknown, ""},
 		"usage-limit menu": {"blocked", limitMenu, quotaUnknown, ""},
@@ -62,12 +62,12 @@ func TestOnlyTheAgentsOwnQuotaErrorAtTheEndOfItsTranscriptCounts(t *testing.T) {
 		want   quotaState
 		reset  string
 	}{
-		"the wrapper's line": {gatewayShell, quotaShown, "2031-01-02T06:07:08Z"},
-		"its time cut by the wrap": {strings.Replace(gatewayShell, "2031-01-0", "2031-01-0\n", 1), quotaShown,
+		"the proxy's line": {proxyShell, quotaShown, "2031-01-02T06:07:08Z"},
+		"its time cut by the wrap": {strings.Replace(proxyShell, "2031-01-0", "2031-01-0\n", 1), quotaShown,
 			"2031-01-02T06:07:08Z"},
-		"a reset that is no time": {strings.Replace(gatewayShell, "earliest recovery 2031-01-02T06:07:08Z",
+		"a reset that is no time": {strings.Replace(proxyShell, "earliest recovery 2031-01-02T06:07:08Z",
 			"resets in a while", 1), quotaShown, "unknown"},
-		"commands after it": {gatewayShell + "❯ ls\nnotes.md\n", quotaUnknown, ""},
+		"commands after it": {proxyShell + "❯ ls\nnotes.md\n", quotaUnknown, ""},
 	} {
 		if got, reset := quotaOnShell(c.screen); got != c.want || reset != c.reset {
 			t.Errorf("shell, %s: %v %q, want %v %q", name, got, reset, c.want, c.reset)
@@ -128,12 +128,12 @@ func TestAQuotaErrorIsToldOnceAndItsEndOnce(t *testing.T) {
 	u.inHerdr = map[string]InHerdr{"j-lead": {Status: "idle"}, "j-impl": {Status: "done"}, "j-menu": {Status: "blocked"},
 		"thread-c2": {Status: "idle"}, "watch-x-1": {Status: "idle"}}
 	u.panes = map[string]herdrPane{"p3": {}}
-	show("agent", "j-lead", idleClaude("  ⎿  "+gatewayError))
+	show("agent", "j-lead", idleClaude("  ⎿  "+proxyError))
 	show("agent", "j-impl", idleClaude(`  ⎿  API Error: 429 {"type":"error","error":{"type":"rate_limit_error"}}`))
-	show("pane", "p3", gatewayShell)
+	show("pane", "p3", proxyShell)
 	show("agent", "j-menu", limitMenu)
-	show("agent", "thread-c2", idleClaude("⏺ The wrapper said: quota exhausted, earliest reset 2031-01-02T03:04:05Z."))
-	show("agent", "watch-x-1", idleClaude("  ⎿  "+gatewayError))
+	show("agent", "thread-c2", idleClaude("⏺ The proxy said: quota exhausted, earliest reset 2031-01-02T03:04:05Z."))
+	show("agent", "watch-x-1", idleClaude("  ⎿  "+proxyError))
 	posts := func() []string {
 		t.Helper()
 		got, _ := os.ReadFile(calls)
@@ -174,7 +174,7 @@ func TestAQuotaErrorIsToldOnceAndItsEndOnce(t *testing.T) {
 		t.Fatalf("the same screens again posted %q", got[1:])
 	}
 	// j-lead got past it; j-impl is working, which is no recovery.
-	show("agent", "j-lead", idleClaude("  ⎿  "+gatewayError+"\n> go on\n⏺ Done."))
+	show("agent", "j-lead", idleClaude("  ⎿  "+proxyError+"\n> go on\n⏺ Done."))
 	show("agent", "j-impl", idleClaude("⏺ Done."))
 	u.inHerdr["j-impl"] = InHerdr{Status: "working"}
 	run(1700000900, exit.Ok)
@@ -183,7 +183,7 @@ func TestAQuotaErrorIsToldOnceAndItsEndOnce(t *testing.T) {
 	if got := posts(); len(got) != 2 || got[1] != want {
 		t.Fatalf("after j-lead got past it, posted %q\nwant %q", got[1:], want)
 	}
-	show("agent", "j-lead", idleClaude("  ⎿  "+gatewayError))
+	show("agent", "j-lead", idleClaude("  ⎿  "+proxyError))
 	if _, err := conn.Exec("UPDATE agents SET state = 'ended' WHERE name = 'j-impl'"); err != nil {
 		t.Fatal(err)
 	}
