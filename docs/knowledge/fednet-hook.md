@@ -63,6 +63,62 @@ Checked by hand on 2026-10-09 on a development machine where the client runs as 
 
 The judge has no systemd. Its fake `systemctl` starts the same server detached, so it covers what fleet does around the start, not the unit.
 
+## On darwin
+
+Fleet builds for darwin (`GOOS=darwin`, arm64 and amd64) and does the same things there with macOS's own tools. Not run on a Mac: the code is cross-compiled, vetted and its parsers tested on Linux, the launchd files below are written from launchd's documentation.
+
+- **The session.** `fleet inbox` runs `launchctl kickstart gui/<uid>/fleet.scope.<scope>` instead of `systemctl --user start`, then waits as above. `kickstart` without `-k` starts a stopped job and leaves a running one alone. The label is fixed, `fleet.scope.<scope>`; there is no `XDG_RUNTIME_DIR` to pass. The `gui/<uid>` domain exists only while that user is logged in at the console; a hook that finds none fails with `launchctl`'s own error and the fednet client retries. The LaunchAgent is not loaded by fleet; `~/Library/LaunchAgents/fleet.scope.<scope>.plist`, loaded once with `launchctl bootstrap gui/$(id -u) <plist>`:
+
+  ```xml
+  <?xml version="1.0" encoding="UTF-8"?>
+  <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+  <plist version="1.0">
+  <dict>
+    <key>Label</key><string>fleet.scope.SCOPE</string>
+    <key>ProgramArguments</key>
+    <array>
+      <string>/ABSOLUTE/PATH/TO/herdr</string>
+      <string>--session</string><string>fleet-SCOPE</string>
+      <string>server</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+      <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+    <key>RunAtLoad</key><false/>
+    <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
+  </dict>
+  </plist>
+  ```
+
+  `RunAtLoad` is false so the server starts on the first `kickstart`, the way the systemd unit starts on `start`. launchd runs the job in a process group of its own, so the fednet client killing the hook's group does not reach it. Replace `SCOPE` and the herdr path; the `PATH` is what the agents herdr starts inherit, so it has to hold what they need (`git`, `gh`, `fleet`).
+- **Load and memory.** `job start` and `spawn` read the 1-minute load average from `sysctl -n vm.loadavg` and the available memory from `vm_stat`: pages free + inactive + speculative times the page size, the closest reading to Linux's `MemAvailable` without a privileged call. It runs a little high where much of the inactive memory is dirty. A tool that fails or prints something else fails with exit 5 and the reason, never a pass. Another platform than Linux and darwin has no reader and fails the same way; a repo there sets `resource_check` to `false`.
+- **Idle tabs.** `watch` closes an orphan tab only when the tab's shell has no child process. On darwin it counts them in `ps -A -o pid=,ppid=` (processes whose parent is the shell), the same answer as Linux's `/proc/<pid>/task/*/children`. When `ps` fails or prints nothing usable, the tab is not judged idle and is left open, so a failure keeps a tab and never closes one.
+- **`fleet watch` on a timer.** A LaunchAgent with `StartInterval` runs it, `~/Library/LaunchAgents/fleet.watch.<scope>.plist`, loaded the same way:
+
+  ```xml
+  <?xml version="1.0" encoding="UTF-8"?>
+  <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+  <plist version="1.0">
+  <dict>
+    <key>Label</key><string>fleet.watch.SCOPE</string>
+    <key>ProgramArguments</key>
+    <array>
+      <string>/ABSOLUTE/PATH/TO/fleet</string>
+      <string>--scope</string><string>SCOPE</string>
+      <string>watch</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+      <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+    <key>StartInterval</key><integer>300</integer>
+  </dict>
+  </plist>
+  ```
+
+  launchd's documentation says a job is not started while its previous run is still running and that a `StartInterval` job missed during sleep starts once after wake (not tried here). `watch` takes its own lock (see [docs/design.md](../design.md)), so a late or doubled run is harmless. 300 s is an example; set what the machine needs.
+
 ## What fleet presses on its own
 
 Claude Code asks once per directory whether to trust it (the folder-trust dialog, "Quick safety check"), and remembers the answer per directory. Nobody is at the pane of an agent fleet starts, so the first start in a fresh checkout (a new repo or initiative, a fresh machine) would otherwise stay blocked at that dialog; it did, on 2026-10-09, for the first thread agent of a new initiative. So at every start (a thread agent, a lead, a worker, and the retry of a start an earlier run was interrupted in) fleet reads the visible screen and, when it is this dialog and the directory it names is exactly the agent's own (the one fleet chose: the channel's checkout, `~/dev/<repo>`, the cross-repo job's directory, a worker's `--cwd`), moves the cursor to "Yes, I trust this folder" and confirms, one key per press, reading where the cursor is before each press; then it waits for the input box. That directory is fleet's own choice, so trusting it adds nothing to what starting the agent there already does. A dialog naming any other directory, or any other screen, is left alone: the start fails with exit 3 and the screen in the message, and `fleet job end <job> --force` cleans up. A start whose agent exits before its input box (herdr then shows no agent in the pane), as when Claude Code's auto-updater has removed the `claude` it reinstalls for a few seconds, is made once more in the same pane after 3 s; if that fails too, the start fails as before with the pane's text. Each failed start waits out herdr's 30 s start timeout, so the worst case is about a minute.
