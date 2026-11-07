@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime"
+	"strings"
 	"time"
 
 	"github.com/Luolc/agent-fleet/internal/exit"
@@ -43,29 +45,66 @@ func sessionRunning(h *herdr.Herdr) (bool, error) {
 	return status.Running, nil
 }
 
-// ensureSession starts the scope's herdr session when it is not running:
-// `systemctl --user start fleet-scope@<scope>`, then waits until the
-// server answers. The server runs under systemd because the fednet client
-// kills the hook's whole process group when the hook exits.
+// sessionStart is how a platform's service manager is asked to start the
+// scope's herdr session: the command, a name for messages, and what to
+// look at when the command fails.
+type sessionStart struct {
+	argv   []string
+	name   string
+	status string
+}
+
+// launchdLabel is the label of the LaunchAgent that runs a scope's herdr
+// session on darwin.
+func launchdLabel(scope string) string { return "fleet.scope." + scope }
+
+// sessionStartFor is the start of the scope's session on goos: darwin asks
+// the user's launchd (`launchctl kickstart gui/<uid>/<label>`), anything
+// else the user's systemd. Either way the server belongs to the service
+// manager rather than to the hook, because the fednet client kills the
+// hook's whole process group when the hook exits.
+func sessionStartFor(goos, scope string, uid int, xdgRuntimeDir string) (sessionStart, error) {
+	if goos == "darwin" {
+		target := fmt.Sprintf("gui/%d/%s", uid, launchdLabel(scope))
+		return sessionStart{
+			argv:   []string{"launchctl", "kickstart", target},
+			name:   target,
+			status: "launchctl print " + target,
+		}, nil
+	}
+	unit := "fleet-scope@" + scope + ".service"
+	if xdgRuntimeDir == "" {
+		return sessionStart{}, exit.Environmentf("the herdr session %s is not running, and XDG_RUNTIME_DIR is not set, so "+
+			"`systemctl --user start %s` cannot reach the user's systemd: set Environment=XDG_RUNTIME_DIR=/run/user/<uid> "+
+			"in the fednet client's unit and pass it with -hook-env XDG_RUNTIME_DIR", identity.Session(scope), unit)
+	}
+	return sessionStart{
+		argv:   []string{"systemctl", "--user", "start", unit},
+		name:   unit,
+		status: "systemctl --user status " + unit,
+	}, nil
+}
+
+// ensureSession starts the scope's herdr session when it is not running
+// (sessionStartFor), then waits until the server answers.
 func ensureSession(h *herdr.Herdr, scope string) error {
 	running, err := sessionRunning(h)
 	if err != nil || running {
 		return err
 	}
-	unit := "fleet-scope@" + scope + ".service"
-	if os.Getenv("XDG_RUNTIME_DIR") == "" {
-		return exit.Environmentf("the herdr session %s is not running, and XDG_RUNTIME_DIR is not set, so "+
-			"`systemctl --user start %s` cannot reach the user's systemd: set Environment=XDG_RUNTIME_DIR=/run/user/<uid> "+
-			"in the fednet client's unit and pass it with -hook-env XDG_RUNTIME_DIR", identity.Session(scope), unit)
+	start, err := sessionStartFor(runtime.GOOS, scope, os.Getuid(), os.Getenv("XDG_RUNTIME_DIR"))
+	if err != nil {
+		return err
 	}
-	op := "systemctl --user start " + unit
-	_, _, err = herdr.Exec(op, nil, "systemctl", "--user", "start", unit)
+	unit := start.name
+	op := strings.Join(start.argv, " ")
+	_, _, err = herdr.Exec(op, nil, start.argv[0], start.argv[1:]...)
 	var failure *exit.Failure
 	if errors.As(err, &failure) {
 		return failure
 	}
 	if err != nil {
-		return exit.Environmentf("%s failed (%s); see `systemctl --user status %s`", op, herdr.Status(err), unit)
+		return exit.Environmentf("%s failed (%s); see `%s`", op, herdr.Status(err), start.status)
 	}
 	for deadline := time.Now().Add(sessionWait); ; time.Sleep(sessionPoll) {
 		if running, err = sessionRunning(h); err != nil || running {

@@ -594,18 +594,34 @@ func lines(text string) []string {
 // floor plus one agent's share; a `light` agent skips the load. Inputs
 // are the texts of /proc/loadavg and /proc/meminfo.
 func CheckResources(loadavg string, cpus int, meminfo string, sc *config.Scope, light bool) error {
+	load, err := parseLoadavg(loadavg)
+	if err != nil {
+		return err
+	}
+	availableKiB, err := memAvailableKiB(meminfo)
+	if err != nil {
+		return err
+	}
+	return checkResources(load, cpus, availableKiB, sc, light)
+}
+
+// parseLoadavg is the 1-minute load average in the text of /proc/loadavg.
+func parseLoadavg(loadavg string) (float64, error) {
 	fields := strings.Fields(loadavg)
 	if len(fields) == 0 {
-		return exit.Environmentf("cannot parse /proc/loadavg")
+		return 0, exit.Environmentf("cannot parse /proc/loadavg")
 	}
 	load, err := strconv.ParseFloat(fields[0], 64)
 	if err != nil {
-		return exit.Environmentf("cannot parse /proc/loadavg")
+		return 0, exit.Environmentf("cannot parse /proc/loadavg")
 	}
-	// The first `MemAvailable:` line decides: a first line that does not
-	// parse is the error, not a reason to read on.
-	var availableKiB uint64
-	found := false
+	return load, nil
+}
+
+// memAvailableKiB is MemAvailable in the text of /proc/meminfo. The first
+// `MemAvailable:` line decides: a first line that does not parse is the
+// error, not a reason to read on.
+func memAvailableKiB(meminfo string) (uint64, error) {
 	for _, line := range lines(meminfo) {
 		rest, ok := strings.CutPrefix(line, "MemAvailable:")
 		if !ok {
@@ -613,14 +629,16 @@ func CheckResources(loadavg string, cpus int, meminfo string, sc *config.Scope, 
 		}
 		if values := strings.Fields(rest); len(values) > 0 {
 			if value, err := strconv.ParseUint(values[0], 10, 64); err == nil {
-				availableKiB, found = value, true
+				return value, nil
 			}
 		}
 		break
 	}
-	if !found {
-		return exit.Environmentf("cannot find MemAvailable in /proc/meminfo")
-	}
+	return 0, exit.Environmentf("cannot find MemAvailable in /proc/meminfo")
+}
+
+// checkResources is CheckResources on the readings themselves.
+func checkResources(load float64, cpus int, availableKiB uint64, sc *config.Scope, light bool) error {
 	if limit := float64(cpus) * sc.LoadMultiplier; !light && load >= limit {
 		return exit.Refusedf("the 1-minute load average is %s, not below %.4g (%d CPUs × load_multiplier %g); "+
 			"try again later", strconv.FormatFloat(load, 'f', -1, 64), limit, cpus, sc.LoadMultiplier)
@@ -632,20 +650,17 @@ func CheckResources(loadavg string, cpus int, meminfo string, sc *config.Scope, 
 	return nil
 }
 
-// machineResources is CheckResources on this machine; a variable so a
-// test can stand in for the machine. `runtime.NumCPU` honors the affinity
-// mask, not a cgroup CPU quota: in a container with a quota the load may
-// be compared with more CPUs than the quota allows.
+// machineResources is the check on this machine; a variable so a test can
+// stand in for the machine. `runtime.NumCPU` honors the affinity mask, not
+// a cgroup CPU quota: in a container with a quota the load may be compared
+// with more CPUs than the quota allows. The readings are platform code
+// (readMachine): where they cannot be taken the check fails, never passes.
 var machineResources = func(sc *config.Scope, light bool) error {
-	loadavg, err := os.ReadFile("/proc/loadavg")
+	load, availableKiB, err := readMachine()
 	if err != nil {
-		return exit.IO(err)
+		return err
 	}
-	meminfo, err := os.ReadFile("/proc/meminfo")
-	if err != nil {
-		return exit.IO(err)
-	}
-	return CheckResources(string(loadavg), runtime.NumCPU(), string(meminfo), sc, light)
+	return checkResources(load, runtime.NumCPU(), availableKiB, sc, light)
 }
 
 // resources is machineResources with the scope's settings, unless the

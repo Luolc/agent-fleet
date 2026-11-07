@@ -7,7 +7,6 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 
@@ -168,27 +167,6 @@ func shellAlone(h *herdr.Herdr, pane string) (pid int64, why string) {
 		return 0, fmt.Sprintf("its shell (pid %d) has %d child process(es)", shell, children)
 	}
 	return shell, ""
-}
-
-// childProcesses is how many child processes `pid` has, as each of its
-// threads' /proc children file lists them.
-func childProcesses(pid int64) (int, error) {
-	files, err := filepath.Glob(fmt.Sprintf("/proc/%d/task/*/children", pid))
-	if err != nil {
-		return 0, err
-	}
-	if len(files) == 0 {
-		return 0, fmt.Errorf("no /proc/%d/task/*/children", pid)
-	}
-	n := 0
-	for _, f := range files {
-		data, err := os.ReadFile(f)
-		if err != nil {
-			return 0, err
-		}
-		n += len(strings.Fields(string(data)))
-	}
-	return n, nil
 }
 
 // sighting is a pane's row in `orphan_tabs`.
