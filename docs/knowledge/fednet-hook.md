@@ -83,7 +83,7 @@ Fleet builds for darwin (`GOOS=darwin`, arm64 and amd64) and does the same thing
     </array>
     <key>EnvironmentVariables</key>
     <dict>
-      <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+      <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     </dict>
     <key>RunAtLoad</key><false/>
     <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
@@ -91,7 +91,7 @@ Fleet builds for darwin (`GOOS=darwin`, arm64 and amd64) and does the same thing
   </plist>
   ```
 
-  `RunAtLoad` is false so the server starts on the first `kickstart`, the way the systemd unit starts on `start`. launchd runs the job in a process group of its own, so the fednet client killing the hook's group does not reach it. Replace `SCOPE` and the herdr path; the `PATH` is what the agents herdr starts inherit, so it has to hold what they need (`git`, `gh`, `fleet`).
+  `RunAtLoad` is false so the server starts on the first `kickstart`, the way the systemd unit starts on `start`. launchd runs the job in a process group of its own, so the fednet client killing the hook's group does not reach it. Replace `SCOPE` and the herdr path; the `PATH` is what the agents herdr starts inherit, so it has to hold what they need (`git`, `gh`, `fleet`). `/usr/sbin` and `/sbin` stay in it because macOS ships `sysctl` as `/usr/sbin/sysctl` and fleet runs it by name (from where macOS puts the tool; not confirmed on a Mac).
 - **Load and memory.** `job start` and `spawn` read the 1-minute load average from `sysctl -n vm.loadavg` and the available memory from `vm_stat`: pages free + inactive + speculative times the page size, the closest reading to Linux's `MemAvailable` without a privileged call. It runs a little high where much of the inactive memory is dirty. A tool that fails or prints something else fails with exit 5 and the reason, never a pass. Another platform than Linux and darwin has no reader and fails the same way; a repo there sets `resource_check` to `false`.
 - **Idle tabs.** `watch` closes an orphan tab only when the tab's shell has no child process. On darwin it counts them in `ps -A -o pid=,ppid=` (processes whose parent is the shell), the same answer as Linux's `/proc/<pid>/task/*/children`. When `ps` fails or prints nothing usable, the tab is not judged idle and is left open, so a failure keeps a tab and never closes one.
 - **`fleet watch` on a timer.** A LaunchAgent with `StartInterval` runs it, `~/Library/LaunchAgents/fleet.watch.<scope>.plist`, loaded the same way:
@@ -110,7 +110,7 @@ Fleet builds for darwin (`GOOS=darwin`, arm64 and amd64) and does the same thing
     </array>
     <key>EnvironmentVariables</key>
     <dict>
-      <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+      <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     </dict>
     <key>StartInterval</key><integer>300</integer>
   </dict>
